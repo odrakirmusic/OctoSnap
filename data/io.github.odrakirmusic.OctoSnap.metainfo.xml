@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: CC0-1.0 -->
+<!--
+  The app's AppStream record: what GNOME Software and Flathub show about it.
+
+  The licence line is the one the README states: the program is GPL-3.0-or-later and one
+  component of it, the gifski GIF encoder, is AGPL-3.0-or-later, so a binary built from
+  this repository is both. The extension is described here because the app does not
+  work without it, and a store page that did not say so would sell a program that opens
+  to an error.
+-->
+<component type="desktop-application">
+  <id>io.github.odrakirmusic.OctoSnap</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later AND AGPL-3.0-or-later</project_license>
+
+  <name>OctoSnap</name>
+  <summary>Capture, annotate and record the screen</summary>
+  <developer id="io.github.odrakirmusic">
+    <name>The OctoSnap contributors</name>
+  </developer>
+
+  <description>
+    <p>
+      OctoSnap takes a screenshot the moment you ask for one. Pick an area, a window or a
+      whole screen with a keyboard shortcut, and the capture lands in a small card in the
+      corner of the screen, ready to copy, save, drag into another app, or open for
+      annotation.
+    </p>
+    <p>Everything a capture might need, without leaving the desktop:</p>
+    <ul>
+      <li>Area, window and full-screen capture, with a magnifier, a frozen-screen mode and the pointer in or out</li>
+      <li>An editor with arrows, shapes, text, counters, a spotlight, redaction, highlighter, crop and backgrounds</li>
+      <li>Scrolling capture that stitches a long page into one image</li>
+      <li>Text recognition that copies the words in any part of the screen, on your own computer</li>
+      <li>Screenshots pinned above other windows, and a history of recent captures</li>
+      <li>Screen recording to GIF, with a trimming editor</li>
+      <li>Pixel-art pets that live on the desktop if you want them, and keep out of every capture</li>
+    </ul>
+    <p>
+      OctoSnap needs its GNOME Shell extension, which draws the capture overlay and reads the
+      screen. The app offers to install it the first time it starts.
+    </p>
+    <p>What it asks of the system, and why:</p>
+    <ul>
+      <li>GNOME Shell and its extensions: to find its extension, install it through GNOME's own dialog, and change the settings kept with it</li>
+      <li>Mutter's screen cast and PipeWire: to record the area you chose as a GIF</li>
+      <li>Mutter's display configuration: to know each screen's name and refresh rate</li>
+      <li>The session manager: for the Log Out button that loads a newly installed extension, which asks you first</li>
+      <li>Pictures and Videos: where screenshots and recordings are saved</li>
+      <li>The network: only to download a text-recognition language pack, when you ask for one</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.odrakirmusic.OctoSnap.desktop</launchable>
+
+  <!-- OctoSnap's own windows over a capture of OctoSnap's own Settings, so nothing in
+       them is anyone else's work. Made in a nested shell at 1280x800. -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Annotate a capture with arrows, shapes, numbered steps, text and redaction</caption>
+      <image>https://raw.githubusercontent.com/odrakirmusic/OctoSnap/main/data/screenshots/editor.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Pick an area, a window or the whole screen from one toolbar</caption>
+      <image>https://raw.githubusercontent.com/odrakirmusic/OctoSnap/main/data/screenshots/all-in-one.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Settings for what happens after each capture</caption>
+      <image>https://raw.githubusercontent.com/odrakirmusic/OctoSnap/main/data/screenshots/settings.png</image>
+    </screenshot>
+  </screenshots>
+
+  <url type="homepage">https://github.com/odrakirmusic/OctoSnap</url>
+  <url type="bugtracker">https://github.com/odrakirmusic/OctoSnap/issues</url>
+  <url type="vcs-browser">https://github.com/odrakirmusic/OctoSnap</url>
+  <url type="help">https://github.com/odrakirmusic/OctoSnap/blob/main/docs/guide.md</url>
+
+  <provides>
+    <binary>octosnap</binary>
+    <dbus type="user">io.github.odrakirmusic.OctoSnap</dbus>
+    <mediatype>application/x-octosnap-project</mediatype>
+  </provides>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#99c1f1</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <keywords>
+    <keyword>screenshot</keyword>
+    <keyword>screen capture</keyword>
+    <keyword>annotate</keyword>
+    <keyword>screen recording</keyword>
+    <keyword>GIF</keyword>
+    <keyword>OCR</keyword>
+  </keywords>
+
+  <categories>
+    <category>Graphics</category>
+    <category>Utility</category>
+  </categories>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-01">
+      <description>
+        <p>The first release of OctoSnap, for GNOME 50 on Wayland.</p>
+        <ul>
+          <li>Area, window and full-screen capture from a keyboard shortcut, into a card in the corner</li>
+          <li>An annotation editor, pinned screenshots and a history of captures</li>
+          <li>Scrolling capture, text recognition on your own computer, and GIF recording</li>
+          <li>Pixel-art pets for the desktop, off unless you turn them on</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

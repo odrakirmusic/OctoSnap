@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# D-Bus activation for the app service (spec/10 §2). The directory of the binary is
+# substituted at install time, and scripts/install-dev.sh points it at the release build.
+# Before it come the malloc settings (docs/decisions.md D128), none in a Flatpak, whose
+# manifest sets them instead. The placeholders are not named here: the substitution would
+# replace them in this comment too.
+[D-BUS Service]
+Name=io.github.odrakirmusic.OctoSnap
+Exec=@LAUNCH_ENV@@BINDIR@/octosnap-app

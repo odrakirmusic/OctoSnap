@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+
+  The three keys of GNOME Shell's keybinding schema that spec/08 §3's Print-key takeover
+  rebinds, and nothing else: the shape of the mirror `crates/app/src/remote_settings.rs`
+  keeps of them for an app in a sandbox (D123), where GNOME Shell's own schema is not
+  installed. The values always come from the extension, which reads GNOME Shell's dconf;
+  the defaults here only stand in until it has answered.
+
+  Installed in share/octosnap/remote-schemas, which is not a GSettings search path, so
+  nothing but that mirror ever sees this copy.
+-->
+<schemalist>
+  <schema id="org.gnome.shell.keybindings" path="/org/gnome/shell/keybindings/">
+    <key name="show-screenshot-ui" type="as">
+      <default><![CDATA[['Print']]]></default>
+      <summary>Show the screenshot UI</summary>
+    </key>
+    <key name="screenshot" type="as">
+      <default><![CDATA[['<Shift>Print']]]></default>
+      <summary>Take a screenshot</summary>
+    </key>
+    <key name="screenshot-window" type="as">
+      <default><![CDATA[['<Alt>Print']]]></default>
+      <summary>Take a screenshot of a window</summary>
+    </key>
+  </schema>
+</schemalist>

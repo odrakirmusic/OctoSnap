@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "octosnap-ocr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# One dependency, and it is the workspace's error type. Everything `spec/07` §2 does
+# between a capture and the string a person pastes -- the greyscale, the doubling, the
+# lines, the paragraphs, the links -- can be wrong in a unit test instead of in a paste
+# somebody has to re-screenshot, and none of it needs a model to be wrong in front of.
+# The ~15 MB of ONNX Runtime arrives with the engine, behind the trait in `engine.rs`.
+[dependencies]
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic", "api-17"] }
+# `spec/07` §2.1: "if the area contains a QR/barcode, its payload is copied instead".
+# Pure Rust, no model and no download -- a QR code is arithmetic, not recognition.
+rqrr = "0.11.0"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+
+# The examples read a PNG, which the application already does for itself -- `spec/05` §6
+# picked `png` for the editor's export and `crates/stitch` decodes frames with it.
+[dev-dependencies]
+png = "0.18.1"
+# So the QR tests are a round trip rather than a fixture nobody can regenerate.
+qrcode = { version = "0.14", default-features = false }
+# `packs::installed` answers about a directory, so testing it needs one.
+tempfile = "3.27.0"

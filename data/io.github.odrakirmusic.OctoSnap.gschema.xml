@@ -1,0 +1,388 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later
+
+     Keys and defaults are spec/08's. Only the keys this build actually reads are here:
+     inventing a key before the feature that gives it meaning fixes a contract too early,
+     and spec/08's tables are the record of what is still to come.
+-->
+<schemalist>
+  <schema id="io.github.odrakirmusic.OctoSnap" path="/org/octosnap/App/">
+
+    <!-- ACT-01. Values: show-overlay, copy, save, annotate, upload, pin, ask-name -->
+    <key name="after-screenshot" type="as">
+      <default>['show-overlay','copy']</default>
+      <summary>Actions to run after a screenshot</summary>
+    </key>
+    <!-- Recordings also accept open-editor -->
+    <key name="after-recording" type="as">
+      <default>['show-overlay','save']</default>
+      <summary>Actions to run after a recording</summary>
+    </key>
+    <key name="copy-upload-behavior" type="s">
+      <choices>
+        <choice value='image-then-link'/>
+        <choice value='link-only'/>
+        <choice value='image-only'/>
+      </choices>
+      <default>'image-then-link'</default>
+      <summary>What the clipboard gets when Copy and Upload are both on</summary>
+    </key>
+
+    <!-- ACT-02's "can be disabled" is 'show-overlay' in after-screenshot above. There
+         used to be a separate qao-enabled master switch here; it could only ever remove
+         show-overlay from the plan, which is what leaving it out of the list already
+         does, and having two controls for one behaviour let the visible one lie. -->
+
+    <!-- CAP-14 -->
+    <key name="area-shortcuts-respect-actions" type="b">
+      <default>false</default>
+      <summary>"Capture Area and ..." shortcuts add to the configured actions instead of replacing them</summary>
+    </key>
+
+    <!-- ACT-06. '' means the XDG default: Pictures/Screenshots, Videos/Screencasts -->
+    <key name="screenshot-folder" type="s">
+      <default>''</default>
+      <summary>Export location for screenshots</summary>
+    </key>
+    <key name="recording-folder" type="s">
+      <default>''</default>
+      <summary>Export location for recordings</summary>
+    </key>
+
+    <!-- REC (M5): the GIF encoder's parameters (spec/08 §5). The app owns these because
+         it owns the ScreenCast stream and the gifski encode; the countdown and the
+         desktop-icon toggle live in the extension schema, where the overlay reads them. -->
+    <key name="gif-fps" type="i">
+      <range min="0" max="50"/>
+      <default>15</default>
+      <summary>GIF frame rate</summary>
+      <description>Frames per second for a GIF recording; the page offers 10, 15, 24, 30 and 50, and 0 means the recorded screen's own rate: its refresh rate, divided by the fewest whole times that bring it to fifty or under, so thirty on a sixty-hertz screen. Fifty is the most a GIF can play at: delays are stored in hundredths of a second and nothing shorter than two is honoured.</description>
+    </key>
+    <key name="gif-max-width" type="i">
+      <range min="0" max="7680"/>
+      <default>1280</default>
+      <summary>Widest a GIF may be, in pixels</summary>
+      <description>A GIF wider than this is scaled down to it; 0 records at the selection's own width. Below about 1000 px the text in a screen recording stops being readable.</description>
+    </key>
+    <key name="gif-quality" type="i">
+      <range min="1" max="100"/>
+      <default>80</default>
+      <summary>GIF quality</summary>
+    </key>
+    <key name="rec-cursor" type="b">
+      <default>true</default>
+      <summary>Draw the pointer into a recording</summary>
+    </key>
+    <key name="shot-format" type="s">
+      <choices>
+        <choice value='png'/>
+        <choice value='jpg'/>
+        <choice value='webp'/>
+      </choices>
+      <default>'png'</default>
+      <summary>Screenshot file format</summary>
+    </key>
+    <key name="shot-jpg-quality" type="i">
+      <range min="1" max="100"/>
+      <default>90</default>
+      <summary>JPEG quality</summary>
+    </key>
+
+    <!-- ACT-07 -->
+    <key name="filename-template" type="s">
+      <default>'{type} {yyyy}-{MM}-{dd} at {HH}.{mm}.{ss}'</default>
+      <summary>File name template</summary>
+    </key>
+    <key name="filename-counter-start" type="i">
+      <range min="0" max="1000000"/>
+      <default>1</default>
+      <summary>Starting value for the {n} token</summary>
+    </key>
+    <key name="filename-counter-width" type="i">
+      <range min="1" max="4"/>
+      <default>1</default>
+      <summary>Zero-padding width for the {n} token</summary>
+    </key>
+    <key name="filename-utc" type="b">
+      <default>false</default>
+      <summary>Use UTC in file names</summary>
+    </key>
+
+    <!-- CAP-16 -->
+    <key name="retina-suffix" type="b">
+      <default>true</default>
+      <summary>Append @2x to captures taken above 1x</summary>
+    </key>
+
+    <!-- ACT-04. The shutter itself lives in the extension schema (docs/decisions.md
+         D11): it has to fire on the compositor at the moment of the grab. This key is
+         the one spec/08 §1 calls "Play sounds for recording/OCR/upload", which the app
+         does own. -->
+    <key name="ui-sounds" type="b">
+      <default>true</default>
+      <summary>Play sounds for recordings, recognised text, copies and pins</summary>
+    </key>
+
+    <!-- ACT-05 -->
+    <key name="notifications" type="b">
+      <default>true</default>
+      <summary>Show a notification for actions with no visible result</summary>
+    </key>
+
+    <!-- spec/08 §4, reconciled with spec/04's later evidence.
+
+         Two of spec/08 §4's keys describe a shape the screenshots contradict, and the
+         screenshots are the later evidence:
+
+         - `qao-corner` (top-left/top-right/bottom-left/bottom-right) is [D], from the
+           documentation. spec/04 §2 is [P->V] and explicit: "**Anchor is an edge, not a
+           corner.** The setting reads 'Position on screen: Left'." A corner key would
+           offer two settings for the vertical anchor, one of which is always ignored,
+           so this is `qao-edge`.
+         - `qao-size` (small/medium/large) is [D]. spec/04 §1 is [V]: "the Quick Access
+           settings expose size as a five-step slider rather than three named sizes."
+           The three names map onto steps 2, 3 and 4.
+
+         `qao-enabled` is deliberately still absent, for the reason recorded above
+         `after-screenshot`: it could only ever remove `show-overlay` from the plan. -->
+    <key name="qao-edge" type="s">
+      <choices>
+        <choice value='left'/>
+        <choice value='right'/>
+      </choices>
+      <default>'left'</default>
+      <summary>Which screen edge the overlay cards sit against</summary>
+    </key>
+    <key name="qao-follow-pointer" type="b">
+      <default>true</default>
+      <summary>Show cards on the screen the pointer is on</summary>
+    </key>
+    <key name="qao-size" type="i">
+      <range min="1" max="5"/>
+      <default>3</default>
+      <summary>Overlay size, 1 (smallest) to 5 (largest)</summary>
+    </key>
+    <!-- Default 0, not spec/08 §4's 10. The spec's value is marked [M] -- an inference,
+         not a measurement -- and the user asked for cards that stay until dismissed.
+         docs/decisions.md D38. -->
+    <key name="qao-auto-close-seconds" type="i">
+      <range min="0" max="3600"/>
+      <default>0</default>
+      <summary>Seconds before a card closes itself; 0 never closes</summary>
+    </key>
+    <key name="qao-close-after-drag" type="b">
+      <default>true</default>
+      <summary>Close a card after its thumbnail has been dragged out</summary>
+    </key>
+    <key name="qao-ask-destination" type="b">
+      <default>false</default>
+      <summary>Ask where to put the file when Save is pressed on a card</summary>
+    </key>
+    <key name="qao-shortcuts" type="b">
+      <default>true</default>
+      <summary>Keyboard shortcuts work on the card under the pointer</summary>
+    </key>
+
+    <!-- spec/05 §2's picker. The ten presets are fixed in code; these are the user's
+         own, saved from the expanded stage's "+ Add to My Colors". Hex without a leading
+         '#', which is how §2 writes the Hex field too. -->
+    <key name="my-colors" type="as">
+      <default>[]</default>
+      <summary>Colours saved from the annotate editor's picker</summary>
+    </key>
+
+    <!-- spec/08 §2, Wallpaper (window captures). A window capture arrives with alpha
+         where the compositor's shadow is, so spec/05 §4.15 keeps what goes behind it as
+         an editable background object rather than baking it into the PNG: these are the
+         parameters that object starts with. 'transparent' is spec/08 §2's own default
+         escape ("Hold Shift while taking a screenshot to get a transparent background"),
+         which is the same Shift that skips the background preset. -->
+    <key name="window-background" type="s">
+      <choices>
+        <choice value="transparent"/>
+        <choice value="wallpaper"/>
+        <choice value="image"/>
+        <choice value="color"/>
+      </choices>
+      <default>'wallpaper'</default>
+      <summary>What goes behind a window screenshot</summary>
+    </key>
+    <key name="window-background-image" type="s">
+      <default>''</default>
+      <summary>The image behind a window screenshot, when the background is 'image'</summary>
+    </key>
+    <key name="window-background-color" type="s">
+      <default>'#1e1e1e'</default>
+      <summary>The colour behind a window screenshot, when the background is 'color'</summary>
+    </key>
+    <key name="window-padding" type="i">
+      <range min="0" max="400"/>
+      <default>40</default>
+      <summary>The margin around a window screenshot, in pixels</summary>
+    </key>
+    <key name="window-shadow" type="b">
+      <default>true</default>
+      <summary>Keep the compositor's shadow around a window screenshot</summary>
+    </key>
+    <key name="window-rounded-corners" type="b">
+      <default>true</default>
+      <summary>Keep the window's rounded corners in a window screenshot</summary>
+    </key>
+
+    <!-- spec/05 §4.13's background tool. The presets are the user's saved parameter
+         sets, one JSON object each: an 'as' rather than a single blob so that one preset
+         written by a newer build costs the user that preset and not the whole list.
+         'ann-background-last' is what "Apply Previous Settings" applies, and it is the
+         parameters themselves rather than a preset id -- the last settings used are
+         usually not a preset at all. 'ann-background-default' holds a preset id, or '' for
+         none; 'ann-background-auto' is §4.13's "automatically apply preset to all
+         screenshots", which Shift at capture skips. -->
+    <key name="ann-background-presets" type="as">
+      <default>[]</default>
+      <summary>Saved background presets, one JSON object each</summary>
+    </key>
+    <key name="ann-background-last" type="s">
+      <default>''</default>
+      <summary>The last background settings used, for Apply Previous Settings</summary>
+    </key>
+    <key name="ann-background-default" type="s">
+      <default>''</default>
+      <summary>The preset id applied to new screenshots, or empty for none</summary>
+    </key>
+    <key name="ann-background-auto" type="b">
+      <default>false</default>
+      <summary>Apply the default background preset to every screenshot</summary>
+    </key>
+
+    <!-- `spec/08` §1's Annotate row "Remember if background tool was opened". Two keys
+         and not one, because a preference and the thing it remembers are different
+         questions: 'ann-background-remember' is the switch on the settings page and
+         'ann-background-was-open' is what the editor wrote the last time it closed. The
+         second means nothing at all while the first is off. -->
+    <key name="ann-background-remember" type="b">
+      <default>false</default>
+      <summary>Reopen the background panel if it was open last time</summary>
+    </key>
+    <key name="ann-background-was-open" type="b">
+      <default>false</default>
+      <summary>Whether the background panel was open when an editor last closed</summary>
+    </key>
+
+    <!-- spec/05 §4.11's crop. `snapInAnnotateCrop` is a verified CleanShot preference
+         key [V appendix A], so this is a preference rather than a per-session toggle even
+         though the toolbar is where it is set. -->
+    <key name="annotate-crop-snap" type="b">
+      <default>true</default>
+      <summary>Snap the crop rect to the image's edges and to other objects</summary>
+    </key>
+
+    <!-- spec/05 §1: "Window is resizable and remembers its size." Width, height and a
+         0/1 maximised flag; empty until an editor has been closed once, when the size is
+         77 % x 84 % of the capture's monitor instead. -->
+    <key name="editor-window" type="ai">
+      <default>[]</default>
+      <summary>The annotate editor's last window size</summary>
+    </key>
+
+    <!-- spec/08 §9 -->
+    <key name="api-enabled" type="b">
+      <default>true</default>
+      <summary>Allow the command line and the octosnap:// URL scheme to start captures</summary>
+    </key>
+
+    <!-- spec/07 §4.1's retention and spec/08 §9's two history rows. Days, and the
+         Preferences menu offers 1, 3, 7, 14 and 30; a hand-set value snaps *up* to the
+         next choice (core::history::Retention::from_days), because deleting earlier than
+         asked is the worse mistake. -->
+    <key name="history-retention-days" type="i">
+      <range min="1" max="30"/>
+      <default>7</default>
+      <summary>How many days a closed capture stays in the history</summary>
+    </key>
+    <!-- spec/04 §7: a closing card goes to history "unless saved and 'keep history' is
+         off". Off means a capture the user already has in the pictures folder is not
+         kept a second time. -->
+    <key name="history-keep-saved" type="b">
+      <default>true</default>
+      <summary>Keep captures in the history even after they were saved</summary>
+    </key>
+
+    <!-- spec/08 §7's "Retina export": the editor renders at the capture's own pixel
+         density, or scaled to 1x. -->
+    <key name="ann-export-scale" type="s">
+      <choices>
+        <choice value='document'/>
+        <choice value='1x'/>
+      </choices>
+      <default>'document'</default>
+      <summary>The pixel density the annotate editor exports at</summary>
+    </key>
+
+    <!-- spec/07 §3.1's look for pinned screenshots: "rounded corners (8 px) + shadow (both
+         switchable), optional 1 px border". The shadow is the compositor's, drawn outside
+         the pin's window, which stays the capture's rect (D66, D132). -->
+    <key name="pin-rounded-corners" type="b">
+      <default>true</default>
+      <summary>Round the corners of pinned screenshots</summary>
+    </key>
+    <key name="pin-border" type="b">
+      <default>false</default>
+      <summary>Draw a thin border around pinned screenshots</summary>
+    </key>
+    <key name="pin-shadow" type="b">
+      <default>true</default>
+      <summary>Cast a shadow under pinned screenshots</summary>
+    </key>
+
+    <!-- spec/08 §1's Advanced > Text Recognition: "Language [Automatically Detect
+         Language], Keep line breaks [off], Detect links [on]".
+
+         A *script*, not a language: a RapidOCR pack is one recognition model per script
+         and the thirty-odd languages spec/07 §2.1 promises are what those five models
+         between them can read. 'auto' is the default and is not a sixth model -- it is
+         §2.2's "script detection + model confidence", which tries the installed packs
+         and keeps the most confident read. -->
+    <key name="ocr-language" type="s">
+      <default>'auto'</default>
+      <summary>The script to recognise text as (auto, latin, cyrillic, cjk, arabic, devanagari)</summary>
+    </key>
+    <key name="ocr-line-breaks" type="b">
+      <default>false</default>
+      <summary>Keep the line breaks the page had</summary>
+      <description>Off joins the lines of a paragraph with spaces, which is what pasting a quotation into prose wants. spec/08 §3's capture-text-single-line shortcut is the same read with this turned the other way, and does not change the setting.</description>
+    </key>
+    <key name="ocr-detect-links" type="b">
+      <default>true</default>
+      <summary>Make addresses and e-mails in recognised text clickable</summary>
+    </key>
+
+    <!-- spec/08 §9's debug logging [P]. RUST_LOG in the environment takes precedence. -->
+    <key name="debug" type="b">
+      <default>false</default>
+      <summary>Log every placement, gesture and setting to the journal</summary>
+    </key>
+
+    <!-- spec/11 M7's first-run flow. -->
+    <key name="welcomed" type="b">
+      <default>false</default>
+      <summary>The welcome window has been seen through to Done</summary>
+      <description>Until it has, opening OctoSnap from the app grid shows the welcome window rather than Settings.</description>
+    </key>
+
+    <!-- D126: SYS-02 from a sandbox, where the Background portal writes the autostart
+         entry and cannot be asked afterwards what it wrote. Natively the entry itself is
+         the switch, and this key is not read. -->
+    <key name="launch-at-login" type="b">
+      <default>false</default>
+      <summary>The Background portal last agreed to start OctoSnap at login</summary>
+    </key>
+
+    <!-- D133: a logout that did not help, told from one that has not happened yet. -->
+    <key name="stale-extension" type="s">
+      <default>''</default>
+      <summary>The out-of-date extension last found, and in which login</summary>
+      <description>The running extension's version and protocol when they were older than the app's, with the login they were first found in. Empty while the extension is up to date.</description>
+    </key>
+
+  </schema>
+</schemalist>

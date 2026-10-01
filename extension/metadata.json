@@ -1,0 +1,10 @@
+{
+  "uuid": "octosnap@odrakirmusic.github.io",
+  "name": "OctoSnap",
+  "description": "The GNOME Shell half of OctoSnap, an app for screenshots, annotation, text recognition and GIF recording. It draws the capture overlay, reads the screen, holds OctoSnap's keyboard shortcuts, places its cards and pins, and draws the desktop pets when they are turned on. It needs the OctoSnap app, which is where its settings are: https://github.com/odrakirmusic/OctoSnap\n\nClipboard: it puts a capture or recognised text on the clipboard when OctoSnap asks it to. After a screenshot that is the default, as with GNOME's own screenshot tool, and OctoSnap's settings can turn it off. It never reads the clipboard.",
+  "shell-version": ["48", "49", "50"],
+  "url": "https://github.com/odrakirmusic/OctoSnap",
+  "settings-schema": "org.gnome.shell.extensions.octosnap",
+  "gettext-domain": "octosnap",
+  "version-name": "0.1.0"
+}

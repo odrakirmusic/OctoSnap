@@ -1,0 +1,364 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<schemalist gettext-domain="octosnap">
+  <schema id="org.gnome.shell.extensions.octosnap"
+          path="/org/gnome/shell/extensions/octosnap/">
+
+    <!-- spec/08 §3's shortcut actions. Every default is deliberately NOT a Print key
+         and NOT one of spec/08's proposed <Super><Shift>N chords: docs/decisions.md D4
+         records that the user's Gradia install stays in daily use, and taking over the
+         Print keys is spec/08's opt-in onboarding step in M4. <Control><Alt><Super> is
+         unbound on stock GNOME 50, which is the point: a default that collides is a
+         default that silently does not work, since Main.wm.addKeybinding just returns
+         NONE. -->
+    <key name="capture-area" type="as">
+      <default><![CDATA[['<Control><Alt><Super>a']]]></default>
+      <summary>Capture area</summary>
+      <description>Capture a region of the screen.</description>
+    </key>
+    <key name="all-in-one" type="as">
+      <default><![CDATA[['<Control><Alt><Super>space']]]></default>
+      <summary>All-In-One</summary>
+      <description>Open the capture overlay with its toolbar and the last selection.</description>
+    </key>
+    <key name="capture-fullscreen" type="as">
+      <default><![CDATA[['<Control><Alt><Super>f']]]></default>
+      <summary>Capture fullscreen</summary>
+      <description>Capture the whole monitor under the pointer.</description>
+    </key>
+    <key name="capture-window" type="as">
+      <default><![CDATA[['<Control><Alt><Super>w']]]></default>
+      <summary>Capture window</summary>
+      <description>Pick a window and capture it.</description>
+    </key>
+    <key name="capture-previous-area" type="as">
+      <default><![CDATA[['<Control><Alt><Super>r']]]></default>
+      <summary>Capture previous area</summary>
+      <description>Capture the last selection again, with no overlay.</description>
+    </key>
+    <key name="self-timer" type="as">
+      <default><![CDATA[['<Control><Alt><Super>t']]]></default>
+      <summary>Self-timer</summary>
+      <description>Select an area, then capture it after a countdown.</description>
+    </key>
+
+    <!-- REC (M5): record-gif opens the overlay in record mode; recording-stop stops the
+         recording in progress (spec/08 §2). Unbound by default, like the "and ..."
+         variants below, so a fresh install adds no chords the user did not ask for. -->
+    <key name="record-gif" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Record a GIF</summary>
+      <description>Select an area, then record it as a GIF.</description>
+    </key>
+    <key name="recording-stop" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Stop the recording</summary>
+    </key>
+
+    <!-- spec/07 §1 (M6): scrolling-capture selects an area over scrollable content and
+         hands it to the app, which runs the loop. spec/08 §3 gives it Super+Shift+7;
+         unbound here, like record-gif, so a fresh install adds no chords unasked. -->
+    <key name="scrolling-capture" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Scrolling capture</summary>
+      <description>Select an area over scrollable content and capture all of it.</description>
+    </key>
+
+    <!-- spec/07 §2.1 (M6): the two text shortcuts. The same area selection and the same
+         mode; they differ only in whether the read keeps the page's line breaks, which
+         travels on the twin so the app knows which one asked. Unbound by default, like
+         every other capture variant below. -->
+    <key name="capture-text" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Capture text</summary>
+      <description>Select an area, recognise the text in it and copy it.</description>
+    </key>
+    <key name="capture-text-single-line" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Capture text as a single line</summary>
+      <description>The same, with each paragraph joined into one line.</description>
+    </key>
+
+    <!-- CAP-14: the "and ..." variants exist only as shortcuts, never as menu items
+         (appendix A.10). Unbound by default, because three more chords on a fresh
+         install is noise; the Shortcuts pane is where a user who wants them binds them. -->
+    <key name="capture-area-copy" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Capture area and copy</summary>
+    </key>
+    <key name="capture-area-save" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Capture area and save</summary>
+    </key>
+    <key name="capture-area-annotate" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Capture area and annotate</summary>
+    </key>
+    <key name="capture-area-upload" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Capture area and upload</summary>
+    </key>
+    <key name="capture-area-pin" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Capture area and pin</summary>
+    </key>
+    <!-- spec/08 §3's remaining groups, served by the app's actions (M4). Three carry a
+         default in the same <Control><Alt><Super> family as the captures above; the rest
+         are unbound until the Shortcuts pane binds them. -->
+    <key name="overlays-toggle-visibility" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Hide or show the overlay cards</summary>
+    </key>
+    <key name="overlays-save-all" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Save all overlay cards</summary>
+    </key>
+    <key name="overlays-close-all" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Close all overlay cards</summary>
+    </key>
+    <key name="restore-recently-closed" type="as">
+      <default><![CDATA[['<Control><Alt><Super>z']]]></default>
+      <summary>Restore the most recently closed card</summary>
+    </key>
+    <key name="pins-toggle-visibility" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Hide or show pinned screenshots</summary>
+    </key>
+    <key name="pins-close-all" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Close all pinned screenshots</summary>
+    </key>
+    <key name="copy-last-capture" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Copy the last capture</summary>
+    </key>
+    <key name="save-last-capture" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Save the last capture</summary>
+    </key>
+    <key name="annotate-last-capture" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Annotate the last capture</summary>
+    </key>
+    <key name="open-from-clipboard" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Annotate the clipboard's image</summary>
+    </key>
+    <key name="open-history" type="as">
+      <default><![CDATA[['<Control><Alt><Super>h']]]></default>
+      <summary>Open the capture history</summary>
+    </key>
+    <key name="toggle-desktop-icons" type="as">
+      <default><![CDATA[['<Control><Alt><Super>d']]]></default>
+      <summary>Hide or show the desktop icons</summary>
+    </key>
+    <!-- spec/14 §11: pets out or in. Unbound by default, like the other extras. -->
+    <key name="toggle-pets" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Show or hide the desktop pets</summary>
+    </key>
+    <!-- CAP-12, spec/08 §6: read at grab time, so the extension's (D11). -->
+    <key name="shot-hide-desktop" type="b">
+      <default>false</default>
+      <summary>Hide the desktop icons while capturing</summary>
+    </key>
+
+    <!-- REC (M5): the overlay's own settings, read on the compositor at record time. The
+         countdown runs in the extension (countdown.ts), and the desktop icons are the
+         extension's windows to hide, so both live here rather than in the app schema. -->
+    <key name="rec-hide-desktop" type="b">
+      <default>true</default>
+      <summary>Hide the desktop icons while recording</summary>
+    </key>
+    <key name="rec-countdown" type="i">
+      <range min="0" max="10"/>
+      <default>3</default>
+      <summary>Seconds to count down before recording starts</summary>
+    </key>
+    <key name="open-settings" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Open OctoSnap settings</summary>
+    </key>
+
+    <!-- SYS-01 -->
+    <key name="show-indicator" type="b">
+      <default>true</default>
+      <summary>Show the OctoSnap indicator in the top bar</summary>
+    </key>
+
+    <!-- spec/08 §6. These live here rather than in the app schema because the extension
+         is what reads them, at the moment of the grab, on the compositor's main loop.
+         spec/08 §11 already puts shot-crosshair and shot-freeze here; the other two
+         follow for the same reason. docs/decisions.md D11. The Preferences dialog in the
+         app writes this schema as well as its own, so the user sees one settings surface. -->
+    <key name="shot-cursor" type="b">
+      <default>false</default>
+      <summary>Include the pointer in captures</summary>
+    </key>
+    <key name="shot-freeze" type="b">
+      <default>false</default>
+      <summary>Freeze the screen while selecting</summary>
+    </key>
+    <!-- spec/08 §1's "Self-Timer interval [5 Seconds]", which had no key and no row: the
+         countdown was always 5 s (D136). The CLI's and a link's own timer still win. -->
+    <key name="shot-timer" type="i">
+      <range min="1" max="10"/>
+      <default>5</default>
+      <summary>Seconds the self-timer counts down</summary>
+    </key>
+    <key name="shot-crosshair" type="s">
+      <choices>
+        <choice value='off'/>
+        <choice value='always'/>
+        <choice value='modifier'/>
+      </choices>
+      <default>'modifier'</default>
+      <summary>When to show the crosshair and magnifier</summary>
+    </key>
+    <key name="shot-magnifier" type="b">
+      <default>true</default>
+      <summary>Show the magnifier with the crosshair</summary>
+    </key>
+
+    <!-- ACT-04. Here rather than in the app schema for the same reason as above: the
+         shutter has to sound at the instant the pixels are read, and a round trip to the
+         app would put it after. spec/08 §1's five shutters are OctoSnap's own sounds
+         (D134); 'system' plays the sound theme's camera-shutter event instead. The
+         countdown ticks unless this is 'none'. -->
+    <!-- D135. The extension keeps its recent lines for the app's Save a report either
+         way; this also writes the routine ones to the journal, for someone following along
+         with journalctl, and for the harnesses, which read them. Off, because the review
+         at extensions.gnome.org asks for a quiet log. -->
+    <key name="debug-log" type="b">
+      <default>false</default>
+      <summary>Write every line to the journal</summary>
+      <description>Warnings and errors always go to the journal. With this on, so does every routine line the extension logs.</description>
+    </key>
+
+    <key name="capture-sound" type="s">
+      <choices>
+        <choice value='classic'/>
+        <choice value='pop'/>
+        <choice value='subtle'/>
+        <choice value='8bit'/>
+        <choice value='soft'/>
+        <choice value='system'/>
+        <choice value='none'/>
+      </choices>
+      <default>'classic'</default>
+      <summary>Shutter sound</summary>
+      <description>One of OctoSnap's five shutters, the sound theme's, or none. The countdown ticks unless this is none.</description>
+    </key>
+
+    <!-- CAP-05 and CAP-18: the last selection, so previous-area and All-In-One can
+         restore it across a shell restart. -->
+    <key name="last-area" type="(iiii)">
+      <default>(0,0,0,0)</default>
+      <summary>The last area selected, in logical stage coordinates</summary>
+    </key>
+    <key name="last-display" type="s">
+      <default>''</default>
+      <summary>Connector the last selection was on</summary>
+    </key>
+
+    <!-- REC (M5): the last recorded area, remembered separately from last-area so a
+         record does not disturb the screenshot's previous-area, and the reverse. -->
+    <key name="last-record-area" type="(iiii)">
+      <default>(0,0,0,0)</default>
+      <summary>The last area recorded, in logical stage coordinates</summary>
+    </key>
+
+    <!-- D125: the app's own recording defaults -- gif-fps, gif-max-width, gif-quality and
+         rec-cursor, as "fps", "max-width", "quality" and "cursor" -- copied here by the app
+         whenever it runs and whenever they change, so the All-In-One toolbar's recording
+         row can show them where the app's schema is out of the extension's sight, which
+         inside a Flatpak it always is. Not a setting: the app writes it, the row reads it,
+         and a recording still uses the app's own values. Empty until the app has run. -->
+    <key name="app-gif-defaults" type="a{sv}">
+      <default>{}</default>
+      <summary>The app's GIF defaults, as the app last saw them</summary>
+    </key>
+
+    <!-- CAP-01: spec/03 §1 opens All-In-One on "the last used" mode. -->
+    <key name="last-mode" type="s">
+      <default>'area'</default>
+      <summary>Mode the All-In-One toolbar opens on</summary>
+    </key>
+
+    <!-- spec/14: the desktop pets. The extension's own, like the capture overlay's keys:
+         the pets live in the shell, and it reads these on the compositor's main loop. -->
+    <key name="pets-enabled" type="b">
+      <default>false</default>
+      <summary>Show the desktop pets</summary>
+    </key>
+    <key name="pets" type="as">
+      <default><![CDATA[['octopus']]]></default>
+      <summary>Which pets are out: octopus, penguin, frog, mushroom, potato</summary>
+    </key>
+    <key name="pet-size" type="s">
+      <choices>
+        <choice value="tiny"/>
+        <choice value="small"/>
+        <choice value="medium"/>
+        <choice value="large"/>
+        <choice value="huge"/>
+      </choices>
+      <default>'medium'</default>
+      <summary>How big the pets are</summary>
+      <description>Each size is a whole number of physical pixels to the art pixel on every monitor, so the pets stay crisp at any scale.</description>
+    </key>
+    <key name="pet-menu" type="s">
+      <choices>
+        <choice value="auto"/>
+        <choice value="above"/>
+        <choice value="below"/>
+        <choice value="around"/>
+      </choices>
+      <default>'auto'</default>
+      <summary>Where a pet's right-click menu opens</summary>
+    </key>
+    <key name="pet-wander" type="b">
+      <default>true</default>
+      <summary>Let the pets move on their own</summary>
+      <description>Walk, hop, roll and climb about by themselves. Off, each pet stays where it is put, and still plays its tricks there.</description>
+    </key>
+    <key name="pet-roam" type="s">
+      <choices>
+        <choice value="floor"/>
+        <choice value="anywhere"/>
+      </choices>
+      <default>'floor'</default>
+      <summary>Where the pets can be</summary>
+      <description>Along the bottom of the screen, or anywhere on it: a pet put down away from the bottom stays there, seen from above as if on a desk.</description>
+    </key>
+    <key name="pet-activity" type="s">
+      <choices>
+        <choice value="calm"/>
+        <choice value="normal"/>
+        <choice value="lively"/>
+      </choices>
+      <default>'normal'</default>
+      <summary>How often the pets do something</summary>
+    </key>
+    <key name="pet-hide-sharing" type="b">
+      <default>true</default>
+      <summary>Hide the pets while the screen is shared</summary>
+      <description>While another application records or shares the screen. OctoSnap's own recordings never show them: they walk out of the area first.</description>
+    </key>
+    <!-- Not a setting: where each pet was when the pets went in, as the monitor's index
+         and how far along its work area, so they come back where they were. Read only for
+         a pet with nothing in pet-spots, which replaced it. -->
+    <key name="pet-places" type="a{s(id)}">
+      <default>{}</default>
+      <summary>Where each pet was last, along the bottom (replaced by pet-spots)</summary>
+    </key>
+    <!-- Not a setting: where each pet was, as the monitor's index, how far along and how
+         far down its work area, and whether it was on the desk (spec/14 §4). -->
+    <key name="pet-spots" type="a{s(iddb)}">
+      <default>{}</default>
+      <summary>Where each pet was last</summary>
+    </key>
+
+  </schema>
+</schemalist>

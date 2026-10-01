@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "octosnap-stitch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The only thing the stitcher touches outside itself: the extension hands it frames as
+# files (`GrabFrame(handle) -> s path`) and the app wants the result as one. Already in
+# the tree -- `spec/05` §6 picked it for the editor's export, for measured reasons.
+png = "0.18.1"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+
+[dev-dependencies]
+# `examples/replay.rs` only: `RUST_LOG=octosnap_stitch=debug` says what became of each
+# frame and why, which is the stitcher's own `tracing` and nothing it prints for itself.
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

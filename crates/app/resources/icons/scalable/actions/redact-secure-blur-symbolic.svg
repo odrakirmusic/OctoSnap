@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+<path fill="currentColor" d="M4 6.5A2.5 2.5 0 1 0 9 6.5A2.5 2.5 0 1 0 4 6.5Z"/>
+<path fill="currentColor" fill-rule="evenodd" opacity="0.55" d="M2.25 6.5A4.25 4.25 0 1 0 10.75 6.5A4.25 4.25 0 1 0 2.25 6.5ZM4 6.5A2.5 2.5 0 1 0 9 6.5A2.5 2.5 0 1 0 4 6.5Z"/>
+<path fill="currentColor" fill-rule="evenodd" opacity="0.25" d="M0.5 6.5A6 6 0 1 0 12.5 6.5A6 6 0 1 0 0.5 6.5ZM2.25 6.5A4.25 4.25 0 1 0 10.75 6.5A4.25 4.25 0 1 0 2.25 6.5Z"/>
+<path fill="currentColor" d="M10 10.5H14A1 1 0 0 1 15 11.5V14A1 1 0 0 1 14 15H10A1 1 0 0 1 9 14V11.5A1 1 0 0 1 10 10.5Z"/>
+<path fill="currentColor" d="M9.45 10.5A2.55 2.55 0 0 1 14.55 10.5A0.65 0.65 0 0 1 13.25 10.5A1.25 1.25 0 0 0 10.75 10.5A0.65 0.65 0 0 1 9.45 10.5Z"/>
+</svg>

@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.orig
+
+# Meson / build
+/_build/
+/build/
+/builddir/
+
+# GNOME Shell extension (TypeScript)
+node_modules/
+extension/dist/
+*.zip
+
+# Flatpak
+.flatpak-builder/
+/repo/
+
+# Editors and OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Local scratch
+/scratch/

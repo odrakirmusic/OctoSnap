@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/scene",
+    "crates/shell",
+    "crates/app",
+    "crates/cli",
+    "crates/media",
+    "crates/stitch",
+    "crates/ocr",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/odrakirmusic/OctoSnap"
+authors = ["OctoSnap contributors"]
+
+# Dependencies are optimised even in a debug build (D102). gifski, the PNG codec and the
+# image crates are the hot paths of a recording, a scroll capture and an export, and
+# unoptimised they are a different program rather than a slower one: gifski encodes two
+# frames a second instead of thirty-five. The workspace's own crates stay unoptimised so an
+# edit still rebuilds in seconds; the installed app is a release build anyway.
+[profile.dev.package."*"]
+opt-level = 3
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# spec/10 §8: no panics across the D-Bus boundary. These make the reviewer's job the
+# compiler's job instead.
+unwrap_used = "warn"
+expect_used = "warn"
+todo = "warn"

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+<path fill="currentColor" d="M2 1.5H5A0.5 0.5 0 0 1 5.5 2V5A0.5 0.5 0 0 1 5 5.5H2A0.5 0.5 0 0 1 1.5 5V2A0.5 0.5 0 0 1 2 1.5Z"/>
+<path fill="currentColor" opacity="0.45" d="M6.5 1.5H9.5A0.5 0.5 0 0 1 10 2V5A0.5 0.5 0 0 1 9.5 5.5H6.5A0.5 0.5 0 0 1 6 5V2A0.5 0.5 0 0 1 6.5 1.5Z"/>
+<path fill="currentColor" opacity="0.8" d="M11 1.5H14A0.5 0.5 0 0 1 14.5 2V5A0.5 0.5 0 0 1 14 5.5H11A0.5 0.5 0 0 1 10.5 5V2A0.5 0.5 0 0 1 11 1.5Z"/>
+<path fill="currentColor" opacity="0.45" d="M2 6H5A0.5 0.5 0 0 1 5.5 6.5V9.5A0.5 0.5 0 0 1 5 10H2A0.5 0.5 0 0 1 1.5 9.5V6.5A0.5 0.5 0 0 1 2 6Z"/>
+<path fill="currentColor" opacity="0.8" d="M6.5 6H9.5A0.5 0.5 0 0 1 10 6.5V9.5A0.5 0.5 0 0 1 9.5 10H6.5A0.5 0.5 0 0 1 6 9.5V6.5A0.5 0.5 0 0 1 6.5 6Z"/>
+<path fill="currentColor" opacity="0.3" d="M11 6H14A0.5 0.5 0 0 1 14.5 6.5V9.5A0.5 0.5 0 0 1 14 10H11A0.5 0.5 0 0 1 10.5 9.5V6.5A0.5 0.5 0 0 1 11 6Z"/>
+<path fill="currentColor" opacity="0.8" d="M2 10.5H5A0.5 0.5 0 0 1 5.5 11V14A0.5 0.5 0 0 1 5 14.5H2A0.5 0.5 0 0 1 1.5 14V11A0.5 0.5 0 0 1 2 10.5Z"/>
+<path fill="currentColor" opacity="0.3" d="M6.5 10.5H9.5A0.5 0.5 0 0 1 10 11V14A0.5 0.5 0 0 1 9.5 14.5H6.5A0.5 0.5 0 0 1 6 14V11A0.5 0.5 0 0 1 6.5 10.5Z"/>
+<path fill="currentColor" d="M11 10.5H14A0.5 0.5 0 0 1 14.5 11V14A0.5 0.5 0 0 1 14 14.5H11A0.5 0.5 0 0 1 10.5 14V11A0.5 0.5 0 0 1 11 10.5Z"/>
+</svg>

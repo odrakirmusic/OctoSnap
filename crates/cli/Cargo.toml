@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "octosnap-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "octosnap"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+gio = "0.22"
+glib = "0.22"
+octosnap-core = { version = "0.1.0", path = "../core" }
+octosnap-media = { version = "0.1.0", path = "../media" }
+octosnap-shell = { version = "0.1.0", path = "../shell" }
+thiserror = "2.0.20"

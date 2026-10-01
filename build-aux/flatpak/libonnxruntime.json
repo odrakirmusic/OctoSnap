@@ -1,0 +1,24 @@
+{
+    "name": "libonnxruntime",
+    "buildsystem": "simple",
+    "build-commands": [
+        "install -d /app/lib",
+        "cp -a lib/libonnxruntime.so* /app/lib/",
+        "install -Dm644 LICENSE /app/share/licenses/onnxruntime/LICENSE",
+        "install -Dm644 ThirdPartyNotices.txt /app/share/licenses/onnxruntime/ThirdPartyNotices.txt"
+    ],
+    "sources": [
+        {
+            "type": "archive",
+            "only-arches": ["x86_64"],
+            "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+            "sha256": "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b"
+        },
+        {
+            "type": "archive",
+            "only-arches": ["aarch64"],
+            "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
+            "sha256": "7c63c73560ed76b1fac6cff8204ffe34fe180e70d6582b5332ec094810241e5c"
+        }
+    ]
+}

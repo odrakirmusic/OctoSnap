@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  The application's own icons, and the desktop pets' sheets.
+
+  `spec/05` §2's tool strip needs a line, a rectangle, an ellipse, a crop frame and a
+  highlighter nib, and the Adwaita icon theme ships none of them -- a search for
+  `*line*`, `*rect*`, `*circle*`, `*crop*` and `*marker*` in
+  /usr/share/icons/Adwaita/symbolic finds text-direction arrows and microphones. The
+  first version of the strip named them anyway and rendered six broken-image icons,
+  which is what the editor's second screenshot showed.
+
+  Where Adwaita has the right icon it is used instead of a copy: `document-edit` is the
+  Pencil's. Where it has an icon that only sounds right, OctoSnap draws its own
+  (`spec/09` §4b): Adwaita's `display-brightness` is a sun, not a spotlight, and
+  `view-conceal` is "hide", not a mosaic. The arrow and redaction styles are drawn so
+  their menus can show what each one looks like.
+-->
+<gresources>
+  <!--
+    The prefix is the application's base path and NOT the icon directory: GResource
+    concatenates the prefix with each file's path *as written*, so naming both gave every
+    icon the path
+    `…/icons/scalable/actions/icons/scalable/actions/tool-line-symbolic.svg`
+    and the strip drew broken images a second time. `gresource list` on the compiled
+    bundle is the way to see it; the compile itself is perfectly happy.
+  -->
+  <gresource prefix="/io/github/odrakirmusic/OctoSnap">
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-select-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-arrow-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-line-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-rect-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-rect-filled-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-ellipse-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-highlighter-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-counter-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-crop-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-text-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-spotlight-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-pixelate-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/arrow-standard-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/arrow-fancy-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/arrow-curved-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/arrow-double-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/redact-blur-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/redact-secure-blur-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/redact-blackout-symbolic.svg</file>
+    <!--
+      The scrolling capture's four directions (D152): arrows, where a theme's `go-down` can
+      be a chevron -- Yaru's is -- which reads as "this opens a menu".
+    -->
+    <file preprocess="xml-stripblanks">icons/scalable/actions/scroll-down-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/scroll-up-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/scroll-right-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/scroll-left-symbolic.svg</file>
+    <!-- Settings' Pets page. Adwaita's nearest, `emoji-nature-symbolic`, is a plant. -->
+    <file preprocess="xml-stripblanks">icons/scalable/actions/pets-symbolic.svg</file>
+    <!--
+      The application icon and its symbolic twin, from `data/` (the build's second
+      source directory), so the welcome window and the About page draw them even where
+      no icon theme has them: a development install, a nested shell, a first launch
+      before the icon cache is updated. The theme's own copy, when there is one, is the
+      same file.
+    -->
+    <file alias="icons/scalable/apps/io.github.odrakirmusic.OctoSnap.svg" preprocess="xml-stripblanks">icons/hicolor/scalable/apps/io.github.odrakirmusic.OctoSnap.svg</file>
+    <file alias="icons/scalable/apps/io.github.odrakirmusic.OctoSnap-symbolic.svg" preprocess="xml-stripblanks">icons/hicolor/symbolic/apps/io.github.odrakirmusic.OctoSnap-symbolic.svg</file>
+    <!--
+      The desktop pets' sheets (D142), also from `data/`: a strip of frames for each pet
+      and the loop that plays them, which `extension/src/pets/sheets.test.ts` writes from
+      the extension's own tricks. Settings' Pets page and the welcome window draw them.
+    -->
+    <file>pets/pets.json</file>
+    <file>pets/octopus.png</file>
+    <file>pets/penguin.png</file>
+    <file>pets/frog.png</file>
+    <file>pets/mushroom.png</file>
+    <file>pets/potato.png</file>
+  </gresource>
+</gresources>

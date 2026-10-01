@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "octosnap-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "octosnap-app"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+adw = { version = "0.9", package = "libadwaita", features = ["v1_9"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+gio = "0.22"
+glib = "0.22"
+# `spec/11` M7's crash log: SIGTERM and SIGHUP end a run cleanly rather than leaving its
+# marker behind to be reported as a crash at the next login. glib 0.22 moved the signal
+# source out of `glib` into this crate.
+glib-unix = "0.22.8"
+gtk = { version = "0.11.4", package = "gtk4", features = ["gnome_50"] }
+# `spec/05` §6 names the encoder: "then encode (PNG via `png`/`image`, ...)". Measured
+# reason to follow it, not a preference: `GdkTexture::save_to_png` took **4511 ms** of a
+# 4747 ms export of §11 item 1's 5K document -- 95 % of the budget's eleven-fold overrun --
+# and it has no compression setting to turn down.
+png = "0.18.1"
+octosnap-core = { version = "0.1.0", path = "../core" }
+octosnap-scene = { version = "0.1.0", path = "../scene" }
+octosnap-shell = { version = "0.1.0", path = "../shell" }
+octosnap-stitch = { version = "0.1.0", path = "../stitch" }
+octosnap-media = { version = "0.1.0", path = "../media" }
+octosnap-ocr = { version = "0.1.0", path = "../ocr" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# `spec/10` §10: "the only network calls are user-configured providers and OCR pack
+# downloads". This is the second of those, and it is a blocking client on purpose --
+# the download runs on `gio::spawn_blocking` beside the models it is fetching for. Not
+# `gio::File::for_uri`, which would put the one network feature this app has behind
+# gvfs's http backend and libsoup being present in whatever sandbox it is packaged in.
+ureq = "3.4.2"
+
+[build-dependencies]
+glib-build-tools = "0.22"
+
+[dev-dependencies]
+tempfile = "3.27.0"

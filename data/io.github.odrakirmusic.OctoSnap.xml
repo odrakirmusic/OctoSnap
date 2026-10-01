@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  spec/05 §8's project type, for shared-mime-info.
+
+  Sub-classed from application/zip because that is what it is, and because a desktop that
+  does not know this type still shows a .octosnap as an archive rather than as an unknown
+  blob. The magic matches the zip header *and* the first entry's name: a project always
+  writes manifest.json first, the way ODF and EPUB put their own marker first, so a file
+  can be recognised without its extension. The glob is what does the work in practice.
+
+  spec/11 puts the thumbnailer in M7; this declares the type it will thumbnail.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-octosnap-project">
+    <comment>OctoSnap project</comment>
+    <comment xml:lang="de">OctoSnap-Projekt</comment>
+    <comment xml:lang="fr">Projet OctoSnap</comment>
+    <comment xml:lang="it">Progetto OctoSnap</comment>
+    <sub-class-of type="application/zip"/>
+    <generic-icon name="image-x-generic"/>
+    <glob pattern="*.octosnap"/>
+    <glob pattern="*.pengushot"/> <!-- legacy: projects saved before the rename, D141 -->
+    <alias type="application/x-pengushot-project"/> <!-- legacy: the type's old name -->
+    <magic priority="60">
+      <match type="string" value="PK\003\004" offset="0">
+        <match type="string" value="manifest.json" offset="30"/>
+      </match>
+    </magic>
+  </mime-type>
+</mime-info>

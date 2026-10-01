@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Desktop Entry]
+Name=OctoSnap
+GenericName=Screen Capture
+Comment=Capture, annotate and record the screen
+Keywords=screenshot;capture;screen;record;annotate;snip;
+Exec=@BINDIR@/octosnap %u
+Icon=io.github.odrakirmusic.OctoSnap
+Terminal=false
+Type=Application
+Categories=Graphics;Utility;
+MimeType=x-scheme-handler/octosnap;application/x-octosnap-project;
+StartupNotify=false
+X-GNOME-UsesNotifications=true

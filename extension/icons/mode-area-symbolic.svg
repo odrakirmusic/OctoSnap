@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+<path fill="currentColor" d="M1.5 1.5H6V3H1.5Z"/>
+<path fill="currentColor" d="M1.5 1.5H3V6H1.5Z"/>
+<path fill="currentColor" d="M10 1.5H14.5V3H10Z"/>
+<path fill="currentColor" d="M13 1.5H14.5V6H13Z"/>
+<path fill="currentColor" d="M1.5 13H6V14.5H1.5Z"/>
+<path fill="currentColor" d="M1.5 10H3V14.5H1.5Z"/>
+<path fill="currentColor" d="M10 13H14.5V14.5H10Z"/>
+<path fill="currentColor" d="M13 10H14.5V14.5H13Z"/>
+</svg>

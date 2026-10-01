@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "octosnap-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gio = "0.22"
+glib = "0.22"
+octosnap-core = { version = "0.1.0", path = "../core" }
+thiserror = "2.0.20"
+tracing = "0.1.44"

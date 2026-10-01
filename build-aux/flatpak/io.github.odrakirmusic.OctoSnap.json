@@ -1,0 +1,67 @@
+{
+    "id": "io.github.odrakirmusic.OctoSnap",
+    "runtime": "org.gnome.Platform",
+    "runtime-version": "50",
+    "sdk": "org.gnome.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "command": "octosnap",
+    "finish-args": [
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--share=ipc",
+        "--device=dri",
+        "--share=network",
+        "--filesystem=xdg-pictures",
+        "--filesystem=xdg-videos",
+        "--filesystem=xdg-run/pipewire-0",
+        "--talk-name=org.gnome.Shell",
+        "--talk-name=org.gnome.Shell.Extensions",
+        "--talk-name=org.gnome.Mutter.ScreenCast",
+        "--talk-name=org.gnome.Mutter.DisplayConfig",
+        "--talk-name=org.gnome.SessionManager",
+        "--env=MALLOC_ARENA_MAX=2",
+        "--env=MALLOC_MMAP_THRESHOLD_=131072"
+    ],
+    "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "env": {
+            "CARGO_HOME": "/run/build/octosnap/cargo",
+            "CARGO_NET_OFFLINE": "true"
+        }
+    },
+    "cleanup": [
+        "/include",
+        "/lib/pkgconfig",
+        "/share/doc"
+    ],
+    "modules": [
+        "libonnxruntime.json",
+        {
+            "name": "octosnap",
+            "buildsystem": "meson",
+            "config-opts": [
+                "-Dprofile=release"
+            ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "../..",
+                    "skip": [
+                        ".git",
+                        ".claude",
+                        ".flatpak-builder",
+                        "_build",
+                        "docs",
+                        "repo",
+                        "target",
+                        "extension/dist",
+                        "extension/node_modules"
+                    ]
+                },
+                "cargo-sources.json"
+            ]
+        }
+    ]
+}

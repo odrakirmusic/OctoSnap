@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+<path fill="currentColor" d="M5 8A3 3 0 1 0 11 8A3 3 0 1 0 5 8Z"/>
+<path fill="currentColor" fill-rule="evenodd" opacity="0.55" d="M3 8A5 5 0 1 0 13 8A5 5 0 1 0 3 8ZM5 8A3 3 0 1 0 11 8A3 3 0 1 0 5 8Z"/>
+<path fill="currentColor" fill-rule="evenodd" opacity="0.25" d="M1 8A7 7 0 1 0 15 8A7 7 0 1 0 1 8ZM3 8A5 5 0 1 0 13 8A5 5 0 1 0 3 8Z"/>
+</svg>
