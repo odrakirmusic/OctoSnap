@@ -49,6 +49,11 @@ pub fn run(app: &adw::Application) {
     glib::MainContext::default().spawn_local(async move {
         // `spec/13` #15: a stale extension is said in the UI, not only here.
         let found = crate::setup::status(&connection).await;
+        // D160: an install the last session asked for, finished now that GNOME Shell has
+        // found the extension.
+        let found = crate::setup::finish_install(&connection, found).await;
+        // D160: and the extension it installed, kept in step with an app updated since.
+        let found = crate::setup::update_carried(&connection, found).await;
         info!(?found, "extension status");
         crate::setup::after_handshake(&app, &found);
 

@@ -384,5 +384,12 @@
       <description>The running extension's version and protocol when they were older than the app's, with the login they were first found in. Empty while the extension is up to date.</description>
     </key>
 
+    <!-- D160: an install of the carried extension, finished by the first start after the logout. -->
+    <key name="extension-installed" type="s">
+      <default>''</default>
+      <summary>The extension this app installed, until it is turned on</summary>
+      <description>The version of the extension the app copied into the user's extensions folder, and the login it did so in, as version|login. GNOME Shell finds an extension at login only, so the first start after the logout turns it on and empties this. Still unfound after a login, the extension is one GNOME Shell does not load.</description>
+    </key>
+
   </schema>
 </schemalist>

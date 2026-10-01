@@ -10,6 +10,7 @@
 mod editor;
 mod actions;
 mod background;
+mod bundled;
 mod capture_window;
 mod diagnostics;
 mod flow;

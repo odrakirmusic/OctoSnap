@@ -30,8 +30,7 @@ use crate::settings;
 const EXTENSIONS_NAME: &str = "org.gnome.Shell.Extensions";
 const EXTENSIONS_PATH: &str = "/org/gnome/Shell/Extensions";
 const EXTENSIONS_INTERFACE: &str = "org.gnome.Shell.Extensions";
-/// Where the extension's own install instructions are, for a shell that cannot install
-/// it from extensions.gnome.org.
+/// Where the extension's own install instructions are, for when the app cannot install it.
 pub const INSTALL_HELP: &str = "https://github.com/odrakirmusic/OctoSnap#installing";
 
 /// GNOME Shell's `ExtensionState`, as `GetExtensionInfo` reports it (a double on the
@@ -59,6 +58,11 @@ pub enum Status {
     /// Installed and turned on, but GNOME Shell has not loaded it, because it was installed
     /// after the shell started.
     NeedsRestart,
+    /// Installed by this app in an earlier login, and GNOME Shell has started since without
+    /// finding it (D160). It reads nothing in the user's own folder while
+    /// `allow-extension-installation` is off, which an administrator can lock, and it
+    /// passes over a copy it cannot read. Another logout would find it the same way.
+    NotLoaded,
     /// Installed and turned off.
     Disabled,
     /// Every user extension is off: the main switch in GNOME's Extensions app.
@@ -91,6 +95,7 @@ impl Status {
             }
             Self::Mismatched { .. } => "Older than this app: update the extension".to_owned(),
             Self::NeedsRestart => "Installed: log out and back in to start it".to_owned(),
+            Self::NotLoaded => "Installed, but GNOME Shell does not load it".to_owned(),
             Self::Disabled => "Installed, but turned off".to_owned(),
             Self::ExtensionsOff => "Extensions are turned off in GNOME".to_owned(),
             Self::Failed(_) => "GNOME Shell could not start it".to_owned(),
@@ -112,6 +117,7 @@ impl Status {
                 "OctoSnap is older than its extension: update OctoSnap".to_owned()
             }
             Self::Mismatched { .. } => "The OctoSnap extension is older than the app".to_owned(),
+            Self::NotLoaded => "GNOME Shell does not load the OctoSnap extension".to_owned(),
             Self::Disabled => "The OctoSnap extension is turned off".to_owned(),
             Self::ExtensionsOff => "Extensions are turned off in GNOME".to_owned(),
             Self::Failed(_) => "The OctoSnap extension could not start".to_owned(),
@@ -136,6 +142,11 @@ impl Status {
                 self.headline()
             ),
             Self::Failed(why) | Self::Unknown(why) => format!("{}: {why}", self.headline()),
+            Self::NotLoaded => format!(
+                "{}. It started since the install without finding it, and it reads no extension \
+                 in your own folder while org.gnome.shell allow-extension-installation is off.",
+                self.headline()
+            ),
             other => format!("{}.", other.headline()),
         }
     }
@@ -144,7 +155,8 @@ impl Status {
     #[must_use]
     pub fn remedy(&self) -> Option<Remedy> {
         match self {
-            Self::Ready { .. } | Self::Unknown(_) => None,
+            // Nothing the app can press makes GNOME Shell read the user's own folder.
+            Self::Ready { .. } | Self::Unknown(_) | Self::NotLoaded => None,
             Self::Stale { .. } | Self::NeedsRestart | Self::Failed(_) => Some(Remedy::LogOut),
             // An app older than its extension is updated where it was installed from, which
             // is not something it can do to itself.
@@ -157,13 +169,79 @@ impl Status {
     }
 }
 
+/// D160: the first start after the logout an install asked for turns the extension on,
+/// which GNOME Shell cannot be asked to do before it has found the extension, and it finds
+/// one at login only. Once only: an extension turned off afterwards stays off. Gives the
+/// status as it is now.
+pub async fn finish_install(connection: &gio::DBusConnection, found: Status) -> Status {
+    let settings = settings::Settings::load();
+    let record = settings.extension_installed();
+    if record.is_empty() {
+        return found;
+    }
+    let installed = record.split('|').next().unwrap_or_default();
+    match found {
+        Status::Disabled => {
+            settings.set_extension_installed("");
+            if let Err(why) = apply(connection, Remedy::TurnOn).await {
+                warn!(installed, "could not turn on the extension installed before the logout: {why}");
+                return found;
+            }
+            info!(installed, "turned on the extension installed before the logout");
+            // GNOME Shell's answer is not the new state: the extension starts after it, and
+            // takes its name on the bus a moment later.
+            let mut now = found;
+            for _ in 0..10 {
+                glib::timeout_future(std::time::Duration::from_millis(300)).await;
+                now = status(connection).await;
+                if now.ready() {
+                    break;
+                }
+            }
+            now
+        }
+        Status::Ready { .. } => {
+            settings.set_extension_installed("");
+            found
+        }
+        // The logout has not come yet, or something else is wrong, which the welcome
+        // window says. A login that passed the install over keeps it remembered, so the
+        // extension stays [`Status::NotLoaded`] until GNOME Shell finds it.
+        _ => found,
+    }
+}
+
+/// D160: a later extension than the one in the user's folder, carried by an app updated
+/// since that one went in, takes its place. GNOME Shell keeps running the code it loaded
+/// until the next login, which loads the new copy, so the two halves stay in step without
+/// a button: what the release's zip asks a person to do by hand, and what GNOME Shell does
+/// itself for an extension from extensions.gnome.org. Only a copy in the user's folder is
+/// replaced, where the app installs one, and only by a later release. One installed for
+/// everyone, or newer than the app's, is left as it is. Gives the status as it is now.
+pub async fn update_carried(connection: &gio::DBusConnection, found: Status) -> Status {
+    let Some(carried) = crate::bundled::carried() else { return found };
+    let folder = crate::bundled::folder(&crate::bundled::data_home());
+    let Some(installed) = crate::bundled::version_at(&folder) else { return found };
+    if !crate::bundled::later(&carried.version, &installed) {
+        return found;
+    }
+    // Not remembered: the extension was there at this login, so whatever GNOME Shell made
+    // of it, turned off included, is what the next one makes of the new copy.
+    if let Err(why) = install_carried(connection, carried, false).await {
+        warn!(installed, carried = carried.version, "could not update the extension: {why}");
+        return found;
+    }
+    info!(installed, carried = carried.version, "updated the extension in the user's folder");
+    status(connection).await
+}
+
 /// The action a [`Status`] offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Remedy {
-    /// `InstallRemoteExtension`: GNOME Shell asks, downloads and starts it.
+    /// The carried copy, into the user's extensions folder (D160). A build that carries
+    /// none calls `InstallRemoteExtension`, and GNOME Shell asks, downloads and starts it.
     Install,
-    /// The same call over an extension that is already there, which fetches the newest
-    /// one extensions.gnome.org has for this shell. A logout then loads it.
+    /// The same over an extension that is already there. A logout then loads it.
     Update,
     /// `EnableExtension`.
     TurnOn,
@@ -176,7 +254,12 @@ pub enum Remedy {
 impl Remedy {
     #[must_use]
     pub fn label(self) -> &'static str {
+        // The carried copy is in place when the button is done; GNOME Shell's own install
+        // asks first.
+        let carried = crate::bundled::carried().is_some();
         match self {
+            Self::Install if carried => "Install",
+            Self::Update if carried => "Update",
             Self::Install => "Install\u{2026}",
             Self::Update => "Update\u{2026}",
             Self::TurnOn | Self::TurnOnExtensions => "Turn On",
@@ -210,17 +293,25 @@ pub struct Info {
 /// The classification, apart from the bus, so every branch is a unit test.
 ///
 /// `own` is the extension's answer to `Version`, `info` GNOME Shell's to
-/// `GetExtensionInfo`, `extensions_on` its `UserExtensionsEnabled`, and `on_disk`
-/// whether the extension's directory can be seen from here -- which a sandbox cannot,
-/// so it is `false` there and a not-yet-loaded install reads as missing, and its
-/// Install button hands over to GNOME Shell, which knows better.
+/// `GetExtensionInfo`, `extensions_on` its `UserExtensionsEnabled`, and `on_disk` the
+/// version of the extension found where GNOME Shell looks (`Some("")` for one that names
+/// none). The sandbox sees only the extension's own folder, which the manifest gives it
+/// (D160). What is on disk is what the next login loads, so it wins over what GNOME Shell
+/// loaded at the last one, which is all `info` knows. `passed_over` says that the copy on
+/// disk is one this app installed in an earlier login, which GNOME Shell has started since.
 #[must_use]
-pub fn classify(own: Option<&Answer>, info: &Info, extensions_on: bool, on_disk: bool) -> Status {
+pub fn classify(
+    own: Option<&Answer>,
+    info: &Info,
+    extensions_on: bool,
+    on_disk: Option<&str>,
+    passed_over: bool,
+) -> Status {
     if let Some(answer) = own {
-        let newer_on_disk = info
-            .version_name
-            .as_deref()
-            .is_some_and(|installed| !installed.is_empty() && installed != answer.version);
+        let installed = on_disk
+            .filter(|v| !v.is_empty())
+            .or(info.version_name.as_deref().filter(|v| !v.is_empty()));
+        let newer_on_disk = installed.is_some_and(|installed| installed != answer.version);
         // Newer than the app, or older and still so after a logout: another logout would
         // load the same code again, so it is not the remedy.
         let logout_will_not_help = !newer_on_disk
@@ -232,14 +323,18 @@ pub fn classify(own: Option<&Answer>, info: &Info, extensions_on: bool, on_disk:
         if answer.protocol != PROTOCOL_VERSION || newer_on_disk {
             return Status::Stale {
                 running: answer.version.clone(),
-                installed: info.version_name.clone(),
+                installed: installed.map(str::to_owned),
                 protocol: answer.protocol,
             };
         }
         return Status::Ready { version: answer.version.clone() };
     }
     if !info.known {
-        return if on_disk { Status::NeedsRestart } else { Status::Missing };
+        return match on_disk {
+            None => Status::Missing,
+            Some(_) if passed_over => Status::NotLoaded,
+            Some(_) => Status::NeedsRestart,
+        };
     }
     match info.state {
         Some(s) if s == state::ERROR => {
@@ -256,6 +351,9 @@ pub fn classify(own: Option<&Answer>, info: &Info, extensions_on: bool, on_disk:
         Some(s) if s == state::ACTIVE => Status::Failed(
             "GNOME Shell reports it running, but it does not answer".to_owned(),
         ),
+        // Found at login and never turned on, which is where an install the app made
+        // stands after the logout (D160). Turned on, it starts without another.
+        Some(s) if s == state::INITIALIZED && info.enabled != Some(true) => Status::Disabled,
         Some(s) if s == state::INITIALIZED || s == state::ACTIVATING => Status::NeedsRestart,
         _ if info.enabled == Some(true) => Status::NeedsRestart,
         _ => Status::Disabled,
@@ -288,7 +386,10 @@ pub async fn status(connection: &gio::DBusConnection) -> Status {
     {
         answer.survived_a_logout = survived_a_logout(connection, answer).await;
     }
-    let found = classify(own.as_ref(), &info, extensions_on, installed_on_disk());
+    let on_disk = installed_on_disk();
+    // Asked only where it decides anything: the bus is asked which login this is.
+    let passed_over = own.is_none() && !info.known && on_disk.is_some() && passed_over(connection).await;
+    let found = classify(own.as_ref(), &info, extensions_on, on_disk.as_deref(), passed_over);
     if found.ready() {
         settings::Settings::load().set_stale_extension("");
     }
@@ -322,6 +423,15 @@ async fn login(connection: &gio::DBusConnection) -> Option<String> {
     let bus = ask("GetId", None).await?;
     let shell = ask("GetNameOwner", Some(("org.gnome.Shell",).to_variant())).await?;
     Some(format!("{bus} {shell}"))
+}
+
+/// D160: whether the copy on disk is one this app installed in an earlier login than this
+/// one, so GNOME Shell has started since and had its chance to find it. An install the bus
+/// would not name the login of keeps the answer no, and so does a bus that will not say now.
+async fn passed_over(connection: &gio::DBusConnection) -> bool {
+    let record = settings::Settings::load().extension_installed();
+    let Some((_, then)) = record.split_once('|') else { return false };
+    !then.is_empty() && login(connection).await.is_some_and(|now| now != then)
 }
 
 /// Whether a logout has already been tried on this out-of-date extension (D133).
@@ -384,13 +494,61 @@ async fn user_extensions_enabled(connection: &gio::DBusConnection) -> Option<boo
     reply.child_value(0).as_variant()?.get::<bool>()
 }
 
-/// Whether the extension's directory is where GNOME Shell looks. Always `false` in the
-/// sandbox, which cannot see those directories.
-fn installed_on_disk() -> bool {
-    let relative = std::path::Path::new("gnome-shell").join("extensions").join(settings::EXTENSION_UUID);
-    std::iter::once(glib::user_data_dir())
+/// The version of the extension where GNOME Shell looks for it, the user's own folder
+/// first. In the sandbox that folder is the only one it can see (D160).
+fn installed_on_disk() -> Option<String> {
+    std::iter::once(crate::bundled::data_home())
+        .chain(std::iter::once(glib::user_data_dir()))
         .chain(glib::system_data_dirs())
-        .any(|root| root.join(&relative).join("metadata.json").is_file())
+        .find_map(|root| crate::bundled::version_at(&crate::bundled::folder(&root)))
+}
+
+/// GNOME Shell's own version, "50.1".
+async fn shell_version(connection: &gio::DBusConnection) -> Option<String> {
+    let reply = connection
+        .call_future(
+            Some(EXTENSIONS_NAME),
+            EXTENSIONS_PATH,
+            "org.freedesktop.DBus.Properties",
+            "Get",
+            Some(&(EXTENSIONS_INTERFACE, "ShellVersion").to_variant()),
+            Some(glib::VariantTy::new("(v)").ok()?),
+            gio::DBusCallFlags::NONE,
+            2000,
+        )
+        .await
+        .ok()?;
+    reply.child_value(0).as_variant()?.str().map(str::to_owned)
+}
+
+/// D160: the carried copy, into the user's extensions folder, when GNOME Shell would load
+/// it. A person's install is remembered with its login, so the first start after the
+/// logout turns it on, and a login that passes it over is told apart from one to come.
+async fn install_carried(
+    connection: &gio::DBusConnection,
+    carried: &crate::bundled::Carried,
+    remember: bool,
+) -> Result<(), String> {
+    if let Some(running) = shell_version(connection).await
+        && !crate::bundled::supports(&carried.shells, &running)
+    {
+        return Err(format!(
+            "this OctoSnap carries its extension for GNOME {}, and this is GNOME {running}",
+            carried.shells.join(", ")
+        ));
+    }
+    let (from, home) = (carried.dir.clone(), crate::bundled::data_home());
+    let to = crate::bundled::folder(&home);
+    let copied = gio::spawn_blocking(move || crate::bundled::install(&from, &home))
+        .await
+        .map_err(|_| "the copy stopped part way".to_owned())?
+        .map_err(|e| e.to_string())?;
+    info!(copied, version = carried.version, to = %to.display(), "installed the carried extension");
+    if remember {
+        let login = login(connection).await.unwrap_or_default();
+        settings::Settings::load().set_extension_installed(&format!("{}|{login}", carried.version));
+    }
+    Ok(())
 }
 
 /// Carries out `remedy`. Resolves when GNOME Shell has answered; the caller asks for the
@@ -421,6 +579,9 @@ pub async fn apply(connection: &gio::DBusConnection, remedy: Remedy) -> Result<(
     let uuid = settings::EXTENSION_UUID;
     match remedy {
         Remedy::Install | Remedy::Update => {
+            if let Some(carried) = crate::bundled::carried() {
+                return install_carried(connection, carried, true).await;
+            }
             let reply = call("InstallRemoteExtension", (uuid,).to_variant(), "(s)").await?;
             let result = reply.child_value(0).str().unwrap_or_default().to_owned();
             info!(result, "install from extensions.gnome.org");
@@ -627,10 +788,12 @@ fn build(connection: &gio::DBusConnection, found: Status) -> (adw::Dialog, Refre
                 button.remove_css_class("suggested-action");
                 done.add_css_class("suggested-action");
             }
-            // Wherever the shell cannot help, the manual route is one click away.
+            // Wherever the shell cannot help, the manual route is one click away: after a
+            // remedy failed, and where GNOME Shell will not read the user's own folder.
             help.set_visible(
-                matches!(found, Status::Missing | Status::OutOfDate | Status::Mismatched { .. })
-                    && note.is_some(),
+                matches!(found, Status::NotLoaded)
+                    || (matches!(found, Status::Missing | Status::OutOfDate | Status::Mismatched { .. })
+                        && note.is_some()),
             );
             info!(?found, accent = if accent_remedy { "remedy" } else { "done" }, "welcome window status");
         }
@@ -710,9 +873,13 @@ fn build(connection: &gio::DBusConnection, found: Status) -> (adw::Dialog, Refre
                 glib::timeout_future(std::time::Duration::from_millis(600)).await;
                 let found = status(&connection).await;
                 let note = match &outcome {
-                    Err(why) if matches!(remedy, Remedy::Install | Remedy::Update) => Some(format!(
-                        "Could not install from extensions.gnome.org: {why}"
-                    )),
+                    Err(why) if matches!(remedy, Remedy::Install | Remedy::Update) => {
+                        Some(if crate::bundled::carried().is_some() {
+                            format!("Could not install the extension: {why}")
+                        } else {
+                            format!("Could not install from extensions.gnome.org: {why}")
+                        })
+                    }
                     Err(why) => Some(why.clone()),
                     Ok(()) => None,
                 };
@@ -816,6 +983,14 @@ fn scroll(fraction: f64) {
 /// state says what it is and offers its own way out.
 pub fn after_handshake(app: &adw::Application, found: &Status) {
     let (title, body, button) = match found {
+        // The same protocol is the same contract (`spec/10` §2): the old code works on, as
+        // it does after the app updates the extension it installed (D160).
+        Status::Stale { protocol, .. } if *protocol == PROTOCOL_VERSION => (
+            "Log out to finish updating OctoSnap",
+            "GNOME Shell runs the OctoSnap extension it loaded at login until you log out, \
+             and starts the new one when you log back in.",
+            ("Log Out\u{2026}", "app.log-out"),
+        ),
         Status::Stale { .. } => (
             "Log out to finish updating OctoSnap",
             "GNOME Shell is still running the OctoSnap extension it loaded at login. \
@@ -827,6 +1002,13 @@ pub fn after_handshake(app: &adw::Application, found: &Status) {
             "GNOME Shell starts extensions at login, and OctoSnap's was installed after \
              that. Captures need it, so log out and back in once.",
             ("Log Out\u{2026}", "app.log-out"),
+        ),
+        Status::NotLoaded => (
+            "GNOME Shell does not load OctoSnap\u{2019}s extension",
+            "It is installed in your own extensions folder, and GNOME Shell started without \
+             loading it. It reads nothing there while this computer does not allow \
+             extensions installed by users.",
+            ("Details\u{2026}", "app.welcome"),
         ),
         Status::Mismatched { protocol, .. } if *protocol > PROTOCOL_VERSION => (
             "OctoSnap needs an update",
@@ -878,6 +1060,34 @@ pub fn register(app: &adw::Application) {
     }
     app.add_action(&log_out);
 
+    // `install-extension`, for the harness: what the welcome window's Install or Update
+    // does, with no window to press it in (D160).
+    let install = gio::SimpleAction::new("install-extension", None);
+    {
+        let app = app.clone();
+        install.connect_activate(move |_, _| {
+            let Some(connection) = app.dbus_connection() else { return };
+            glib::spawn_future_local(async move {
+                let found = status(&connection).await;
+                let Some(remedy @ (Remedy::Install | Remedy::Update)) = found.remedy() else {
+                    info!(?found, "install-extension: nothing to install");
+                    return;
+                };
+                match apply(&connection, remedy).await {
+                    Ok(()) => info!(?remedy, "install-extension: done"),
+                    Err(why) => warn!(?remedy, "install-extension: {why}"),
+                }
+                glib::timeout_future(std::time::Duration::from_millis(600)).await;
+                let found = status(&connection).await;
+                info!(?found, "install-extension: the extension now");
+                if let Some((_, refresh)) = OPEN.with(|open| open.borrow().clone()) {
+                    refresh();
+                }
+            });
+        });
+    }
+    app.add_action(&install);
+
     // `dump-welcome (path)`, for the harness; see [`dump`]. An optional `|FRACTION` after
     // the path scrolls the window first, as `dump-settings` takes one: the window is taller
     // than its content area, and the pets are at its foot.
@@ -917,14 +1127,14 @@ mod tests {
 
     #[test]
     fn an_answering_extension_of_this_protocol_is_ready() {
-        let found = classify(Some(&answer("0.1.0", PROTOCOL_VERSION)), &known(state::ACTIVE), true, true);
+        let found = classify(Some(&answer("0.1.0", PROTOCOL_VERSION)), &known(state::ACTIVE), true, Some("0.1.0"), false);
         assert_eq!(found, Status::Ready { version: "0.1.0".to_owned() });
         assert_eq!(found.remedy(), None);
     }
 
     #[test]
     fn an_older_protocol_is_stale_and_wants_a_logout() {
-        let found = classify(Some(&answer("0.0.9", PROTOCOL_VERSION - 1)), &Info::default(), true, true);
+        let found = classify(Some(&answer("0.0.9", PROTOCOL_VERSION - 1)), &Info::default(), true, Some("0.0.9"), false);
         assert!(matches!(found, Status::Stale { .. }));
         assert_eq!(found.remedy(), Some(Remedy::LogOut));
     }
@@ -933,7 +1143,7 @@ mod tests {
     #[test]
     fn an_older_protocol_after_a_logout_wants_an_update() {
         let older = Answer { survived_a_logout: true, ..answer("0.0.9", PROTOCOL_VERSION - 1) };
-        let found = classify(Some(&older), &Info::default(), true, true);
+        let found = classify(Some(&older), &Info::default(), true, Some("0.0.9"), false);
         assert_eq!(found, Status::Mismatched { running: "0.0.9".to_owned(), protocol: PROTOCOL_VERSION - 1 });
         assert_eq!(found.remedy(), Some(Remedy::Update));
         assert!(found.headline().contains("update the extension"), "{}", found.headline());
@@ -943,7 +1153,7 @@ mod tests {
     /// the app can press either.
     #[test]
     fn a_newer_protocol_wants_the_app_updated() {
-        let found = classify(Some(&answer("0.2.0", PROTOCOL_VERSION + 1)), &Info::default(), true, true);
+        let found = classify(Some(&answer("0.2.0", PROTOCOL_VERSION + 1)), &Info::default(), true, Some("0.2.0"), false);
         assert_eq!(found, Status::Mismatched { running: "0.2.0".to_owned(), protocol: PROTOCOL_VERSION + 1 });
         assert_eq!(found.remedy(), None);
         assert!(found.headline().contains("update OctoSnap"), "{}", found.headline());
@@ -954,13 +1164,13 @@ mod tests {
     fn newer_code_on_disk_wins_over_a_logout_already_tried() {
         let info = Info { version_name: Some("0.2.0".to_owned()), ..known(state::ACTIVE) };
         let older = Answer { survived_a_logout: true, ..answer("0.1.0", PROTOCOL_VERSION - 1) };
-        assert!(matches!(classify(Some(&older), &info, true, true), Status::Stale { .. }));
+        assert!(matches!(classify(Some(&older), &info, true, None, false), Status::Stale { .. }));
     }
 
     #[test]
     fn newer_code_on_disk_than_running_is_stale() {
         let info = Info { version_name: Some("0.2.0".to_owned()), ..known(state::ACTIVE) };
-        let found = classify(Some(&answer("0.1.0", PROTOCOL_VERSION)), &info, true, true);
+        let found = classify(Some(&answer("0.1.0", PROTOCOL_VERSION)), &info, true, None, false);
         assert_eq!(
             found,
             Status::Stale { running: "0.1.0".to_owned(), installed: Some("0.2.0".to_owned()), protocol: PROTOCOL_VERSION }
@@ -969,39 +1179,88 @@ mod tests {
 
     #[test]
     fn unknown_to_the_shell_is_missing_unless_its_files_are_there() {
-        assert_eq!(classify(None, &Info::default(), true, false), Status::Missing);
-        assert_eq!(classify(None, &Info::default(), true, true), Status::NeedsRestart);
+        assert_eq!(classify(None, &Info::default(), true, None, false), Status::Missing);
+        assert_eq!(classify(None, &Info::default(), true, Some("0.1.2"), false), Status::NeedsRestart);
         assert_eq!(Status::Missing.remedy(), Some(Remedy::Install));
     }
 
     #[test]
     fn a_broken_extension_says_why() {
         let info = Info { error: Some("SyntaxError".to_owned()), ..known(state::ERROR) };
-        assert_eq!(classify(None, &info, true, true), Status::Failed("SyntaxError".to_owned()));
+        assert_eq!(classify(None, &info, true, Some("0.1.2"), false), Status::Failed("SyntaxError".to_owned()));
     }
 
     #[test]
     fn the_shell_version_mismatch_is_out_of_date() {
-        assert_eq!(classify(None, &known(state::OUT_OF_DATE), true, true), Status::OutOfDate);
+        assert_eq!(classify(None, &known(state::OUT_OF_DATE), true, Some("0.1.2"), false), Status::OutOfDate);
     }
 
     #[test]
     fn extensions_switched_off_is_its_own_state() {
-        let found = classify(None, &known(2.0), false, true);
+        let found = classify(None, &known(2.0), false, Some("0.1.2"), false);
         assert_eq!(found, Status::ExtensionsOff);
         assert_eq!(found.remedy(), Some(Remedy::TurnOnExtensions));
     }
 
     #[test]
     fn off_is_disabled_and_on_but_unloaded_needs_a_logout() {
-        assert_eq!(classify(None, &known(2.0), true, true), Status::Disabled);
+        assert_eq!(classify(None, &known(2.0), true, Some("0.1.2"), false), Status::Disabled);
         let on = Info { enabled: Some(true), ..known(2.0) };
-        assert_eq!(classify(None, &on, true, true), Status::NeedsRestart);
-        assert_eq!(classify(None, &known(state::INITIALIZED), true, true), Status::NeedsRestart);
+        assert_eq!(classify(None, &on, true, Some("0.1.2"), false), Status::NeedsRestart);
+        let initialized_on = Info { enabled: Some(true), ..known(state::INITIALIZED) };
+        assert_eq!(classify(None, &initialized_on, true, Some("0.1.2"), false), Status::NeedsRestart);
+    }
+
+    /// D160: an extension GNOME Shell found at login and never turned on is one Turn On
+    /// away, not another logout, which would only find it the same way again.
+    #[test]
+    fn found_at_login_and_never_turned_on_is_disabled() {
+        let initialized = Info { enabled: Some(false), ..known(state::INITIALIZED) };
+        let found = classify(None, &initialized, true, Some("0.1.2"), false);
+        assert_eq!(found, Status::Disabled);
+        assert_eq!(found.remedy(), Some(Remedy::TurnOn));
+        assert_eq!(classify(None, &known(state::INITIALIZED), true, Some("0.1.2"), false), Status::Disabled);
+    }
+
+    /// D160: the app's own Update writes newer code to disk while GNOME Shell still holds
+    /// the old metadata, and a logout is what loads it.
+    #[test]
+    fn a_newer_copy_on_disk_than_gnome_shell_loaded_is_stale() {
+        let info = Info { version_name: Some("0.1.1".to_owned()), ..known(state::ACTIVE) };
+        let older = Answer { survived_a_logout: true, ..answer("0.1.1", PROTOCOL_VERSION - 1) };
+        assert_eq!(
+            classify(Some(&older), &info, true, Some("0.1.2"), false),
+            Status::Stale {
+                running: "0.1.1".to_owned(),
+                installed: Some("0.1.2".to_owned()),
+                protocol: PROTOCOL_VERSION - 1
+            }
+        );
+        // The same, with nothing newer on disk, is the update the app has to make.
+        assert!(matches!(classify(Some(&older), &info, true, Some("0.1.1"), false), Status::Mismatched { .. }));
+    }
+
+    #[test]
+    fn a_folder_whose_metadata_names_no_version_is_still_installed() {
+        assert_eq!(classify(None, &Info::default(), true, Some(""), false), Status::NeedsRestart);
+        let ready = classify(Some(&answer("0.1.2", PROTOCOL_VERSION)), &known(state::ACTIVE), true, Some(""), false);
+        assert_eq!(ready, Status::Ready { version: "0.1.2".to_owned() });
+    }
+
+    /// D160: an install a login has already passed over is not another logout away.
+    #[test]
+    fn an_install_a_login_passed_over_is_not_loaded() {
+        let found = classify(None, &Info::default(), true, Some("0.1.2"), true);
+        assert_eq!(found, Status::NotLoaded);
+        assert_eq!(found.remedy(), None);
+        // Gone from disk, it is missing, whatever the last install was.
+        assert_eq!(classify(None, &Info::default(), true, None, true), Status::Missing);
+        // Found, it is whatever GNOME Shell says it is.
+        assert_eq!(classify(None, &known(state::INITIALIZED), true, Some("0.1.2"), true), Status::Disabled);
     }
 
     #[test]
     fn running_but_silent_is_a_failure() {
-        assert!(matches!(classify(None, &known(state::ACTIVE), true, true), Status::Failed(_)));
+        assert!(matches!(classify(None, &known(state::ACTIVE), true, Some("0.1.2"), false), Status::Failed(_)));
     }
 }

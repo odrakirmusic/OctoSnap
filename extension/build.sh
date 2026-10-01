@@ -3,11 +3,22 @@
 #
 # Compiles the TypeScript sources to GJS-loadable ESM and assembles dist/ into a
 # directory GNOME Shell can load directly (spec/10 §10).
+#
+#   build.sh [--gjs]
+#
+# --gjs compiles with TypeScript's own compiler run by GJS (`transpile.js`) instead of
+# node's tsc, for a build that has GJS and no node: the Flatpak's, which carries the
+# extension (D160). It needs only `typescript` in node_modules, and gives the same files.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 rm -rf dist
-./node_modules/.bin/tsc
+if [ "${1:-}" = --gjs ]; then
+  # GJS warns once about a line of TypeScript's own code, which is not this repository's.
+  gjs -m transpile.js node_modules/typescript/lib/typescript.js
+else
+  ./node_modules/.bin/tsc
+fi
 
 # GNOME Shell loads metadata.json, stylesheet.css and the compiled schema from the
 # extension directory root, so they have to sit beside the emitted JS, not above it.

@@ -39,11 +39,13 @@
     </ul>
     <p>
       OctoSnap needs its GNOME Shell extension, which draws the capture overlay and reads the
-      screen. The app offers to install it the first time it starts.
+      screen. The app carries it and installs it the first time it starts, and it starts
+      after you log out and back in.
     </p>
     <p>What it asks of the system, and why:</p>
     <ul>
-      <li>GNOME Shell and its extensions: to find its extension, install it through GNOME's own dialog, and change the settings kept with it</li>
+      <li>GNOME Shell and its extensions: to find its extension, turn it on, and change the settings kept with it</li>
+      <li>Its extension's own folder, among your extensions: to install the extension it carries, and to update it</li>
       <li>Mutter's screen cast and PipeWire: to record the area you chose as a GIF</li>
       <li>Mutter's display configuration: to know each screen's name and refresh rate</li>
       <li>The session manager: for the Log Out button that loads a newly installed extension, which asks you first</li>
@@ -112,9 +114,20 @@
   </categories>
 
   <releases>
+    <release version="0.1.2" date="2026-10-01">
+      <description>
+        <p>The app installs its own GNOME Shell extension.</p>
+        <ul>
+          <li>Install, in the welcome window, puts in place the extension the app carries, where it used to ask extensions.gnome.org, which does not have it</li>
+          <li>After you log out and back in, the next start turns the extension on</li>
+          <li>A later release updates the extension it installed, and the next login loads it</li>
+          <li>Where the computer does not allow extensions installed by users, the welcome window says so, rather than asking for another logout</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-01">
       <description>
-        <p>The GNOME Shell extension, ready for extensions.gnome.org.</p>
+        <p>Two fixes in the GNOME Shell extension.</p>
         <ul>
           <li>Copying a large screenshot no longer pauses the desktop while the file is read</li>
           <li>A pin leaves nothing of its shadow behind when it closes</li>

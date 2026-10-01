@@ -94,6 +94,8 @@ const REQUIRED_KEYS: &[&str] = &[
     "launch-at-login",
     // D133
     "stale-extension",
+    // D160
+    "extension-installed",
 ];
 
 /// GNOME Shell's keybindings (`org.gnome.shell.keybindings`), which `spec/08` §3's
@@ -427,6 +429,23 @@ impl Settings {
             && let Err(e) = s.set_string("stale-extension", value)
         {
             warn!("could not remember the out-of-date extension: {e}");
+        }
+    }
+
+    /// D160: the carried extension this app copied into place, as `version|login`, until
+    /// the first start after the logout has turned it on; empty otherwise. The login is
+    /// `setup`'s, and empty where the bus would not say.
+    #[must_use]
+    pub fn extension_installed(&self) -> String {
+        self.inner.as_ref().map(|s| s.string("extension-installed").to_string()).unwrap_or_default()
+    }
+
+    pub fn set_extension_installed(&self, record: &str) {
+        if let Some(s) = &self.inner
+            && s.string("extension-installed") != record
+            && let Err(e) = s.set_string("extension-installed", record)
+        {
+            warn!("could not remember the installed extension: {e}");
         }
     }
 

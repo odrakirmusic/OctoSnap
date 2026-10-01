@@ -13,7 +13,7 @@
 # install step.
 project(
   'octosnap',
-  version: '0.1.1',
+  version: '0.1.2',
   license: 'GPL-3.0-or-later',
   meson_version: '>= 1.1',
 )
@@ -46,7 +46,7 @@ custom_target(
   ],
 )
 
-if get_option('extension')
+if get_option('extension') or get_option('bundle-extension')
   subdir('extension')
 endif
 

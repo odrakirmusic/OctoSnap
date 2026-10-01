@@ -10,5 +10,11 @@ option(
   'extension',
   type: 'boolean',
   value: false,
-  description: 'Also build and install the GNOME Shell extension into the system extension directory (needs npm and tsc). A Flatpak cannot ship it; extensions.gnome.org does',
+  description: 'Also build and install the GNOME Shell extension into the system extension directory (needs npm and tsc)',
+)
+option(
+  'bundle-extension',
+  type: 'boolean',
+  value: false,
+  description: 'Build the GNOME Shell extension into the app\'s own data, from where the app installs it into the user\'s extensions folder (needs GJS and TypeScript). The Flatpak sets this',
 )

@@ -10,14 +10,14 @@ How to use it is in the [user guide](docs/guide.md).
 
 OctoSnap is two pieces, and it needs both: **the app**, and **its GNOME Shell extension**, which draws the capture overlay and reads the screen. It is made for GNOME 50 on Wayland; the extension also declares GNOME 48 and 49, which have not been tested.
 
-Neither piece is on Flathub or extensions.gnome.org yet. Each [release](https://github.com/odrakirmusic/OctoSnap/releases) has both as downloads, and both can be built from this repository.
+Neither piece is on Flathub or extensions.gnome.org. Each [release](https://github.com/odrakirmusic/OctoSnap/releases) has both as downloads, and both can be built from this repository. The Flatpak carries the extension and installs it for you, so the extension's own download is for the native app, or for installing it by hand.
 
 ### The app, as a Flatpak
 
 From a release:
 
 ```bash
-flatpak install --user --bundle OctoSnap-0.1.1.flatpak
+flatpak install --user --bundle OctoSnap-0.1.2.flatpak
 ```
 
 The bundle takes its runtime, GNOME 50, from Flathub, and it does not update itself: a new release is a new bundle. To build it instead:
@@ -26,7 +26,7 @@ The bundle takes its runtime, GNOME 50, from Flathub, and it does not update its
 flatpak-builder --user --install --force-clean _build/flatpak build-aux/flatpak/io.github.odrakirmusic.OctoSnap.json
 ```
 
-This needs `flatpak-builder` and three things from Flathub: `org.gnome.Platform//50`, `org.gnome.Sdk//50` and `org.freedesktop.Sdk.Extension.rust-stable//25.08`. The Rust crates and ONNX Runtime, which text recognition runs on, are sources of the manifest, so the build itself needs no network after they are fetched.
+This needs `flatpak-builder` and three things from Flathub: `org.gnome.Platform//50`, `org.gnome.Sdk//50` and `org.freedesktop.Sdk.Extension.rust-stable//25.08`. The Rust crates, ONNX Runtime, which text recognition runs on, and TypeScript, which compiles the extension the app carries, are sources of the manifest, so the build itself needs no network after they are fetched.
 
 ### The app, built natively
 
@@ -42,15 +42,17 @@ meson compile -C _build
 sudo meson install -C _build
 ```
 
-This needs Rust 1.92 or newer, Meson 1.1 or newer, the GTK 4 and libadwaita 1.9 of GNOME 50, and GStreamer with its PipeWire plugin for recording. Text recognition needs ONNX Runtime 1.17 or newer from the system (Ubuntu's `libonnxruntime1.23`, for one), which the Flatpak brings with it. The text models are language packs, installed from Settings → Advanced. `-Dextension=true` also installs the extension system-wide, which is what a distribution package wants.
+This needs Rust 1.92 or newer, Meson 1.1 or newer, the GTK 4 and libadwaita 1.9 of GNOME 50, and GStreamer with its PipeWire plugin for recording. Text recognition needs ONNX Runtime 1.17 or newer from the system (Ubuntu's `libonnxruntime1.23`, for one), which the Flatpak brings with it. The text models are language packs, installed from Settings → Advanced. `-Dextension=true` also installs the extension system-wide, which is what a distribution package wants. `-Dbundle-extension=true` is the Flatpak's: the app carries the extension, and installs it itself.
 
 ### The extension
 
-From a release:
+The Flatpak installs it from the welcome window ([The first run](#the-first-run)), and a later Flatpak updates it: the next login loads the new one. For the native app, or by hand, from a release:
 
 ```bash
-gnome-extensions install octosnap@odrakirmusic.github.io.shell-extension.zip
+gnome-extensions install --force octosnap@odrakirmusic.github.io.shell-extension.zip
 ```
+
+`--force` replaces what is already there: an older release, or the empty folder the Flatpak makes for its own install.
 
 Or built from here:
 
@@ -64,17 +66,17 @@ Then, either way, turn it on and **log out and back in**:
 gnome-extensions enable octosnap@odrakirmusic.github.io
 ```
 
-GNOME Shell loads an extension only if it was there when you logged in, and the same goes for every update of it.
+GNOME Shell loads an extension only if it was there when you logged in, and the same goes for every update of it. Where it loads none from your own folder, because the computer does not allow extensions installed by users (`allow-extension-installation`), the extension has to be installed for everyone: the zip's contents in `/usr/share/gnome-shell/extensions/octosnap@odrakirmusic.github.io`, or a native build with `-Dextension=true`.
 
 `build-aux/ego/pack.sh` makes the zip that extensions.gnome.org takes, checked against its review rules.
 
 ### The first run
 
-Open OctoSnap from the app grid. The welcome window checks the extension and says what is missing, if anything, with a button for the remedy where there is one: installing it, turning it on, or logging out to load it. When all is well, it can take over the Print Screen keys from GNOME's own screenshot tool. After that, opening OctoSnap opens its settings, and the extension's menu in the top bar is where captures start.
+Open OctoSnap from the app grid. The welcome window checks the extension and says what is missing, if anything, with a button for the remedy where there is one: installing it, turning it on, or logging out to load it. The Flatpak's **Install** puts the extension it carries in your own extensions folder; log out and back in, and the next start turns it on. When all is well, it can take over the Print Screen keys from GNOME's own screenshot tool. After that, opening OctoSnap opens its settings, and the extension's menu in the top bar is where captures start.
 
 ## When something is wrong
 
-- **Nothing happens on a shortcut, or Settings has a banner.** The banner and the welcome window both say which state the extension is in: not installed, turned off, installed after you logged in, broken, or from another release than the app. The last two usually mean one half was updated without the other.
+- **Nothing happens on a shortcut, or Settings has a banner.** The banner and the welcome window both say which state the extension is in: not installed, turned off, installed after you logged in, not loaded by GNOME Shell, broken, or from another release than the app. The last two usually mean one half was updated without the other. One GNOME Shell does not load is in your own folder on a computer that does not allow extensions installed by users ([The extension](#the-extension)).
 - **A report.** Settings → About → Troubleshooting → **Save a report** writes one file with the versions, the extension's state, the monitors and both halves' recent logs. Nothing is sent anywhere; attach the file to an issue yourself. **Log files** opens the folder with the app's own log and the report of its last crash, if it had one.
 - **More detail.** Both halves keep their journal quiet until Settings → Advanced → Troubleshooting → **Debug logging** is on. Then the app's lines are under its own name, and the extension's are among GNOME Shell's, each starting with `[octosnap]`:
 
@@ -110,6 +112,8 @@ So OctoSnap is two halves:
 | `octosnap` | A GTK4 + libadwaita application in Rust, running as a background service | The overlay cards, the annotation editor, the recorder, pinned screenshots, history, settings, OCR, notifications |
 
 They speak over D-Bus. Images cross the boundary as files, never as byte arrays.
+
+OctoSnap is written by Claude, Anthropic's AI coding agent, under its maintainer's direction. Each release's commit names the Claude models that wrote it.
 
 ## Building and testing
 
