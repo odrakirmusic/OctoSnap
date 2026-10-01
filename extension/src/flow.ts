@@ -382,7 +382,7 @@ export async function runCapture(
             }
         }
 
-        const entry = newEntry();
+        const entry = await newEntry();
         // Where the time went, for the paths that can say (`CaptureCost`).
         let cost: CaptureCost | null = null;
         // Every path but the window's reads the pixels on this turn and writes them on the

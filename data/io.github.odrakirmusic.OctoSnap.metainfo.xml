@@ -112,6 +112,15 @@
   </categories>
 
   <releases>
+    <release version="0.1.1" date="2026-10-01">
+      <description>
+        <p>The GNOME Shell extension, ready for extensions.gnome.org.</p>
+        <ul>
+          <li>Copying a large screenshot no longer pauses the desktop while the file is read</li>
+          <li>A pin leaves nothing of its shadow behind when it closes</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-01">
       <description>
         <p>The first release of OctoSnap, for GNOME 50 on Wayland.</p>

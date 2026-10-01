@@ -16,6 +16,7 @@ import GLib from 'gi://GLib';
 import { APP_BUS_NAME } from './protocol.js';
 import { serviceDirs, serviceFile, spoolFor, startsAFlatpak } from './spoolRule.js';
 import { type RandomSource, ulidFrom } from './ulid.js';
+import { readBytes } from './files.js';
 import { error, info } from './log.js';
 
 export interface Rect {
@@ -86,19 +87,19 @@ export function setAnnouncedSpool(dir: string | null): void {
  * Where a capture is written: the running app's spool, or, when no app is running, the
  * spool of the app D-Bus will start to read it (D122).
  */
-export function spoolDir(): string {
-    return announced ?? coldStartSpool();
+export async function spoolDir(): Promise<string> {
+    return announced ?? (await coldStartSpool());
 }
 
-function coldStartSpool(): string {
+/** The service file is read off the main loop (`files.ts`), small as it is. */
+async function coldStartSpool(): Promise<string> {
     const dirs = serviceDirs(GLib.get_user_runtime_dir(), GLib.get_user_data_dir(), GLib.get_system_data_dirs());
     const service = serviceFile(dirs, APP_BUS_NAME, path => GLib.file_test(path, GLib.FileTest.EXISTS));
     let sandboxed = false;
     if (service !== null) {
         let text: string | null = null;
         try {
-            const [, bytes] = GLib.file_get_contents(service);
-            text = new TextDecoder().decode(bytes);
+            text = new TextDecoder().decode(await readBytes(service));
         } catch (e) {
             error(`could not read ${service}`, e);
         }
@@ -108,8 +109,8 @@ function coldStartSpool(): string {
 }
 
 /** Creates the spool directory if it is missing. Idempotent. */
-export function ensureSpoolDir(): string {
-    const dir = spoolDir();
+export async function ensureSpoolDir(): Promise<string> {
+    const dir = await spoolDir();
     try {
         Gio.File.new_for_path(dir).make_directory_with_parents(null);
     } catch (e) {
@@ -127,8 +128,8 @@ export interface SpoolEntry {
 }
 
 /** Allocates a new spool entry. The id sorts chronologically (see `ulid.ts`). */
-export function newEntry(): SpoolEntry {
-    const dir = ensureSpoolDir();
+export async function newEntry(): Promise<SpoolEntry> {
+    const dir = await ensureSpoolDir();
     const id = ulidFrom(Date.now(), randomDigit);
     return {
         id,

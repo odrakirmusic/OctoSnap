@@ -41,6 +41,7 @@ import { tellPets } from './pets/events.js';
 import { playCue } from './sound.js';
 import { SettingsBridge } from './settingsBridge.js';
 import { setAnnouncedSpool, spoolDir } from './spool.js';
+import { readBytes } from './files.js';
 import { error, info, recentLog } from './log.js';
 
 /**
@@ -456,7 +457,7 @@ const WALLPAPER_COPIES = 4;
  * goes -- named by the picture's URI and modification time, so a changed wallpaper is a
  * new copy and an unchanged one is copied once. `null` when there is no wallpaper file.
  */
-function wallpaperCopy(dark: boolean): { source: Gio.File; copy: string } | null {
+async function wallpaperCopy(dark: boolean): Promise<{ source: Gio.File; copy: string } | null> {
     const id = 'org.gnome.desktop.background';
     const schema = Gio.SettingsSchemaSource.get_default()?.lookup(id, true) ?? null;
     if (schema === null) return null;
@@ -474,7 +475,7 @@ function wallpaperCopy(dark: boolean): { source: Gio.File; copy: string } | null
     const dot = path.lastIndexOf('.');
     const suffix = dot > path.lastIndexOf('/') ? path.slice(dot) : '';
     const name = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, `${uri}\n${modified}`, -1);
-    const dir = GLib.build_filenamev([GLib.path_get_dirname(spoolDir()), 'wallpaper']);
+    const dir = GLib.build_filenamev([GLib.path_get_dirname(await spoolDir()), 'wallpaper']);
     GLib.mkdir_with_parents(dir, 0o700);
     return { source, copy: GLib.build_filenamev([dir, `${(name ?? 'wallpaper').slice(0, 24)}${suffix}`]) };
 }
@@ -701,21 +702,30 @@ export class ShellService {
      * of copy-on-capture is that it happens without the app ever taking focus. `St.Clipboard`
      * is what GNOME's own screenshot UI uses. Verified in M0 spike 10.
      *
-     * Throws a D-Bus error on failure, because the app needs to know whether to tell the
-     * user the copy happened.
+     * Answers with a D-Bus error on failure, because the app needs to know whether to tell
+     * the user the copy happened.
+     *
+     * **Asynchronous** since 0.1.1: the PNG is read off the main loop (`files.ts`), and the
+     * reply waits for the clipboard, so the app's call is answered as before.
      */
-    SetClipboardImage(path: string): void {
-        const file = Gio.File.new_for_path(path);
-        const [ok, bytes] = file.load_contents(null);
-        if (!ok) throw new Error(`could not read ${path}`);
-
-        St.Clipboard.get_default().set_content(
-            St.ClipboardType.CLIPBOARD,
-            'image/png',
-            new GLib.Bytes(bytes),
-        );
-        info(`clipboard set from ${path} (${bytes.length} bytes)`);
-        tellPets({ kind: 'copied' });
+    SetClipboardImageAsync(params: [string], invocation: Gio.DBusMethodInvocation): void {
+        const [path] = params;
+        void (async () => {
+            try {
+                const bytes = await readBytes(path);
+                St.Clipboard.get_default().set_content(
+                    St.ClipboardType.CLIPBOARD,
+                    'image/png',
+                    new GLib.Bytes(bytes),
+                );
+                info(`clipboard set from ${path} (${bytes.length} bytes)`);
+                tellPets({ kind: 'copied' });
+                invocation.return_value(null);
+            } catch (e) {
+                error(`could not put ${path} on the clipboard`, e);
+                returnError(invocation, e);
+            }
+        })();
     }
 
     /**
@@ -1387,44 +1397,46 @@ export class ShellService {
             returnError(invocation, new Error('the wallpaper is the app\'s to ask for'));
             return;
         }
-        let found: { source: Gio.File; copy: string } | null;
-        try {
-            found = wallpaperCopy(dark);
-        } catch (e) {
-            error('could not find the wallpaper to hand over', e);
-            returnError(invocation, e);
-            return;
-        }
-        if (found === null) {
-            invocation.return_value(new GLib.Variant('(s)', ['']));
-            return;
-        }
-        const { source, copy } = found;
-        if (GLib.file_test(copy, GLib.FileTest.EXISTS)) {
-            invocation.return_value(new GLib.Variant('(s)', [copy]));
-            return;
-        }
-        // Copied off the compositor's main loop, since a wallpaper is megabytes and this is
-        // gnome-shell; and under another name until it is whole, so that a copy cut short
-        // is never what the next call hands over.
-        const partial = Gio.File.new_for_path(`${copy}.partial`);
-        source.copy_async(partial, Gio.FileCopyFlags.OVERWRITE, GLib.PRIORITY_DEFAULT, null, null,
-            (_file: Gio.File | null, result: Gio.AsyncResult) => {
-                try {
-                    source.copy_finish(result);
-                    partial.move(Gio.File.new_for_path(copy), Gio.FileCopyFlags.OVERWRITE, null, null);
-                    invocation.return_value(new GLib.Variant('(s)', [copy]));
-                } catch (e) {
-                    error('could not copy the wallpaper', e);
-                    returnError(invocation, e);
-                    return;
-                }
-                try {
-                    pruneWallpaperCopies(GLib.path_get_dirname(copy));
-                } catch (e) {
-                    error('could not prune the wallpaper copies', e);
-                }
-            });
+        void (async () => {
+            let found: { source: Gio.File; copy: string } | null;
+            try {
+                found = await wallpaperCopy(dark);
+            } catch (e) {
+                error('could not find the wallpaper to hand over', e);
+                returnError(invocation, e);
+                return;
+            }
+            if (found === null) {
+                invocation.return_value(new GLib.Variant('(s)', ['']));
+                return;
+            }
+            const { source, copy } = found;
+            if (GLib.file_test(copy, GLib.FileTest.EXISTS)) {
+                invocation.return_value(new GLib.Variant('(s)', [copy]));
+                return;
+            }
+            // Copied off the compositor's main loop, since a wallpaper is megabytes and this
+            // is gnome-shell; and under another name until it is whole, so that a copy cut
+            // short is never what the next call hands over.
+            const partial = Gio.File.new_for_path(`${copy}.partial`);
+            source.copy_async(partial, Gio.FileCopyFlags.OVERWRITE, GLib.PRIORITY_DEFAULT, null, null,
+                (_file: Gio.File | null, result: Gio.AsyncResult) => {
+                    try {
+                        source.copy_finish(result);
+                        partial.move(Gio.File.new_for_path(copy), Gio.FileCopyFlags.OVERWRITE, null, null);
+                        invocation.return_value(new GLib.Variant('(s)', [copy]));
+                    } catch (e) {
+                        error('could not copy the wallpaper', e);
+                        returnError(invocation, e);
+                        return;
+                    }
+                    try {
+                        pruneWallpaperCopies(GLib.path_get_dirname(copy));
+                    } catch (e) {
+                        error('could not prune the wallpaper copies', e);
+                    }
+                });
+        })();
     }
 
     /**

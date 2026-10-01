@@ -109,7 +109,8 @@ class WindowShadow {
     readonly #actor: Meta.WindowActor;
     #look: ShadowLook;
     #margins: Margins = shadowMargins(PIN_SHADOW);
-    #box: Clutter.Actor;
+    /** `null` once destroyed, so that nothing of the shadow outlives it. */
+    #box: Clutter.Actor | null;
     /** The size and scale the pieces were last laid out for. */
     #laidOut = '';
     #relayout = 0;
@@ -123,14 +124,15 @@ class WindowShadow {
         this.#look = look;
         this.#onGone = onGone;
 
-        this.#box = new Clutter.Actor({
+        const parent = actor.get_parent();
+        if (parent === null) throw new Error('the pin has no place in the stage yet');
+        const box = new Clutter.Actor({
             name: 'octosnap-pin-shadow',
             reactive: false,
             layout_manager: new Clutter.FixedLayout(),
         });
-        const parent = actor.get_parent();
-        if (parent === null) throw new Error('the pin has no place in the stage yet');
-        parent.insert_child_below(this.#box, actor);
+        this.#box = box;
+        parent.insert_child_below(box, actor);
         this.#bind();
 
         // The actor goes before the window is forgotten, and a window can be unmanaged
@@ -141,7 +143,7 @@ class WindowShadow {
         this.#connect(actor, 'notify::height', () => this.#queueLayout());
         this.#connect(actor, 'notify::opacity', () => this.#syncOpacity());
         this.#connect(actor, 'notify::pivot-point', () => this.#syncPivot());
-        this.#connect(this.#box, 'resource-scale-changed', () => this.#queueLayout());
+        this.#connect(box, 'resource-scale-changed', () => this.#queueLayout());
         this.#layOut();
         this.#syncOpacity();
     }
@@ -169,19 +171,20 @@ class WindowShadow {
      */
     shadeClone(windowClone: Clutter.Clone): void {
         const parent = windowClone.get_parent();
-        if (parent === null) return;
-        const box = this.#box.get_allocation_box();
+        const shadow = this.#box;
+        if (parent === null || shadow === null) return;
+        const box = shadow.get_allocation_box();
         const actor = this.#actor.get_allocation_box();
         const copy = new Clutter.Clone({
             name: 'octosnap-pin-shadow-clone',
-            source: this.#box,
+            source: shadow,
             reactive: false,
             x: windowClone.x + (box.x1 - actor.x1),
             y: windowClone.y + (box.y1 - actor.y1),
             width: box.get_width(),
             height: box.get_height(),
             // A clone paints its source at its own opacity, not the source's.
-            opacity: this.#box.opacity,
+            opacity: shadow.opacity,
         });
         parent.insert_child_below(copy, windowClone);
     }
@@ -189,15 +192,16 @@ class WindowShadow {
     /** Back under its pin: Mutter's restack has just put it on top of everything. */
     restack(): void {
         const parent = this.#actor.get_parent();
-        if (parent === null) return;
-        if (this.#box.get_parent() !== parent) {
+        const box = this.#box;
+        if (parent === null || box === null) return;
+        if (box.get_parent() !== parent) {
             // The shell moves a window actor into another group for some animations; the
             // shadow goes with it, or it would be left drawn where the pin used to be.
-            this.#box.get_parent()?.remove_child(this.#box);
-            parent.insert_child_below(this.#box, this.#actor);
+            box.get_parent()?.remove_child(box);
+            parent.insert_child_below(box, this.#actor);
             return;
         }
-        parent.set_child_below_sibling(this.#box, this.#actor);
+        parent.set_child_below_sibling(box, this.#actor);
     }
 
     destroy(): void {
@@ -209,7 +213,8 @@ class WindowShadow {
         this.#bindings = [];
         for (const [object, id] of this.#handlers) object.disconnect(id);
         this.#handlers = [];
-        this.#box.destroy();
+        this.#box?.destroy();
+        this.#box = null;
     }
 
     #gone(): void {
@@ -227,6 +232,8 @@ class WindowShadow {
      * own; the offset is read rather than assumed all the same.
      */
     #bind(): void {
+        const box = this.#box;
+        if (box === null) return;
         const frame = this.window.get_frame_rect();
         const buffer = this.window.get_buffer_rect();
         const dx = frame.x - buffer.x;
@@ -235,7 +242,7 @@ class WindowShadow {
         const dh = frame.height - buffer.height;
         const m = this.#margins;
         const bind = (coordinate: Clutter.BindCoordinate, offset: number) =>
-            this.#box.add_constraint(new Clutter.BindConstraint({ source: this.#actor, coordinate, offset }));
+            box.add_constraint(new Clutter.BindConstraint({ source: this.#actor, coordinate, offset }));
         bind(Clutter.BindCoordinate.X, dx - m.left);
         bind(Clutter.BindCoordinate.Y, dy - m.top);
         bind(Clutter.BindCoordinate.WIDTH, dw + m.left + m.right);
@@ -243,9 +250,9 @@ class WindowShadow {
 
         const flags = GObject.BindingFlags.SYNC_CREATE;
         this.#bindings.push(
-            this.#actor.bind_property('visible', this.#box, 'visible', flags),
-            this.#actor.bind_property('scale-x', this.#box, 'scale-x', flags),
-            this.#actor.bind_property('scale-y', this.#box, 'scale-y', flags),
+            this.#actor.bind_property('visible', box, 'visible', flags),
+            this.#actor.bind_property('scale-x', box, 'scale-x', flags),
+            this.#actor.bind_property('scale-y', box, 'scale-y', flags),
         );
         this.#syncPivot();
     }
@@ -262,13 +269,15 @@ class WindowShadow {
      * edge (`pivot 0.5, 1`), and a shadow scaled about its own middle would drift off it.
      */
     #syncPivot(): void {
+        const box = this.#box;
+        if (box === null) return;
         const pivot = this.#actor.pivot_point;
         const { width, height } = this.#pinSize();
         const m = this.#margins;
         const outerW = width + m.left + m.right;
         const outerH = height + m.top + m.bottom;
         if (outerW <= 0 || outerH <= 0) return;
-        this.#box.set_pivot_point(
+        box.set_pivot_point(
             (m.left + pivot.x * width) / outerW,
             (m.top + pivot.y * height) / outerH,
         );
@@ -276,8 +285,10 @@ class WindowShadow {
 
     /** The pin's opacity, times whatever the shell is fading the window to. */
     #syncOpacity(): void {
+        const box = this.#box;
+        if (box === null) return;
         const opacity = Math.max(0, Math.min(1, this.#look.opacity));
-        this.#box.opacity = Math.round(this.#actor.opacity * opacity);
+        box.opacity = Math.round(this.#actor.opacity * opacity);
     }
 
     /**
@@ -294,9 +305,11 @@ class WindowShadow {
     }
 
     #layOut(): void {
+        const box = this.#box;
+        if (box === null) return;
         const { width, height } = this.#pinSize();
         // Not yet known before the first paint on a view; its change lays out again.
-        const reported = this.#box.get_resource_scale();
+        const reported = box.get_resource_scale();
         const scale = reported > 0 ? reported : 1;
         const radius = this.#look.radius;
         const key = `${width}x${height}@${scale}r${radius}`;
@@ -304,20 +317,20 @@ class WindowShadow {
         this.#laidOut = key;
         this.#syncPivot();
 
-        this.#box.destroy_all_children();
+        box.destroy_all_children();
         const m = this.#margins;
         const pin: PinShape = { width, height, radius };
         const rects = pieceRects(pin, PIN_SHADOW);
         if (rects === null) {
             // Too small for straight edges: one texture, made for this pin.
             const whole = wholeShadow(pin, scale, PIN_SHADOW);
-            this.#box.add_child(this.#piece(contentOf(whole), whole.rect, m));
+            box.add_child(this.#piece(contentOf(whole), whole.rect, m));
             return;
         }
         const contents = contentsFor(radius, scale);
         for (const [name, rect] of Object.entries(rects) as [PieceName, (typeof rects)[PieceName]][]) {
             const content = contents.get(name);
-            if (content !== undefined) this.#box.add_child(this.#piece(content, rect, m));
+            if (content !== undefined) box.add_child(this.#piece(content, rect, m));
         }
     }
 

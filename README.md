@@ -17,7 +17,7 @@ Neither piece is on Flathub or extensions.gnome.org yet. Each [release](https://
 From a release:
 
 ```bash
-flatpak install --user --bundle OctoSnap-0.1.0.flatpak
+flatpak install --user --bundle OctoSnap-0.1.1.flatpak
 ```
 
 The bundle takes its runtime, GNOME 50, from Flathub, and it does not update itself: a new release is a new bundle. To build it instead:

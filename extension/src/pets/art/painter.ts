@@ -15,6 +15,10 @@
  * No `gi://` imports: the extension paints with this at runtime, and the Node build that
  * makes the SVG sheets for Settings, the guide and the store paints with the same code
  * (`data/pets/build.mjs`). Nothing here may depend on the time or on randomness.
+ *
+ * The names here, and in each pet's drawing, are short where they are the geometry's own:
+ * `x` and `y`, an ellipse's centre `cx, cy` and radii `rx, ry`, a rotation's cosine and sine
+ * `c, s`, and the tones' `h`, `b`, `s` and `o`. A pet's drawing calls its painter `P`.
  */
 
 /** A tone within a material: highlight, base, shadow, outline. */
