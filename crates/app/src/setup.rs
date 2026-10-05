@@ -6,10 +6,11 @@
 //! The app is nothing without its extension, and a GNOME Shell extension can be absent in
 //! more ways than one: never installed, installed after the shell started (GNOME Shell 50
 //! does not load an extension it did not find at login, `spec/10` §10), turned off, broken,
-//! made for another shell version, or loaded from older code than is now on disk because
-//! the shell caches modules until a logout. Each has a different remedy and only some have
-//! a button. [`status`] tells them apart; the welcome window, the Settings banner, the
-//! About page and the report all read it, so they cannot disagree about what is wrong.
+//! made for another shell version, loaded from older code than is now on disk because
+//! the shell caches modules until a logout, or off for as long as the screen is locked
+//! (D161). Each has a different remedy and only some have a button. [`status`] tells them
+//! apart; the welcome window, the Settings banner, the About page and the report all read
+//! it, so they cannot disagree about what is wrong.
 //!
 //! The bare launch -- the app grid, or `octosnap` with no arguments -- is where this
 //! shows: the welcome window until it has been seen through and whenever the extension is
@@ -40,7 +41,6 @@ mod state {
     pub const ERROR: f64 = 3.0;
     pub const OUT_OF_DATE: f64 = 4.0;
     pub const INITIALIZED: f64 = 6.0;
-    pub const ACTIVATING: f64 = 8.0;
 }
 
 /// What state the extension is in, from the user's side of it.
@@ -50,7 +50,9 @@ pub enum Status {
     Ready { version: String },
     /// Answering, but not with the code that is installed: an older protocol, or an older
     /// version than the one on disk. GNOME Shell loads extension code once per login.
-    Stale { running: String, installed: Option<String>, protocol: u32 },
+    /// `waiting` says that `installed` is not on disk yet: the app writes it when the session
+    /// ends, because the running copy would read part of it before then (D161).
+    Stale { running: String, installed: Option<String>, protocol: u32, waiting: bool },
     /// Answering in another protocol, and a logout would load the same code again: the
     /// extension is newer than the app, or older and still so after a logout (D133). The
     /// two come from different releases, and `protocol` says which half is behind.
@@ -63,6 +65,10 @@ pub enum Status {
     /// `allow-extension-installation` is off, which an administrator can lock, and it
     /// passes over a copy it cannot read. Another logout would find it the same way.
     NotLoaded,
+    /// Installed, turned on, and off while the screen is locked: GNOME Shell turns it off at
+    /// every lock and on again at the unlock (D161). Nothing is wrong, and a logout would
+    /// not change it.
+    Locked,
     /// Installed and turned off.
     Disabled,
     /// Every user extension is off: the main switch in GNOME's Extensions app.
@@ -96,6 +102,7 @@ impl Status {
             Self::Mismatched { .. } => "Older than this app: update the extension".to_owned(),
             Self::NeedsRestart => "Installed: log out and back in to start it".to_owned(),
             Self::NotLoaded => "Installed, but GNOME Shell does not load it".to_owned(),
+            Self::Locked => "Off while the screen is locked".to_owned(),
             Self::Disabled => "Installed, but turned off".to_owned(),
             Self::ExtensionsOff => "Extensions are turned off in GNOME".to_owned(),
             Self::Failed(_) => "GNOME Shell could not start it".to_owned(),
@@ -118,6 +125,7 @@ impl Status {
             }
             Self::Mismatched { .. } => "The OctoSnap extension is older than the app".to_owned(),
             Self::NotLoaded => "GNOME Shell does not load the OctoSnap extension".to_owned(),
+            Self::Locked => "The OctoSnap extension is off while the screen is locked".to_owned(),
             Self::Disabled => "The OctoSnap extension is turned off".to_owned(),
             Self::ExtensionsOff => "Extensions are turned off in GNOME".to_owned(),
             Self::Failed(_) => "The OctoSnap extension could not start".to_owned(),
@@ -131,11 +139,21 @@ impl Status {
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
-            Self::Stale { running, installed, protocol } => format!(
+            Self::Stale { running, installed, protocol, waiting: false } => format!(
                 "{}. Running {running} (protocol {protocol}; this build speaks \
                  {PROTOCOL_VERSION}), installed {}.",
                 self.headline(),
                 installed.as_deref().unwrap_or("unknown")
+            ),
+            Self::Stale { running, installed, protocol, waiting: true } => format!(
+                "{}. Running {running} (protocol {protocol}; this build speaks \
+                 {PROTOCOL_VERSION}), and {} is written to disk when the session ends.",
+                self.headline(),
+                installed.as_deref().unwrap_or("the update")
+            ),
+            Self::Locked => format!(
+                "{}. GNOME Shell turns it off at every lock, and on again at the unlock.",
+                self.headline()
             ),
             Self::Mismatched { running, protocol } => format!(
                 "{}. Running {running} (protocol {protocol}; this build speaks {PROTOCOL_VERSION}).",
@@ -155,8 +173,9 @@ impl Status {
     #[must_use]
     pub fn remedy(&self) -> Option<Remedy> {
         match self {
-            // Nothing the app can press makes GNOME Shell read the user's own folder.
-            Self::Ready { .. } | Self::Unknown(_) | Self::NotLoaded => None,
+            // Nothing the app can press makes GNOME Shell read the user's own folder, and the
+            // unlock turns a locked-out extension back on by itself.
+            Self::Ready { .. } | Self::Unknown(_) | Self::NotLoaded | Self::Locked => None,
             Self::Stale { .. } | Self::NeedsRestart | Self::Failed(_) => Some(Remedy::LogOut),
             // An app older than its extension is updated where it was installed from, which
             // is not something it can do to itself.
@@ -212,12 +231,13 @@ pub async fn finish_install(connection: &gio::DBusConnection, found: Status) -> 
 }
 
 /// D160: a later extension than the one in the user's folder, carried by an app updated
-/// since that one went in, takes its place. GNOME Shell keeps running the code it loaded
-/// until the next login, which loads the new copy, so the two halves stay in step without
-/// a button: what the release's zip asks a person to do by hand, and what GNOME Shell does
-/// itself for an extension from extensions.gnome.org. Only a copy in the user's folder is
-/// replaced, where the app installs one, and only by a later release. One installed for
-/// everyone, or newer than the app's, is left as it is. Gives the status as it is now.
+/// since that one went in, takes its place, and the next login loads it, so the two halves
+/// stay in step without a button: what the release's zip asks a person to do by hand, and
+/// what GNOME Shell does itself for an extension from extensions.gnome.org. Only a copy in
+/// the user's folder is replaced, where the app installs one, and only by a later release.
+/// One installed for everyone, or newer than the app's, is left as it is. D161: an update
+/// the running copy would read part of before that login waits for the session's end
+/// ([`install_carried`]). Gives the status as it is now.
 pub async fn update_carried(connection: &gio::DBusConnection, found: Status) -> Status {
     let Some(carried) = crate::bundled::carried() else { return found };
     let folder = crate::bundled::folder(&crate::bundled::data_home());
@@ -227,12 +247,31 @@ pub async fn update_carried(connection: &gio::DBusConnection, found: Status) -> 
     }
     // Not remembered: the extension was there at this login, so whatever GNOME Shell made
     // of it, turned off included, is what the next one makes of the new copy.
-    if let Err(why) = install_carried(connection, carried, false).await {
-        warn!(installed, carried = carried.version, "could not update the extension: {why}");
-        return found;
+    match install_carried(connection, carried, false).await {
+        Ok(Written::Now) => {
+            info!(installed, carried = carried.version, "updated the extension in the user's folder");
+        }
+        Ok(Written::AtSessionEnd) => {
+            info!(installed, carried = carried.version, "the extension's update waits for the session's end");
+        }
+        Err(why) => {
+            warn!(installed, carried = carried.version, "could not update the extension: {why}");
+            return found;
+        }
     }
-    info!(installed, carried = carried.version, "updated the extension in the user's folder");
     status(connection).await
+}
+
+/// What the app does about the extension when it starts, and again when the screen unlocks
+/// after a start that found it locked (D161): the status, then an install the last session
+/// asked for finished, then the copy kept in step with the app (D160).
+pub async fn settle(connection: &gio::DBusConnection) -> Status {
+    let found = status(connection).await;
+    // D160: an install the last session asked for, finished now that GNOME Shell has
+    // found the extension.
+    let found = finish_install(connection, found).await;
+    // D160: and the extension it installed, kept in step with an app updated since.
+    update_carried(connection, found).await
 }
 
 /// The action a [`Status`] offers.
@@ -288,17 +327,26 @@ pub struct Info {
     pub enabled: Option<bool>,
     pub error: Option<String>,
     pub version_name: Option<String>,
+    /// D161: whether GNOME Shell's screen shield is up, the lock screen. GNOME Shell turns
+    /// the extension off while it is, having no `session-modes` for it, and on again at the
+    /// unlock. Asked only of an extension that is turned on and not answering.
+    pub locked: bool,
 }
+
+/// What [`classify`] says of an extension GNOME Shell has turned on, and is not running,
+/// with the screen unlocked. [`status`] asks again for a moment before it says so.
+const NOT_RUNNING: &str = "GNOME Shell has it turned on, and is not running it";
 
 /// The classification, apart from the bus, so every branch is a unit test.
 ///
 /// `own` is the extension's answer to `Version`, `info` GNOME Shell's to
-/// `GetExtensionInfo`, `extensions_on` its `UserExtensionsEnabled`, and `on_disk` the
-/// version of the extension found where GNOME Shell looks (`Some("")` for one that names
-/// none). The sandbox sees only the extension's own folder, which the manifest gives it
-/// (D160). What is on disk is what the next login loads, so it wins over what GNOME Shell
-/// loaded at the last one, which is all `info` knows. `passed_over` says that the copy on
-/// disk is one this app installed in an earlier login, which GNOME Shell has started since.
+/// `GetExtensionInfo` and its screen shield's, `extensions_on` its `UserExtensionsEnabled`,
+/// and `on_disk` the version of the extension found where GNOME Shell looks (`Some("")` for
+/// one that names none), or the one the app writes there when the session ends (D161). The
+/// sandbox sees only the extension's own folder, which the manifest gives it (D160). That is
+/// what the next login loads, so it wins over what GNOME Shell loaded at the last one, which
+/// is all `info` knows. `passed_over` says that the copy on disk is one this app installed
+/// in an earlier login, which GNOME Shell has started since.
 #[must_use]
 pub fn classify(
     own: Option<&Answer>,
@@ -325,6 +373,7 @@ pub fn classify(
                 running: answer.version.clone(),
                 installed: installed.map(str::to_owned),
                 protocol: answer.protocol,
+                waiting: false,
             };
         }
         return Status::Ready { version: answer.version.clone() };
@@ -346,6 +395,12 @@ pub fn classify(
     if !extensions_on {
         return Status::ExtensionsOff;
     }
+    // D161: turned on, and off for the lock: `INACTIVE` (2) when it was running at the lock,
+    // `INITIALIZED` when GNOME Shell started under one, and the states between. The unlock
+    // turns it on again, so this is no logout away, which `NeedsRestart` said.
+    if info.locked && info.enabled == Some(true) {
+        return Status::Locked;
+    }
     match info.state {
         // Loaded and running, yet not answering: its enable() failed part way.
         Some(s) if s == state::ACTIVE => Status::Failed(
@@ -354,14 +409,36 @@ pub fn classify(
         // Found at login and never turned on, which is where an install the app made
         // stands after the logout (D160). Turned on, it starts without another.
         Some(s) if s == state::INITIALIZED && info.enabled != Some(true) => Status::Disabled,
-        Some(s) if s == state::INITIALIZED || s == state::ACTIVATING => Status::NeedsRestart,
-        _ if info.enabled == Some(true) => Status::NeedsRestart,
+        // Known, turned on and not running (`INACTIVE`, `INITIALIZED`, or between the two
+        // and running), with the shield down. GNOME Shell keeps an extension it has turned
+        // on off only in a mode that leaves it out, the lock screen, and it turns it off at a
+        // lock a moment before the shield says it is up (D161). Not `NeedsRestart`: that is
+        // for an extension GNOME Shell does not know, which a logout finds.
+        _ if info.enabled == Some(true) => Status::Failed(NOT_RUNNING.to_owned()),
         _ => Status::Disabled,
     }
 }
 
 /// Asks the extension, then GNOME Shell, and classifies.
+///
+/// D161: GNOME Shell turns the extension off at a lock some way before its screen shield
+/// says it is up: the shield waits for the lock screen to slide in and the screen to fade,
+/// about a second in a nested shell. So an extension found turned on and not running with
+/// the shield down is asked about again for a moment, and said to be [`NOT_RUNNING`] only
+/// once it has stayed so.
 pub async fn status(connection: &gio::DBusConnection) -> Status {
+    let mut found = status_once(connection).await;
+    for _ in 0..3 {
+        if found != Status::Failed(NOT_RUNNING.to_owned()) {
+            break;
+        }
+        glib::timeout_future(std::time::Duration::from_millis(500)).await;
+        found = status_once(connection).await;
+    }
+    found
+}
+
+async fn status_once(connection: &gio::DBusConnection) -> Status {
     let bridge = octosnap_shell::GnomeExtensionBridge::from_connection(connection.clone());
     let mut own = match bridge.version().await {
         Ok(v) => Some(Answer { version: v.version, protocol: v.protocol, survived_a_logout: false }),
@@ -371,7 +448,7 @@ pub async fn status(connection: &gio::DBusConnection) -> Status {
             return Status::Unknown(e.to_string());
         }
     };
-    let info = match extension_info(connection).await {
+    let mut info = match extension_info(connection).await {
         Ok(info) => info,
         // The extension answered, so its own word is enough to go on.
         Err(_) if own.is_some() => Info::default(),
@@ -380,6 +457,11 @@ pub async fn status(connection: &gio::DBusConnection) -> Status {
             return Status::Unknown(e);
         }
     };
+    // D161: asked only where it decides anything, of an extension that is turned on and
+    // silent. A shield that will not say is taken to be down, as before.
+    if own.is_none() && info.known && info.enabled == Some(true) {
+        info.locked = screen_locked(connection).await.unwrap_or(false);
+    }
     let extensions_on = user_extensions_enabled(connection).await.unwrap_or(true);
     if let Some(answer) = own.as_mut()
         && answer.protocol < PROTOCOL_VERSION
@@ -387,13 +469,41 @@ pub async fn status(connection: &gio::DBusConnection) -> Status {
         answer.survived_a_logout = survived_a_logout(connection, answer).await;
     }
     let on_disk = installed_on_disk();
+    // D161: an update waiting for the session's end is what the next login loads, as long
+    // as the app is there when the session ends.
+    let waiting = crate::session::waiting();
+    let next_login = waiting.clone().or_else(|| on_disk.clone());
     // Asked only where it decides anything: the bus is asked which login this is.
     let passed_over = own.is_none() && !info.known && on_disk.is_some() && passed_over(connection).await;
-    let found = classify(own.as_ref(), &info, extensions_on, on_disk.as_deref(), passed_over);
+    let mut found = classify(own.as_ref(), &info, extensions_on, next_login.as_deref(), passed_over);
+    if let Status::Stale { installed, waiting: is_waiting, .. } = &mut found {
+        *is_waiting = waiting.is_some() && *installed == waiting;
+    }
     if found.ready() {
         settings::Settings::load().set_stale_extension("");
     }
     found
+}
+
+/// D161: whether GNOME Shell's screen shield is up. Asked through `org.gnome.Shell`, the name
+/// the sandbox may talk to: GNOME Shell serves `org.gnome.ScreenSaver`'s object on the same
+/// connection, while the name `org.gnome.ScreenSaver` is a separate service that passes calls
+/// on to it.
+async fn screen_locked(connection: &gio::DBusConnection) -> Option<bool> {
+    let reply = connection
+        .call_future(
+            Some("org.gnome.Shell"),
+            "/org/gnome/ScreenSaver",
+            "org.gnome.ScreenSaver",
+            "GetActive",
+            None,
+            Some(glib::VariantTy::new("(b)").ok()?),
+            gio::DBusCallFlags::NONE,
+            2000,
+        )
+        .await
+        .ok()?;
+    reply.child_value(0).get::<bool>()
 }
 
 /// Which login this is, as far as the session bus can tell: the bus's own id and GNOME
@@ -474,6 +584,8 @@ async fn extension_info(connection: &gio::DBusConnection) -> Result<Info, String
         enabled: dict.lookup::<bool>("enabled").ok().flatten(),
         error: dict.lookup::<String>("error").ok().flatten().filter(|e| !e.is_empty()),
         version_name: dict.lookup::<String>("version-name").ok().flatten(),
+        // The screen shield's, which `status` asks where it matters.
+        locked: false,
     })
 }
 
@@ -521,14 +633,42 @@ async fn shell_version(connection: &gio::DBusConnection) -> Option<String> {
     reply.child_value(0).as_variant()?.str().map(str::to_owned)
 }
 
+/// When [`install_carried`] makes the copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Written {
+    Now,
+    /// D161: when the session ends, since the copy GNOME Shell is running would read part
+    /// of the update before then.
+    AtSessionEnd,
+}
+
+/// D161: whether GNOME Shell holds code of the extension from this login, which it keeps
+/// until the next and turns on again at every unlock. It holds none of an extension it does
+/// not know, of one it found at login and never turned on (`INITIALIZED`), or of one it
+/// passed over as made for another version. One it could not be asked about may hold some.
+fn loaded(info: Option<&Info>) -> bool {
+    info.is_none_or(|info| {
+        info.known && !matches!(info.state, Some(s) if s == state::INITIALIZED || s == state::OUT_OF_DATE)
+    })
+}
+
 /// D160: the carried copy, into the user's extensions folder, when GNOME Shell would load
 /// it. A person's install is remembered with its login, so the first start after the
 /// logout turns it on, and a login that passes it over is told apart from one to come.
+///
+/// D161: GNOME Shell turns the extension off at every lock, and on again at the unlock with
+/// the code it imported at login, reading the stylesheet and the schema from the folder
+/// again; the code reads its icons and sounds there whenever it wants them. So while GNOME
+/// Shell holds code of it ([`loaded`]), the copy is made at once only when it changes
+/// nothing but the code and `metadata.json`, which GNOME Shell reads at login alone
+/// (`bundled::changes_seen_before_login`). Anything else waits for the session's end, past
+/// the last unlock, which the session manager says ([`crate::session`]). Without one, the
+/// copy is made at once, as it was before.
 async fn install_carried(
     connection: &gio::DBusConnection,
-    carried: &crate::bundled::Carried,
+    carried: &'static crate::bundled::Carried,
     remember: bool,
-) -> Result<(), String> {
+) -> Result<Written, String> {
     if let Some(running) = shell_version(connection).await
         && !crate::bundled::supports(&carried.shells, &running)
     {
@@ -539,6 +679,32 @@ async fn install_carried(
     }
     let (from, home) = (carried.dir.clone(), crate::bundled::data_home());
     let to = crate::bundled::folder(&home);
+    if loaded(extension_info(connection).await.ok().as_ref()) {
+        let changes = {
+            let (from, to) = (from.clone(), to.clone());
+            gio::spawn_blocking(move || crate::bundled::changes_seen_before_login(&from, &to))
+                .await
+                .map_err(|_| "the comparison stopped part way".to_owned())?
+                // A folder that cannot be read through cannot be shown to be unchanged.
+                .unwrap_or_else(|e| vec![std::path::PathBuf::from(e.to_string())])
+        };
+        if !changes.is_empty() {
+            let login = if remember { login(connection).await.unwrap_or_default() } else { String::new() };
+            match crate::session::write_at_end(connection, &carried.version, write_later(carried, remember, login))
+                .await
+            {
+                Ok(()) => {
+                    info!(?changes, version = carried.version, "the running copy would read these before the next login");
+                    return Ok(Written::AtSessionEnd);
+                }
+                Err(why) => warn!(
+                    ?changes,
+                    "nothing says when the session ends ({why}), so the update is written now, \
+                     and the running copy may read part of it before the next login"
+                ),
+            }
+        }
+    }
     let copied = gio::spawn_blocking(move || crate::bundled::install(&from, &home))
         .await
         .map_err(|_| "the copy stopped part way".to_owned())?
@@ -548,7 +714,39 @@ async fn install_carried(
         let login = login(connection).await.unwrap_or_default();
         settings::Settings::load().set_extension_installed(&format!("{}|{login}", carried.version));
     }
-    Ok(())
+    Ok(Written::Now)
+}
+
+/// D161: the copy [`install_carried`] leaves for the session's end. `login` is this one,
+/// asked for while the bus still answers.
+fn write_later(carried: &'static crate::bundled::Carried, remember: bool, login: String) -> crate::session::Write {
+    Box::new(move || {
+        let login = login.clone();
+        Box::pin(async move {
+            let home = crate::bundled::data_home();
+            let to = crate::bundled::folder(&home);
+            // Still the older release it was waiting to replace: a copy put there since, a
+            // developer's own build among them, is left as it is.
+            match crate::bundled::version_at(&to) {
+                Some(installed) if crate::bundled::later(&carried.version, &installed) => {}
+                there => {
+                    info!(?there, carried = carried.version, "the session ends with no older copy to update");
+                    return;
+                }
+            }
+            let from = carried.dir.clone();
+            match gio::spawn_blocking(move || crate::bundled::install(&from, &home)).await {
+                Ok(Ok(copied)) => {
+                    info!(copied, version = carried.version, to = %to.display(), "installed the carried extension as the session ends");
+                    if remember {
+                        settings::Settings::load().set_extension_installed(&format!("{}|{login}", carried.version));
+                    }
+                }
+                Ok(Err(e)) => warn!("could not write the update as the session ends: {e}"),
+                Err(_) => warn!("the copy stopped part way as the session ends"),
+            }
+        })
+    })
 }
 
 /// Carries out `remedy`. Resolves when GNOME Shell has answered; the caller asks for the
@@ -580,7 +778,7 @@ pub async fn apply(connection: &gio::DBusConnection, remedy: Remedy) -> Result<(
     match remedy {
         Remedy::Install | Remedy::Update => {
             if let Some(carried) = crate::bundled::carried() {
-                return install_carried(connection, carried, true).await;
+                return install_carried(connection, carried, true).await.map(|_| ());
             }
             let reply = call("InstallRemoteExtension", (uuid,).to_variant(), "(s)").await?;
             let result = reply.child_value(0).str().unwrap_or_default().to_owned();
@@ -1173,7 +1371,12 @@ mod tests {
         let found = classify(Some(&answer("0.1.0", PROTOCOL_VERSION)), &info, true, None, false);
         assert_eq!(
             found,
-            Status::Stale { running: "0.1.0".to_owned(), installed: Some("0.2.0".to_owned()), protocol: PROTOCOL_VERSION }
+            Status::Stale {
+                running: "0.1.0".to_owned(),
+                installed: Some("0.2.0".to_owned()),
+                protocol: PROTOCOL_VERSION,
+                waiting: false
+            }
         );
     }
 
@@ -1202,13 +1405,79 @@ mod tests {
         assert_eq!(found.remedy(), Some(Remedy::TurnOnExtensions));
     }
 
+    /// D161: GNOME Shell knows it, so a logout would only find it again; turned on and not
+    /// running with the screen unlocked is said once `status` has asked again.
     #[test]
-    fn off_is_disabled_and_on_but_unloaded_needs_a_logout() {
+    fn off_is_disabled_and_on_but_not_running_is_not_a_logout_away() {
         assert_eq!(classify(None, &known(2.0), true, Some("0.1.2"), false), Status::Disabled);
-        let on = Info { enabled: Some(true), ..known(2.0) };
-        assert_eq!(classify(None, &on, true, Some("0.1.2"), false), Status::NeedsRestart);
-        let initialized_on = Info { enabled: Some(true), ..known(state::INITIALIZED) };
-        assert_eq!(classify(None, &initialized_on, true, Some("0.1.2"), false), Status::NeedsRestart);
+        for state in [2.0, state::INITIALIZED, 7.0, 8.0] {
+            let on = Info { enabled: Some(true), ..known(state) };
+            let found = classify(None, &on, true, Some("0.1.2"), false);
+            assert_eq!(found, Status::Failed(NOT_RUNNING.to_owned()), "state {state}");
+            assert_ne!(found.remedy(), None);
+        }
+    }
+
+    /// D161: the owner's Flatpak, started over the lock screen, said "Log out to finish
+    /// setting up OctoSnap". GNOME Shell had only turned the extension off for the lock.
+    #[test]
+    fn turned_on_and_off_for_the_lock_is_locked() {
+        // Running at the lock, and GNOME Shell started under one.
+        for state in [2.0, state::INITIALIZED] {
+            let locked = Info { enabled: Some(true), locked: true, ..known(state) };
+            let found = classify(None, &locked, true, Some("0.1.2"), false);
+            assert_eq!(found, Status::Locked, "state {state}");
+            assert_eq!(found.remedy(), None);
+            assert!(found.headline().contains("locked"), "{}", found.headline());
+        }
+        // Turned off, it is off whatever the screen does; and a broken one is broken.
+        let off = Info { enabled: Some(false), locked: true, ..known(2.0) };
+        assert_eq!(classify(None, &off, true, Some("0.1.2"), false), Status::Disabled);
+        let broken = Info { enabled: Some(true), locked: true, error: Some("TypeError".to_owned()), ..known(state::ERROR) };
+        assert_eq!(classify(None, &broken, true, Some("0.1.2"), false), Status::Failed("TypeError".to_owned()));
+        // Every extension off is the reason, not the lock.
+        let all_off = Info { enabled: Some(true), locked: true, ..known(2.0) };
+        assert_eq!(classify(None, &all_off, false, Some("0.1.2"), false), Status::ExtensionsOff);
+        // One GNOME Shell does not know is a logout away, locked or not.
+        let unknown = Info { locked: true, ..Info::default() };
+        assert_eq!(classify(None, &unknown, true, Some("0.1.2"), false), Status::NeedsRestart);
+        // And one that answers is ready, whatever the shield says a moment after an unlock.
+        let back = Info { enabled: Some(true), locked: true, ..known(state::ACTIVE) };
+        let ready = classify(Some(&answer("0.1.2", PROTOCOL_VERSION)), &back, true, Some("0.1.2"), false);
+        assert_eq!(ready, Status::Ready { version: "0.1.2".to_owned() });
+    }
+
+    /// D161: what GNOME Shell holds code of, which an update must not change under it.
+    #[test]
+    fn loaded_is_whatever_gnome_shell_has_imported_this_login() {
+        assert!(!loaded(Some(&Info::default())), "unknown to GNOME Shell");
+        assert!(!loaded(Some(&known(state::INITIALIZED))), "found at login and never turned on");
+        assert!(!loaded(Some(&known(state::OUT_OF_DATE))), "passed over");
+        for state in [state::ACTIVE, 2.0, state::ERROR, 7.0, 8.0] {
+            assert!(loaded(Some(&known(state))), "state {state}");
+        }
+        assert!(loaded(None), "GNOME Shell could not be asked");
+    }
+
+    /// D161: an update waiting for the session's end says so where the report reads it.
+    #[test]
+    fn a_waiting_update_is_described_as_waiting() {
+        let waiting = Status::Stale {
+            running: "0.1.2".to_owned(),
+            installed: Some("0.1.3".to_owned()),
+            protocol: PROTOCOL_VERSION,
+            waiting: true,
+        };
+        assert!(waiting.describe().contains("0.1.3 is written to disk when the session ends"), "{}", waiting.describe());
+        assert_eq!(waiting.remedy(), Some(Remedy::LogOut));
+        let written = Status::Stale {
+            running: "0.1.2".to_owned(),
+            installed: Some("0.1.3".to_owned()),
+            protocol: PROTOCOL_VERSION,
+            waiting: false,
+        };
+        assert_eq!(waiting.headline(), written.headline());
+        assert!(written.describe().contains("installed 0.1.3"), "{}", written.describe());
     }
 
     /// D160: an extension GNOME Shell found at login and never turned on is one Turn On
@@ -1233,7 +1502,8 @@ mod tests {
             Status::Stale {
                 running: "0.1.1".to_owned(),
                 installed: Some("0.1.2".to_owned()),
-                protocol: PROTOCOL_VERSION - 1
+                protocol: PROTOCOL_VERSION - 1,
+                waiting: false
             }
         );
         // The same, with nothing newer on disk, is the update the app has to make.

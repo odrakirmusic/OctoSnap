@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
@@ -19,5 +19,20 @@ describe('the extension the Flatpak carries', () => {
         // The lock's integrity is the tarball's sha512 in base64; the manifest's, in hex.
         expect(`sha512-${Buffer.from(source.sha512, 'hex').toString('base64')}`).toBe(locked.integrity);
         expect(app['config-opts']).toContain('-Dbundle-extension=true');
+    });
+
+    // D161: the app writes an update that changes only the code under the copy GNOME Shell
+    // is running, because GNOME Shell imports the code once, at login, and keeps it. A module
+    // imported later would be read from whatever is on disk by then.
+    it('imports every module at login, none of them later', () => {
+        const src = new URL('.', import.meta.url);
+        const sources = (readdirSync(src, { recursive: true }) as string[])
+            .filter(path => path.endsWith('.ts') && !path.endsWith('.test.ts') && !path.endsWith('.d.ts'));
+        expect(sources.length).toBeGreaterThan(40);
+        for (const path of sources) {
+            const text = readFileSync(new URL(path, src), 'utf8');
+            expect(text, path).not.toMatch(/\bimport\s*\(/);
+            expect(text, path).not.toMatch(/\bimports\.[a-z]/);
+        }
     });
 });

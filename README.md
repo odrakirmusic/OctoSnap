@@ -17,7 +17,7 @@ Neither piece is on Flathub or extensions.gnome.org. Each [release](https://gith
 From a release:
 
 ```bash
-flatpak install --user --bundle OctoSnap-0.1.2.flatpak
+flatpak install --user --bundle OctoSnap-0.1.3.flatpak
 ```
 
 The bundle takes its runtime, GNOME 50, from Flathub, and it does not update itself: a new release is a new bundle. To build it instead:
@@ -46,7 +46,7 @@ This needs Rust 1.92 or newer, Meson 1.1 or newer, the GTK 4 and libadwaita 1.9 
 
 ### The extension
 
-The Flatpak installs it from the welcome window ([The first run](#the-first-run)), and a later Flatpak updates it: the next login loads the new one. For the native app, or by hand, from a release:
+The Flatpak installs it from the welcome window ([The first run](#the-first-run)), and a later Flatpak updates it: the next login loads the new one. An update that changes more than the extension's code is written as you log out, since GNOME Shell reads the rest of it again at every unlock. For the native app, or by hand, from a release:
 
 ```bash
 gnome-extensions install --force octosnap@odrakirmusic.github.io.shell-extension.zip

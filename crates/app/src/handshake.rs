@@ -7,12 +7,19 @@
 //! extension is an expected state on a fresh install -- it leads to degraded mode and the
 //! setup page (M4), never to an error dialog.
 
+use std::cell::Cell;
+
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use octosnap_core::protocol::PROTOCOL_VERSION;
 use octosnap_shell::{GnomeExtensionBridge, ShellBridge};
 use tracing::{error, info, warn};
+
+thread_local! {
+    /// D161: the start found the extension off for a lock, and has not looked again since.
+    static FOUND_LOCKED: Cell<bool> = const { Cell::new(false) };
+}
 
 pub fn run(app: &adw::Application) {
     let Some(connection) = app.dbus_connection() else {
@@ -24,38 +31,43 @@ pub fn run(app: &adw::Application) {
     // appears, not once: an extension that GNOME Shell restarts, or that is turned off and
     // on, starts with nothing announced. A watch reports a name that is already owned as
     // appearing, so this is also the first announcement.
-    let _watch = gio::bus_watch_name_on_connection(
-        &connection,
-        octosnap_core::protocol::SHELL_BUS_NAME,
-        gio::BusNameWatcherFlags::NONE,
-        |connection, _, _| {
-            // D125: and what the recording row should show, which it may not be able to read.
-            crate::settings::sync_gif_defaults(&crate::settings::Settings::load());
-            let bridge = GnomeExtensionBridge::from_connection(connection);
-            glib::spawn_future_local(async move {
-                let spool = crate::history::History::default_spool();
-                match bridge.set_spool(&spool).await {
-                    Ok(()) => info!(spool = %spool.display(), "told the extension where the spool is"),
-                    Err(e) => warn!("could not tell the extension where the spool is: {e}"),
+    let _watch = {
+        let app = app.clone();
+        gio::bus_watch_name_on_connection(
+            &connection,
+            octosnap_core::protocol::SHELL_BUS_NAME,
+            gio::BusNameWatcherFlags::NONE,
+            move |connection, _, _| {
+                // D125: and what the recording row should show, which it may not be able to read.
+                crate::settings::sync_gif_defaults(&crate::settings::Settings::load());
+                let bridge = GnomeExtensionBridge::from_connection(connection.clone());
+                glib::spawn_future_local(async move {
+                    let spool = crate::history::History::default_spool();
+                    match bridge.set_spool(&spool).await {
+                        Ok(()) => info!(spool = %spool.display(), "told the extension where the spool is"),
+                        Err(e) => warn!("could not tell the extension where the spool is: {e}"),
+                    }
+                });
+                // D161: back from the lock the start found, which said nothing then.
+                if FOUND_LOCKED.replace(false) {
+                    settle_again(&app, &connection);
                 }
-            });
-        },
-        |_, _| {},
-    );
+            },
+            |_, _| {},
+        )
+    };
 
     let bridge = GnomeExtensionBridge::from_connection(connection.clone());
     let app = app.clone();
 
     glib::MainContext::default().spawn_local(async move {
         // `spec/13` #15: a stale extension is said in the UI, not only here.
-        let found = crate::setup::status(&connection).await;
-        // D160: an install the last session asked for, finished now that GNOME Shell has
-        // found the extension.
-        let found = crate::setup::finish_install(&connection, found).await;
-        // D160: and the extension it installed, kept in step with an app updated since.
-        let found = crate::setup::update_carried(&connection, found).await;
+        let found = crate::setup::settle(&connection).await;
         info!(?found, "extension status");
         crate::setup::after_handshake(&app, &found);
+        if found == crate::setup::Status::Locked {
+            look_again_at_unlock(&app, &connection).await;
+        }
 
         match bridge.version().await {
             Ok(shell) => {
@@ -81,6 +93,43 @@ pub fn run(app: &adw::Application) {
             Err(e) => {
                 error!("shell handshake failed: {e}");
             }
+        }
+    });
+}
+
+/// D161: a start that found the extension off for a lock says nothing then, and looks again
+/// when the extension's name comes back, which the unlock brings. The name can have come
+/// back while the start was asking, so that is looked at here too.
+async fn look_again_at_unlock(app: &adw::Application, connection: &gio::DBusConnection) {
+    FOUND_LOCKED.set(true);
+    let owned = connection
+        .call_future(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "NameHasOwner",
+            Some(&(octosnap_core::protocol::SHELL_BUS_NAME,).to_variant()),
+            glib::VariantTy::new("(b)").ok(),
+            gio::DBusCallFlags::NONE,
+            2000,
+        )
+        .await
+        .ok()
+        .and_then(|reply| reply.child_value(0).get::<bool>())
+        .unwrap_or(false);
+    if owned && FOUND_LOCKED.replace(false) {
+        settle_again(app, connection);
+    }
+}
+
+fn settle_again(app: &adw::Application, connection: &gio::DBusConnection) {
+    let (app, connection) = (app.clone(), connection.clone());
+    glib::spawn_future_local(async move {
+        let found = crate::setup::settle(&connection).await;
+        info!(?found, "extension status after the unlock");
+        crate::setup::after_handshake(&app, &found);
+        if found == crate::setup::Status::Locked {
+            look_again_at_unlock(&app, &connection).await;
         }
     });
 }

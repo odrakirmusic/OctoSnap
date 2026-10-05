@@ -6,5 +6,5 @@
   "url": "https://github.com/odrakirmusic/OctoSnap",
   "settings-schema": "org.gnome.shell.extensions.octosnap",
   "gettext-domain": "octosnap",
-  "version-name": "0.1.2"
+  "version-name": "0.1.3"
 }

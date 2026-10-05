@@ -117,6 +117,42 @@ pub fn supports(shells: &[String], running: &str) -> bool {
     })
 }
 
+/// D161: whether GNOME Shell reads `rel` once per login. The JavaScript is imported at login
+/// and kept, for GNOME Shell imports an extension once (D160: the extension imports nothing
+/// lazily, which `bundle.test.ts` checks), and `metadata.json` is read when GNOME Shell finds
+/// the extension. Everything else can be read again by the code already running: the
+/// stylesheet and the schema at every enable, which every unlock is, and the icons and
+/// sounds whenever they are wanted.
+fn read_once_per_login(rel: &Path) -> bool {
+    rel == Path::new("metadata.json") || rel.extension().is_some_and(|ext| ext == "js")
+}
+
+/// D161: the files in `to` that the copy GNOME Shell is running could read again before the
+/// next login, and that copying `from` there would change: added, taken out, or not the same
+/// bytes. Empty when the update changes only what GNOME Shell reads at login, which it can
+/// then be written under the running copy without its seeing any of it. A link in `to` is
+/// counted as a change, since what it points at cannot be vouched for.
+///
+/// # Errors
+/// Either folder could not be read.
+pub fn changes_seen_before_login(from: &Path, to: &Path) -> io::Result<Vec<PathBuf>> {
+    let (wanted, there) = (files(from)?, files(to)?);
+    let mut changed = Vec::new();
+    for rel in wanted.union(&there) {
+        if read_once_per_login(rel) {
+            continue;
+        }
+        let same = wanted.contains(rel)
+            && there.contains(rel)
+            && !is_link(&to.join(rel))
+            && fs::read(from.join(rel))? == fs::read(to.join(rel))?;
+        if !same {
+            changed.push(rel.clone());
+        }
+    }
+    Ok(changed)
+}
+
 /// Why the copy was not made.
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
@@ -159,6 +195,12 @@ fn files(dir: &Path) -> io::Result<BTreeSet<PathBuf>> {
 /// so none is ever half written. Nothing outside that folder is written or taken out.
 /// Blocking: run it off the main loop. Returns how many files were copied.
 ///
+/// D161: `metadata.json` goes last, after the files that are taken out, because it names
+/// the release. A copy cut short still names the one it replaces, and the next start finds
+/// it older than the carried copy and finishes it. Before the JavaScript go the files GNOME
+/// Shell can read again, so a copy cut short is more likely old code with a newer schema,
+/// which a release that only adds keys leaves working, than new code with the old one.
+///
 /// # Errors
 /// A link anywhere from `data_home` down to a file's folder, such as a developer's
 /// extension linked into a checkout, or a test's store linked to the real one; or the copy
@@ -172,26 +214,18 @@ pub fn install(from: &Path, data_home: &Path) -> Result<usize, InstallError> {
     }
     let wanted = files(from).map_err(at(from))?;
     fs::create_dir_all(&to).map_err(at(&to))?;
-    for rel in &wanted {
-        let target = to.join(rel);
-        let mut dir = to.clone();
-        for part in rel.parent().into_iter().flat_map(Path::components) {
-            dir.push(part);
-            if is_link(&dir) {
-                return Err(InstallError::Link(dir));
-            }
-            if !dir.is_dir() {
-                fs::create_dir(&dir).map_err(at(&dir))?;
-            }
-        }
-        let name = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let fresh = target.with_file_name(format!(".{name}.octosnap-new"));
-        fs::copy(from.join(rel), &fresh).map_err(at(&fresh))?;
-        fs::rename(&fresh, &target).map_err(at(&target))?;
+    let metadata = Path::new("metadata.json");
+    let (once, again): (Vec<&PathBuf>, Vec<&PathBuf>) =
+        wanted.iter().filter(|rel| rel.as_path() != metadata).partition(|rel| read_once_per_login(rel));
+    for rel in again.into_iter().chain(once) {
+        copy_into(from, &to, rel)?;
     }
     for rel in files(&to).map_err(at(&to))?.difference(&wanted) {
         let gone = to.join(rel);
         fs::remove_file(&gone).map_err(at(&gone))?;
+    }
+    if wanted.contains(metadata) {
+        copy_into(from, &to, metadata)?;
     }
     // Folders the carried copy no longer has, deepest first; one that still holds
     // something stays, and so does the extension's own.
@@ -209,6 +243,27 @@ pub fn install(from: &Path, data_home: &Path) -> Result<usize, InstallError> {
         let _ = fs::remove_dir(dir);
     }
     Ok(wanted.len())
+}
+
+/// One file of [`install`]: written beside its place in `to` and renamed into it, through no
+/// link on the way down.
+fn copy_into(from: &Path, to: &Path, rel: &Path) -> Result<(), InstallError> {
+    let target = to.join(rel);
+    let mut dir = to.to_owned();
+    for part in rel.parent().into_iter().flat_map(Path::components) {
+        dir.push(part);
+        if is_link(&dir) {
+            return Err(InstallError::Link(dir));
+        }
+        if !dir.is_dir() {
+            fs::create_dir(&dir).map_err(at(&dir))?;
+        }
+    }
+    let name = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let fresh = target.with_file_name(format!(".{name}.octosnap-new"));
+    fs::copy(from.join(rel), &fresh).map_err(at(&fresh))?;
+    fs::rename(&fresh, &target).map_err(at(&target))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -309,6 +364,86 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, folder(&home).join("pets")).unwrap();
         assert!(matches!(install(&from, &home), Err(InstallError::Link(_))));
         assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing was written through either link");
+    }
+
+    /// D161: a carried copy and the same release in the user's folder, with a stylesheet and
+    /// an icon beside the code and the schema.
+    fn installed_alike(root: &Path) -> (PathBuf, PathBuf) {
+        let from = carried_copy(root, "0.1.3");
+        write(&from.join("stylesheet.css"), ".octosnap-card { margin: 4px; }\n");
+        write(&from.join("icons/pin.svg"), "<svg/>\n");
+        let to = folder(&root.join("home/.local/share"));
+        for (rel, _) in contents(&from) {
+            write(&to.join(&rel), &fs::read_to_string(from.join(&rel)).unwrap());
+        }
+        (from, to)
+    }
+
+    #[test]
+    fn an_update_of_the_code_alone_changes_nothing_seen_before_the_login() {
+        let root = tempfile::tempdir().unwrap();
+        let (from, to) = installed_alike(root.path());
+        assert_eq!(changes_seen_before_login(&from, &to).unwrap(), Vec::<PathBuf>::new());
+        // What GNOME Shell reads at login only: the code, wherever it is, and the metadata.
+        write(&to.join("extension.js"), "// 0.1.2\n");
+        write(&to.join("pets/art/painter.js"), "// older paint\n");
+        write(&to.join("old-module.js"), "// gone in 0.1.3\n");
+        write(&to.join("metadata.json"), r#"{"version-name": "0.1.2"}"#);
+        assert_eq!(changes_seen_before_login(&from, &to).unwrap(), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_new_stylesheet_schema_or_asset_is_seen_before_the_login() {
+        let root = tempfile::tempdir().unwrap();
+        let (from, to) = installed_alike(root.path());
+        write(&to.join("stylesheet.css"), ".octosnap-card { margin: 2px; }\n");
+        write(&to.join("schemas/gschemas.compiled"), "GVariant, older");
+        fs::remove_file(to.join("icons/pin.svg")).unwrap();
+        write(&to.join("sounds/gone.oga"), "OggS");
+        assert_eq!(
+            changes_seen_before_login(&from, &to).unwrap(),
+            ["icons/pin.svg", "schemas/gschemas.compiled", "sounds/gone.oga", "stylesheet.css"].map(PathBuf::from)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_folder_is_a_change() {
+        let root = tempfile::tempdir().unwrap();
+        let (from, to) = installed_alike(root.path());
+        let elsewhere = root.path().join("elsewhere.css");
+        fs::copy(from.join("stylesheet.css"), &elsewhere).unwrap();
+        fs::remove_file(to.join("stylesheet.css")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, to.join("stylesheet.css")).unwrap();
+        assert_eq!(changes_seen_before_login(&from, &to).unwrap(), [PathBuf::from("stylesheet.css")]);
+    }
+
+    /// D161: the metadata, which names the release, is written last, so a copy cut short
+    /// still names the one it was replacing and the next start finishes it.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_cut_short_still_names_the_old_release() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home/.local/share");
+        let to = folder(&home);
+        write(&to.join("metadata.json"), r#"{"version-name": "0.1.2"}"#);
+        write(&to.join("stylesheet.css"), "/* 0.1.2 */\n");
+        let from = carried_copy(root.path(), "0.1.3");
+        write(&from.join("stylesheet.css"), "/* 0.1.3 */\n");
+        let unreadable = from.join("pets/art/painter.js");
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&unreadable).is_ok() {
+            // Root reads it anyway, and there is nothing to cut the copy short with.
+            return;
+        }
+        assert!(matches!(install(&from, &home), Err(InstallError::Io { .. })));
+        assert_eq!(version_at(&to).as_deref(), Some("0.1.2"));
+        // What GNOME Shell can read again went first.
+        assert_eq!(fs::read_to_string(to.join("stylesheet.css")).unwrap(), "/* 0.1.3 */\n");
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+        install(&from, &home).unwrap();
+        assert_eq!(contents(&to), contents(&from));
     }
 
     #[test]

@@ -28,6 +28,7 @@ mod recording;
 mod remote_settings;
 mod scrolling;
 mod service;
+mod session;
 mod settings;
 mod setup;
 

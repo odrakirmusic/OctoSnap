@@ -114,6 +114,15 @@
   </categories>
 
   <releases>
+    <release version="0.1.3" date="2026-10-05">
+      <description>
+        <p>Two fixes in how the app keeps its GNOME Shell extension.</p>
+        <ul>
+          <li>Started while the screen is locked, the app no longer asks you to log out to finish setting up: GNOME Shell turns the extension off for the lock, and on again at the unlock</li>
+          <li>An update of the extension that changes more than its code is written as you log out, so it cannot break the extension that runs until then</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-10-01">
       <description>
         <p>The app installs its own GNOME Shell extension.</p>
