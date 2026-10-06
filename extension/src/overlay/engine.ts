@@ -22,6 +22,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { type FrozenScreen, freezeScreen, viewRates } from '../capture.js';
 import { waitForRedraw } from '../later.js';
+import { CardsAside } from './aside.js';
 import { Crosshair } from './magnifier.js';
 import { createOverlayHost } from './host.js';
 import { OverlayRoot, type MonitorGeometry } from './root.js';
@@ -216,6 +217,8 @@ export class AreaOverlay {
      * a capture of stale pixels under the default settings.
      */
     #snapshot: FrozenScreen | null = null;
+    /** OctoSnap's cards, hidden from before the snapshot until `destroy` (D162). */
+    #cardsAside: CardsAside | null = null;
     #crosshairs: Crosshair[] = [];
     #crosshairMode: CrosshairMode = 'modifier';
     /** The modifier mask at the moment the selection was confirmed (`CAP-15`). */
@@ -333,6 +336,9 @@ export class AreaOverlay {
         // worth compositing is the one from before the overlay opened, and this is the
         // only moment it exists. `docs/decisions.md` D25.
         let snapshotUs: number | null = null;
+        // The cards go first, so that the snapshot, the dim and the pixels never hold them
+        // (D162). Before the snapshot and not after: the freeze is a picture of the stage.
+        this.#cardsAside = new CardsAside();
         if (this.#freezeRequested || wantsLoupe || wantsCursor) {
             const snapshotStarted = GLib.get_monotonic_time();
             try {
@@ -1265,6 +1271,14 @@ export class AreaOverlay {
 
         for (const crosshair of this.#crosshairs) crosshair.destroy();
         this.#crosshairs = [];
+
+        // The cards come back as the overlay goes, under a frozen frame that is fading.
+        try {
+            this.#cardsAside?.restore();
+        } catch (e) {
+            error('could not put the cards back', e);
+        }
+        this.#cardsAside = null;
 
         // The roots live in the host (see `host.ts`), so the host is what fades and the
         // host is what goes. One fade rather than one per monitor, which is also the only

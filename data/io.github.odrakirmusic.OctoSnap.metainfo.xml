@@ -114,6 +114,16 @@
   </categories>
 
   <releases>
+    <release version="0.1.4" date="2026-10-06">
+      <description>
+        <p>The cards step aside, and the editor learns to lock.</p>
+        <ul>
+          <li>The capture cards leave the corner while you choose an area, so they are neither in the way nor in the picture, and come back when you have chosen</li>
+          <li>A picture pasted into the editor is picked up by its edge, so you can draw on it, and reach what is drawn on it, like anywhere else</li>
+          <li>Right-click anything in the editor to lock it: a click then goes through it until you right-click it again and unlock it</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-10-05">
       <description>
         <p>Two fixes in how the app keeps its GNOME Shell extension.</p>

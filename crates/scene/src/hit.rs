@@ -57,9 +57,32 @@ pub fn topmost_measured(
     tolerance: f64,
     measure: &dyn Fn(&Object) -> Option<Bounds>,
 ) -> Option<ObjectId> {
+    topmost_where(scene, point, tolerance, measure, false)
+}
+
+/// [`topmost_measured`], **locked objects included**: the one question a locked object
+/// answers to, which is a right-click asking what is there to unlock (D162). Everything
+/// a left click does goes through the others and passes through a locked object.
+#[must_use]
+pub fn topmost_measured_any(
+    scene: &Scene,
+    point: Point,
+    tolerance: f64,
+    measure: &dyn Fn(&Object) -> Option<Bounds>,
+) -> Option<ObjectId> {
+    topmost_where(scene, point, tolerance, measure, true)
+}
+
+fn topmost_where(
+    scene: &Scene,
+    point: Point,
+    tolerance: f64,
+    measure: &dyn Fn(&Object) -> Option<Bounds>,
+    locked_too: bool,
+) -> Option<ObjectId> {
     scene.render_order().into_iter().rev().find(|id| {
         scene.get(*id).is_some_and(|o| {
-            !o.locked
+            (locked_too || !o.locked)
                 && match measure(o) {
                     Some(bounds) => bounds.normalised().contains(point),
                     None => hits_within(o, point, tolerance),
@@ -124,12 +147,17 @@ pub fn hits_within(object: &Object, point: Point, tolerance: f64) -> bool {
             bounds.inflated(reach).ellipse_contains(point)
                 && !bounds.inflated(-reach).ellipse_contains(point)
         }
-        // Text, redactions, images and spotlights are solid: every one of them is
-        // something the user drew *over* the image, so its whole area belongs to it.
+        // Text, redactions and spotlights are solid: every one of them is something the
+        // user drew *over* the image, so its whole area belongs to it.
         Geometry::Text { .. } => object.bounds().contains(point),
-        Geometry::Redact { bounds, .. } | Geometry::Image { bounds, .. } => {
-            bounds.contains(point)
-        }
+        Geometry::Redact { bounds, .. } => bounds.contains(point),
+        // An inserted picture is not: it is a second screenshot, and what the user does
+        // inside it is annotate it, as they do the first. Solid, a press there moved the
+        // picture -- an arrow could not be started on it, and one already over it was
+        // reached through it only where it was drawn above. So it is hit on its frame,
+        // as an outlined rectangle is (D162), and the frame is twice the reach, because a
+        // picture has no stroke to show where it is.
+        Geometry::Image { bounds, .. } => on_rect_edge(bounds.normalised(), point, reach * 2.0),
         Geometry::Spotlight { shape, bounds, .. } => match shape {
             crate::style::SpotlightShape::Ellipse => bounds.ellipse_contains(point),
             _ => bounds.contains(point),
@@ -272,6 +300,51 @@ mod tests {
         assert!(hits(&filled, edge));
     }
 
+    /// D162: an inserted picture is a screenshot inside the screenshot, and its middle
+    /// is somewhere to draw. Only its frame takes the click.
+    #[test]
+    fn an_inserted_image_is_hit_on_its_frame_and_not_in_its_middle() {
+        let picture = object(0, Geometry::Image {
+            bounds: Bounds::new(100.0, 100.0, 400.0, 300.0),
+            file: "assets/a.png".to_owned(),
+        });
+        assert!(!hits(&picture, Point::new(300.0, 250.0)), "the middle is the picture's content");
+        assert!(!hits(&picture, Point::new(120.0, 250.0)), "and so is just inside the frame");
+        assert!(hits(&picture, Point::new(100.0, 250.0)), "the left edge");
+        assert!(hits(&picture, Point::new(300.0, 404.0)), "just outside the bottom edge");
+        assert!(hits(&picture, Point::new(500.0, 100.0)), "a corner");
+        assert!(!hits(&picture, Point::new(700.0, 250.0)), "far outside");
+        // A frame drawn backwards is the same frame.
+        let backwards = object(0, Geometry::Image {
+            bounds: Bounds::new(500.0, 400.0, -400.0, -300.0),
+            file: "assets/a.png".to_owned(),
+        });
+        assert!(hits(&backwards, Point::new(100.0, 250.0)));
+        assert!(!hits(&backwards, Point::new(300.0, 250.0)));
+    }
+
+    /// The reason for the frame: an arrow drawn inside a picture that was inserted
+    /// above it is still what a click inside the picture reaches.
+    #[test]
+    fn what_is_drawn_inside_an_inserted_image_is_reachable_through_it() {
+        let mut s = scene();
+        let arrow = object(0, Geometry::Line {
+            start: Point::new(200.0, 250.0),
+            end: Point::new(400.0, 250.0),
+        });
+        let arrow_id = arrow.id;
+        let picture = object(5, Geometry::Image {
+            bounds: Bounds::new(100.0, 100.0, 400.0, 300.0),
+            file: "assets/a.png".to_owned(),
+        });
+        let picture_id = picture.id;
+        s.add(arrow);
+        s.add(picture);
+        assert_eq!(topmost(&s, Point::new(300.0, 250.0)), Some(arrow_id));
+        assert_eq!(topmost(&s, Point::new(300.0, 180.0)), None, "empty middle: nothing");
+        assert_eq!(topmost(&s, Point::new(100.0, 180.0)), Some(picture_id), "its frame");
+    }
+
     #[test]
     fn an_ellipse_is_hit_on_its_outline_not_in_its_middle() {
         let e = object(0, Geometry::Ellipse { bounds: Bounds::new(0.0, 0.0, 200.0, 100.0) });
@@ -360,6 +433,35 @@ mod tests {
         s.add(under);
         s.add(locked);
         assert_eq!(topmost(&s, Point::new(100.0, 100.0)), Some(under_id));
+    }
+
+    /// D162: a right-click still finds a locked object, so it can be unlocked, and finds
+    /// it only where it is the visible thing -- what is drawn above it comes first.
+    #[test]
+    fn a_right_click_reaches_a_locked_object_and_a_left_click_does_not() {
+        let mut s = scene();
+        let mut locked = object(0, Geometry::Rect {
+            bounds: Bounds::new(0.0, 0.0, 500.0, 500.0),
+            filled: true,
+            radius: 0.0,
+        });
+        locked.locked = true;
+        let locked_id = locked.id;
+        let above = object(1, Geometry::Counter {
+            center: Point::new(100.0, 100.0),
+            number: 1,
+            style: CounterStyle::Arabic,
+            radius: 12.0,
+        });
+        let above_id = above.id;
+        s.add(locked);
+        s.add(above);
+        let none = &|_: &Object| None;
+        let inside = Point::new(300.0, 300.0);
+        assert_eq!(topmost_measured(&s, inside, TOLERANCE, none), None);
+        assert_eq!(topmost_measured_any(&s, inside, TOLERANCE, none), Some(locked_id));
+        let on_counter = Point::new(100.0, 100.0);
+        assert_eq!(topmost_measured_any(&s, on_counter, TOLERANCE, none), Some(above_id));
     }
 
     #[test]

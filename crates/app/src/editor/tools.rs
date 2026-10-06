@@ -769,6 +769,16 @@ impl Editor {
         })
     }
 
+    /// [`Self::object_at`], locked objects included: what a right-click is on (D162).
+    pub(super) fn object_at_any(&self, scene: &Scene, at: Point) -> Option<ObjectId> {
+        let tolerance = (STROKE_GRAB / self.canvas.zoom()).max(hit::TOLERANCE);
+        let canvas = self.canvas.clone();
+        hit::topmost_measured_any(scene, at, tolerance, &|object| {
+            matches!(object.geometry, octosnap_scene::Geometry::Text { .. })
+                .then(|| canvas.measured_bounds(object))
+        })
+    }
+
     /// The handle under `at`, if the selection is one object and it has any.
     ///
     /// One object, because that is what §4.1's chrome draws handles on. `GRAB` is in
@@ -1143,6 +1153,80 @@ impl Editor {
         self.commit_batch(changes);
     }
 
+    /// D162's lock, from the canvas menu: the selection stays where it is, and a left
+    /// click passes through it to whatever is behind -- it is neither selected, moved,
+    /// resized nor swept up by a band or by Ctrl+A -- until a right-click unlocks it.
+    ///
+    /// One undo step, like any other edit, and saved with the project.
+    pub(super) fn lock_selection(self: &Rc<Self>) {
+        let ids = self.canvas.selection();
+        let count = self.set_locked(&ids, true);
+        if count == 0 {
+            return;
+        }
+        self.canvas.set_selection(Vec::new());
+        tracing::info!(count, "locked");
+        let how = if count == 1 { "Locked · Right-click it to unlock" } else { "Locked · Right-click one to unlock it" };
+        self.toast(how, None);
+    }
+
+    /// Unlocks `ids` and selects them, so what comes back is plainly editable again.
+    pub(super) fn unlock(self: &Rc<Self>, ids: &[ObjectId]) {
+        let count = self.set_locked(ids, false);
+        if count == 0 {
+            return;
+        }
+        let Some(scene) = self.canvas.scene() else { return };
+        let live: Vec<ObjectId> = ids.iter().copied().filter(|id| scene.get(*id).is_some()).collect();
+        self.canvas.set_selection(live);
+        tracing::info!(count, "unlocked");
+    }
+
+    /// Every locked object, unlocked: the keyboard's way back, since a locked object can
+    /// never be the selection Shift+F10 opens its menu on.
+    pub(super) fn unlock_all(self: &Rc<Self>) {
+        let ids = self.locked_objects();
+        self.unlock(&ids);
+    }
+
+    /// The locked objects in the document, in its order.
+    pub(super) fn locked_objects(&self) -> Vec<ObjectId> {
+        self.canvas.scene().map_or_else(Vec::new, |scene| {
+            scene.objects().iter().filter(|o| o.locked).map(|o| o.id).collect()
+        })
+    }
+
+    /// Sets `locked` on every one of `ids` that has handles and is not already so, as one
+    /// step. Answers how many changed.
+    fn set_locked(&self, ids: &[ObjectId], locked: bool) -> usize {
+        let Some(scene) = self.canvas.scene() else { return 0 };
+        let changes: Vec<Command> = ids
+            .iter()
+            .filter_map(|id| {
+                let was = scene.get(*id)?;
+                if was.locked == locked || was.grips() == Grips::None {
+                    return None;
+                }
+                let mut now = was.clone();
+                now.locked = locked;
+                Some(Command::Change { id: *id, before: Box::new(was.clone()), after: Box::new(now) })
+            })
+            .collect();
+        let count = changes.len();
+        self.commit_batch(changes);
+        count
+    }
+
+    /// The selection without what an undo or redo removed or locked: a locked object is
+    /// never the selection, or a key could move what a click cannot (D162).
+    fn pruned_selection(&self, scene: &Scene) -> Vec<ObjectId> {
+        self.canvas
+            .selection()
+            .into_iter()
+            .filter(|id| scene.get(*id).is_some_and(|o| !o.locked))
+            .collect()
+    }
+
     /// `spec/05` §2: "Digits 1–6 set the size level of the current tool/selection".
     ///
     /// Both, as the spec says: the tool keeps it for the next object and the selection
@@ -1156,11 +1240,10 @@ impl Editor {
     pub(super) fn undo(self: &Rc<Self>) {
         let Some(mut scene) = self.canvas.scene() else { return };
         if self.history.borrow_mut().undo(&mut scene) {
-            // A selection can name an object the undo has just removed. Dropping the ones
-            // that are gone rather than clearing everything keeps a multi-select intact
-            // through an undo of one member.
-            let live: Vec<ObjectId> =
-                self.canvas.selection().into_iter().filter(|id| scene.get(*id).is_some()).collect();
+            // A selection can name an object the undo has just removed, or locked again.
+            // Dropping only those rather than clearing everything keeps a multi-select
+            // intact through an undo of one member.
+            let live = self.pruned_selection(&scene);
             self.canvas.update_scene(scene);
             self.canvas.set_selection(live);
             self.after_edit();
@@ -1170,7 +1253,9 @@ impl Editor {
     pub(super) fn redo(self: &Rc<Self>) {
         let Some(mut scene) = self.canvas.scene() else { return };
         if self.history.borrow_mut().redo(&mut scene) {
+            let live = self.pruned_selection(&scene);
             self.canvas.update_scene(scene);
+            self.canvas.set_selection(live);
             self.after_edit();
         }
     }
@@ -1254,7 +1339,7 @@ impl Editor {
         let all: Vec<ObjectId> = scene
             .objects()
             .iter()
-            .filter(|o| o.grips() != Grips::None)
+            .filter(|o| o.grips() != Grips::None && !o.locked)
             .map(|o| o.id)
             .collect();
         tracing::info!(selected = all.len(), "select all");

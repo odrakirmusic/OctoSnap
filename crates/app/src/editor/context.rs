@@ -8,6 +8,10 @@
 //! Each entry shows its shortcut, so the menu also teaches the keys (`spec/13` #3). The
 //! object's colour and size are not repeated here: the options row already follows the
 //! selection (D56).
+//!
+//! It is also where an object is locked and unlocked (D162). A locked object takes no left
+//! click at all, so the right-click is the one thing that still finds it: on a locked
+//! object the menu offers only Unlock.
 
 use std::rc::Rc;
 
@@ -58,8 +62,14 @@ impl Editor {
         }
         let Some(scene) = self.canvas.scene() else { return };
         let at = self.canvas.to_document(x, y);
+        // The locked object the pointer is on, when it is the visible thing there.
+        let mut locked = None;
         if pick {
-            match self.object_at(&scene, at) {
+            match self.object_at_any(&scene, at) {
+                Some(id) if scene.get(id).is_some_and(|o| o.locked) => {
+                    locked = Some(id);
+                    self.canvas.set_selection(Vec::new());
+                }
                 Some(id) if !self.canvas.selection().contains(&id) => self.canvas.set_selection(vec![id]),
                 Some(_) => {}
                 None => self.canvas.set_selection(Vec::new()),
@@ -67,11 +77,17 @@ impl Editor {
         }
         let selection = self.canvas.selection();
 
-        let sections: Vec<Vec<Entry>> = if selection.is_empty() {
-            vec![
+        let sections: Vec<Vec<Entry>> = if locked.is_some() {
+            vec![vec![("Unlock", "unlock", None)]]
+        } else if selection.is_empty() {
+            let mut sections = vec![
                 vec![("Paste", "paste", Some("<Control>v")), ("Select All", "select-all", Some("<Control>a"))],
                 vec![("Copy Image", "copy", Some("<Control>c"))],
-            ]
+            ];
+            if !self.locked_objects().is_empty() {
+                sections.push(vec![("Unlock All", "unlock-all", None)]);
+            }
+            sections
         } else {
             // One text object or one counter: its words or its number, in place.
             let one = match selection.as_slice() {
@@ -95,7 +111,7 @@ impl Editor {
                 ("Bring to Front", "forward", Some("<Control>bracketright")),
                 ("Send to Back", "backward", Some("<Control>bracketleft")),
             ]);
-            sections.push(vec![("Delete", "delete", Some("Delete"))]);
+            sections.push(vec![("Lock", "lock", None), ("Delete", "delete", Some("Delete"))]);
             sections
         };
 
@@ -113,7 +129,10 @@ impl Editor {
         }
 
         type Run = Box<dyn Fn(&Rc<Editor>)>;
-        let runs: [(&str, Run); 9] = [
+        let runs: [(&str, Run); 12] = [
+            ("lock", Box::new(Editor::lock_selection)),
+            ("unlock", Box::new(move |e: &Rc<Editor>| e.unlock(&locked.into_iter().collect::<Vec<_>>()))),
+            ("unlock-all", Box::new(Editor::unlock_all)),
             ("paste", Box::new(Editor::paste_shortcut)),
             ("select-all", Box::new(Editor::select_all)),
             ("copy", Box::new(Editor::copy_shortcut)),

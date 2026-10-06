@@ -96,7 +96,8 @@ Drag over what you want. It is taken the moment you let go.
 | Esc, a right-click, or a click without a drag | Cancels |
 
 The same selection starts Self-Timer, Scrolling Capture, Capture Text and the "Capture Area
-and …" shortcuts.
+and …" shortcuts. OctoSnap's own cards leave the corner while you choose, and come back
+when you have.
 
 ### All-In-One
 
@@ -283,6 +284,10 @@ Double-click a piece of text to change it, and a counter to change its number.
 | Ctrl+Shift+Z, Ctrl+Y | Redo |
 | Esc | Leaves what you are in the middle of: a crop, some text, the eyedropper, and then the selection. It never closes the editor |
 | Right-click, Shift+F10, or the Menu key | The menu for what is selected, or for the object under the pointer |
+| Right-click → Lock | Locks what is selected: a click goes through it to what is behind, until you right-click it and choose Unlock. Unlock All, with nothing selected, unlocks everything |
+
+A picture you paste or drop onto the picture is picked up by its edge. Inside it, you draw
+as you do anywhere else.
 
 Dropping an image from another app into the middle of the picture adds it as an object.
 Dropping it at one of the four edges places it beside the picture.
