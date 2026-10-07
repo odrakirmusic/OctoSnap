@@ -119,7 +119,8 @@ impl CopyUploadBehavior {
 /// What the clipboard should end up holding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardPlan {
-    /// Copy the image (and its file URI — `spec/08` Advanced: "File & Image").
+    /// Copy the capture: a screenshot as its image, a GIF as its file (D165). `spec/08`
+    /// Advanced's "File & Image", both at once, is more than GNOME Shell lets an extension offer.
     Image,
     /// Copy the image now, then replace it with the link when the upload completes.
     ImageThenLink,

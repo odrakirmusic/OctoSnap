@@ -215,6 +215,14 @@ The keys can be turned off: Settings → Quick Access → Keyboard shortcuts on 
 page has Close after dragging out, Ask where to save, and Close cards automatically, which
 says Never until you choose a time. A card the pointer is over never closes on its own.
 
+A save is a PNG unless Settings → Screenshots → File format says JPEG or WebP. JPEG makes
+the smallest files, at the quality set below it, and puts white wherever the capture is
+see-through, as a window's shadow is. WebP is lossless and keeps the transparency, in files
+smaller than PNG's. Save As writes the format its name ends in, so `shot.webp` is a WebP
+whatever the setting, and a name with no format in it gets the setting's. A capture taller
+or wider than the format can hold, 65,535 pixels for JPEG and 16,384 for WebP, is saved as
+a PNG.
+
 A closed card is not gone. Restore Recently Closed brings back the last one, and the
 [history](#the-history) keeps the rest.
 
@@ -424,6 +432,10 @@ The GIF lands in a card. Trim, Ctrl+E or Space opens it in the GIF editor:
 | Ctrl+S, Ctrl+Shift+S, Ctrl+C | Save, Save as…, Copy |
 | Esc, Ctrl+W | Closes the editor, and leaves a card with the trim in it |
 | Ctrl+Shift+W, Final Close | Closes it for good: no card, and the GIF goes to the history |
+
+A GIF is copied as its file, the way Files copies one, so that its frames go with it: paste
+it into a chat, a web page or a folder and it arrives animated. A program that takes only
+pictures, not files, has nothing to paste from it. A screenshot is copied as its picture.
 
 ## The history
 

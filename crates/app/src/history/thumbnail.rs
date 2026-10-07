@@ -172,8 +172,9 @@ fn first_gif_frame(source: &Path) -> Result<(Vec<u8>, usize, usize), String> {
     Ok((frames.bytes().to_vec(), width, height))
 }
 
-/// A PNG as straight 8-bit RGBA, whatever it was.
-fn decode_png(source: &Path) -> Result<(Vec<u8>, usize, usize), String> {
+/// A PNG as straight 8-bit RGBA, whatever it was. A save in another format starts here
+/// too (`encode`, D164).
+pub(crate) fn decode_png(source: &Path) -> Result<(Vec<u8>, usize, usize), String> {
     let file = std::fs::File::open(source).map_err(|e| format!("{}: {e}", source.display()))?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
     // Every PNG becomes 8-bit samples of one to four channels, whatever it was.

@@ -1302,6 +1302,19 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/image-webp/image-webp-0.2.4.crate",
+        "sha256": "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3",
+        "dest": "cargo/vendor/image-webp-0.2.4"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3\", \"files\": {}}",
+        "dest": "cargo/vendor/image-webp-0.2.4",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/imagequant/imagequant-4.4.1.crate",
         "sha256": "caf5d73b959dfbe5d6b5cd3ca8de5265c7bc58297f20560a60a1d2ba6a19991f",
         "dest": "cargo/vendor/imagequant-4.4.1"
@@ -1375,6 +1388,19 @@
         "type": "inline",
         "contents": "{\"package\": \"8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682\", \"files\": {}}",
         "dest": "cargo/vendor/itoa-1.0.18",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/jpeg-encoder/jpeg-encoder-0.7.1.crate",
+        "sha256": "a0370574b86f7eca156b9f298392b5e69a23f8c86f3f865add60bbc2e79467a6",
+        "dest": "cargo/vendor/jpeg-encoder-0.7.1"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"a0370574b86f7eca156b9f298392b5e69a23f8c86f3f865add60bbc2e79467a6\", \"files\": {}}",
+        "dest": "cargo/vendor/jpeg-encoder-0.7.1",
         "dest-filename": ".cargo-checksum.json"
     },
     {

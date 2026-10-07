@@ -114,6 +114,16 @@
   </categories>
 
   <releases>
+    <release version="0.1.5" date="2026-10-07">
+      <description>
+        <p>Saved files are the format you chose, and a copied GIF stays animated.</p>
+        <ul>
+          <li>A screenshot saved as JPEG or WebP is now really a JPEG or a WebP, and the JPEG quality setting is used: before, both were PNG files under another name</li>
+          <li>Save As writes the format the name you give asks for</li>
+          <li>Copying a GIF copies the file itself, so it pastes animated into Files, a chat or a web page. A screenshot is still copied as a picture</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-10-06">
       <description>
         <p>The cards step aside, and the editor learns to lock.</p>

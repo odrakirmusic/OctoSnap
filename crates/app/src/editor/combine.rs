@@ -190,19 +190,41 @@ impl Editor {
     pub(super) fn paste_picture(self: &Rc<Self>) {
         let clipboard = self.window.clipboard();
         // Another application offers MIME types, not GTypes, so the question is whether
-        // any of them can be read as a texture -- which is what the union answers.
-        if !clipboard.formats().union_deserialize_types().contains_type(gdk::Texture::static_type()) {
+        // any of them can be read as a texture -- which is what the union answers. A file
+        // is the other answer: OctoSnap copies a GIF as its file (D165), and Files copies
+        // any file that way.
+        let readable = clipboard.formats().union_deserialize_types();
+        let pixels = readable.contains_type(gdk::Texture::static_type());
+        if !pixels && !readable.contains_type(gdk::FileList::static_type()) {
             info!("nothing to paste");
             return;
         }
         let editor = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let texture = match clipboard.read_texture_future().await {
-                Ok(Some(texture)) => texture,
-                Ok(None) => return,
-                Err(why) => {
-                    warn!("the clipboard's picture could not be read: {why}");
-                    return;
+            let texture = if pixels {
+                match clipboard.read_texture_future().await {
+                    Ok(Some(texture)) => texture,
+                    Ok(None) => return,
+                    Err(why) => {
+                        warn!("the clipboard's picture could not be read: {why}");
+                        return;
+                    }
+                }
+            } else {
+                // The file's picture, written out beside the capture like pixels are: the
+                // file on the clipboard is not this editor's to keep, and a GIF's copy goes
+                // when the next GIF is copied. A GIF comes in as its first frame, as a
+                // dropped one does.
+                let Some(file) = crate::import::clipboard_file(&clipboard).await else { return };
+                match gdk::Texture::from_filename(&file) {
+                    Ok(texture) => texture,
+                    Err(why) => {
+                        warn!(path = %file.display(), "the clipboard's file would not load: {why}");
+                        if let Some(editor) = editor.upgrade() {
+                            editor.toast("That file is not an image this editor can read", None);
+                        }
+                        return;
+                    }
                 }
             };
             let Some(editor) = editor.upgrade() else { return };

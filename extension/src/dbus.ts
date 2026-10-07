@@ -41,7 +41,8 @@ import { tellPets } from './pets/events.js';
 import { playCue } from './sound.js';
 import { SettingsBridge } from './settingsBridge.js';
 import { setAnnouncedSpool, spoolDir } from './spool.js';
-import { readBytes } from './files.js';
+import { readBytes, readHead } from './files.js';
+import { type ClipboardOffer, SNIFF_LENGTH, gifOffer, pngOffer, sniff } from './clipboardOffer.js';
 import { error, info, recentLog } from './log.js';
 
 /**
@@ -695,7 +696,10 @@ export class ShellService {
     // --- D-Bus methods. Names must match the interface XML exactly. ---------------
 
     /**
-     * `spec/10` §3.1. Puts a PNG on the clipboard as `image/png`.
+     * `spec/10` §3.1. Puts a capture on the clipboard: a PNG as its pixels, `image/png`, and
+     * a GIF as its file, `text/uri-list` (D165, `clipboardOffer.ts`). The type is read
+     * from the file's first bytes, so a GIF is never labelled a PNG again; anything else
+     * is refused rather than offered under a type it is not.
      *
      * This has to be the extension rather than the app: `spec/01` §2 row 15 notes that
      * `Gdk.Clipboard` only works once the app has had focus or input, and the whole point
@@ -705,20 +709,24 @@ export class ShellService {
      * Answers with a D-Bus error on failure, because the app needs to know whether to tell
      * the user the copy happened.
      *
-     * **Asynchronous** since 0.1.1: the PNG is read off the main loop (`files.ts`), and the
+     * **Asynchronous** since 0.1.1: the file is read off the main loop (`files.ts`), and the
      * reply waits for the clipboard, so the app's call is answered as before.
      */
     SetClipboardImageAsync(params: [string], invocation: Gio.DBusMethodInvocation): void {
         const [path] = params;
         void (async () => {
             try {
-                const bytes = await readBytes(path);
+                const format = sniff(await readHead(path, SNIFF_LENGTH));
+                let offer: ClipboardOffer;
+                if (format === 'png') offer = pngOffer(await readBytes(path));
+                else if (format === 'gif') offer = gifOffer(Gio.File.new_for_path(path).get_uri());
+                else throw new Error(`${path} is neither a PNG nor a GIF`);
                 St.Clipboard.get_default().set_content(
                     St.ClipboardType.CLIPBOARD,
-                    'image/png',
-                    new GLib.Bytes(bytes),
+                    offer.mime,
+                    new GLib.Bytes(offer.bytes),
                 );
-                info(`clipboard set from ${path} (${bytes.length} bytes)`);
+                info(`clipboard set from ${path} as ${offer.mime} (${offer.bytes.length} bytes)`);
                 tellPets({ kind: 'copied' });
                 invocation.return_value(null);
             } catch (e) {

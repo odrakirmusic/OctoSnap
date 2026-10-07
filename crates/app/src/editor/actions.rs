@@ -1345,9 +1345,12 @@ impl Editor {
             .path
             .file_stem()
             .map_or_else(|| "Screenshot".to_owned(), |s| s.to_string_lossy().into_owned());
+        // `shot-format`'s extension, which the flow then writes (D164); the name the user
+        // ends up with is what decides.
+        let format = crate::capture_flow().map(|flow| flow.image_format()).unwrap_or_default();
         let dialog = gtk::FileDialog::builder()
             .title("Save As")
-            .initial_name(format!("{stem}.png"))
+            .initial_name(format!("{stem}.{}", format.extension()))
             .filters(&filters)
             .default_filter(&images)
             .modal(false)

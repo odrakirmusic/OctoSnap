@@ -13,6 +13,7 @@ mod background;
 mod bundled;
 mod capture_window;
 mod diagnostics;
+mod encode;
 mod flow;
 mod gif_editor;
 mod handshake;

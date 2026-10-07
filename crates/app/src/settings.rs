@@ -43,6 +43,7 @@ const REQUIRED_KEYS: &[&str] = &[
     "copy-upload-behavior",
     "screenshot-folder",
     "shot-format",
+    "shot-jpg-quality",
     "filename-template",
     "filename-counter-start",
     "filename-counter-width",
@@ -337,6 +338,7 @@ impl Settings {
                 Some(PathBuf::from(recording_folder.as_str()))
             },
             format: ImageFormat::from_wire(&s.string("shot-format")).unwrap_or_default(),
+            jpeg_quality: s.int("shot-jpg-quality").clamp(1, 100) as u8,
             template: s.string("filename-template").to_string(),
             // The schema clamps these, but a hand-edited dconf value does not go through
             // the schema's range, so they are clamped again here.
@@ -344,6 +346,8 @@ impl Settings {
             counter_width: s.int("filename-counter-width").clamp(1, 4) as u8,
             utc: s.boolean("filename-utc"),
             retina_suffix: s.boolean("retina-suffix"),
+
+            clipboard_folder: None,
         }
     }
 

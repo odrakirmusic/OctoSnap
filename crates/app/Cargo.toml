@@ -30,6 +30,13 @@ gtk = { version = "0.11.4", package = "gtk4", features = ["gnome_50"] }
 # 4747 ms export of §11 item 1's 5K document -- 95 % of the budget's eleven-fold overrun --
 # and it has no compression setting to turn down.
 png = "0.18.1"
+# `ACT-06`'s other two formats (D164). Both pure Rust and both without a dependency the
+# lockfile did not already have: `jpeg-encoder` takes the quality setting and the chroma
+# sampling, and `image-webp` is the `image` crate's own WebP codec, whose encoder is
+# lossless -- which is what a screenshot wants from WebP, and why the quality setting
+# stays JPEG's alone.
+jpeg-encoder = { version = "0.7.1", features = ["simd"] }
+image-webp = "0.2.4"
 octosnap-core = { version = "0.1.0", path = "../core" }
 octosnap-scene = { version = "0.1.0", path = "../scene" }
 octosnap-shell = { version = "0.1.0", path = "../shell" }

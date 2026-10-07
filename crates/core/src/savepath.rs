@@ -26,7 +26,7 @@ pub enum ImageFormat {
     Webp,
 }
 
-/// `spec/08` `shot-jpg-quality`.
+/// `spec/08` `shot-jpg-quality`: the JPEG encoder's 1 to 100 (D164).
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
 
 /// `spec/08`: the subdirectory under XDG Pictures when `screenshot-folder` is unset.
@@ -69,6 +69,97 @@ impl ImageFormat {
     #[must_use]
     pub const fn is_opaque(self) -> bool {
         matches!(self, Self::Jpg)
+    }
+
+    /// The format a file name asks for, by its extension and in any case: `shot.JPEG` is
+    /// a JPEG. `None` for a name with no extension or one that is none of the three.
+    #[must_use]
+    pub fn of_path(path: &Path) -> Option<Self> {
+        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+        Self::from_wire(&extension)
+    }
+
+    /// The format a file's first bytes say it is: the signature each format opens with.
+    /// Twelve bytes are enough for all three; fewer can still be a PNG's or a JPEG's.
+    #[must_use]
+    pub fn sniff(bytes: &[u8]) -> Option<Self> {
+        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            Some(Self::Png)
+        } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+            Some(Self::Jpg)
+        } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && bytes[8..12] == *b"WEBP" {
+            Some(Self::Webp)
+        } else {
+            None
+        }
+    }
+
+    /// The longest side, in pixels, a file of this format can have. JPEG counts in 16 bits
+    /// and lossless WebP in 14 (plus one), so a long scrolling capture fits neither; PNG's
+    /// limit is 2^31 - 1, which no screen comes near.
+    #[must_use]
+    pub const fn max_side(self) -> u32 {
+        match self {
+            Self::Png => i32::MAX.unsigned_abs(),
+            Self::Jpg => 65_535,
+            Self::Webp => 16_384,
+        }
+    }
+
+    /// This format if it can hold a `width` x `height` picture, and PNG if it cannot
+    /// (D164): a capture is never lost to its format, and a file named for one format is
+    /// never another.
+    #[must_use]
+    pub const fn for_size(self, width: u32, height: u32) -> Self {
+        let max = self.max_side();
+        if width <= max && height <= max { self } else { Self::Png }
+    }
+}
+
+/// Where a Save As writes a screenshot, and as what (D164).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveAsTarget {
+    pub path: PathBuf,
+    pub format: ImageFormat,
+    /// True when `path` is the name the user chose, which may be written over: the
+    /// chooser has already asked about that. False when it is one made from it, which is
+    /// a free name rather than someone else's file.
+    pub chosen: bool,
+}
+
+/// What a Save As to `chosen` writes, given the configured format and whether a format
+/// can hold the picture (`ImageFormat::for_size`).
+///
+/// The **name** decides the format, as it does for the editor's project (D164): a user
+/// who types `shot.webp` under a chooser pre-filled with `shot.png` has said what they
+/// want. A name that names no format -- none at all, or `v1.2 notes`, whose "extension" is
+/// `2 notes` -- keeps every character and gains the configured format's, rather than
+/// holding bytes its name does not describe. A format too small for the picture gives way
+/// to PNG under the same stem.
+#[must_use]
+pub fn save_as_target(
+    chosen: &Path,
+    configured: ImageFormat,
+    fits: impl Fn(ImageFormat) -> bool,
+    exists: impl Fn(&Path) -> bool,
+) -> SaveAsTarget {
+    let dir = chosen.parent().unwrap_or_else(|| Path::new(""));
+    let name = chosen.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match ImageFormat::of_path(chosen) {
+        Some(format) if fits(format) => {
+            SaveAsTarget { path: chosen.to_path_buf(), format, chosen: true }
+        }
+        Some(_) => {
+            let stem = chosen.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let format = ImageFormat::Png;
+            let path = unique_path(dir, &stem, format.extension(), exists);
+            SaveAsTarget { path, format, chosen: false }
+        }
+        None => {
+            let format = if fits(configured) { configured } else { ImageFormat::Png };
+            let path = unique_path(dir, &name, format.extension(), exists);
+            SaveAsTarget { path, format, chosen: false }
+        }
     }
 }
 
@@ -263,5 +354,74 @@ mod tests {
     fn the_default_format_is_png() {
         assert_eq!(ImageFormat::default(), ImageFormat::Png);
         assert_eq!(ImageFormat::default().extension(), "png");
+    }
+
+    #[test]
+    fn a_name_asks_for_a_format_in_any_case() {
+        let of = |name: &str| ImageFormat::of_path(Path::new(name));
+        assert_eq!(of("/s/Shot.png"), Some(ImageFormat::Png));
+        assert_eq!(of("/s/Shot.JPG"), Some(ImageFormat::Jpg));
+        assert_eq!(of("/s/Shot.jpeg"), Some(ImageFormat::Jpg));
+        assert_eq!(of("/s/Shot.WebP"), Some(ImageFormat::Webp));
+        assert_eq!(of("/s/Shot.tiff"), None);
+        assert_eq!(of("/s/Shot"), None);
+        assert_eq!(of("/s/v1.2 notes"), None);
+    }
+
+    #[test]
+    fn a_file_is_sniffed_by_its_signature() {
+        assert_eq!(ImageFormat::sniff(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"), Some(ImageFormat::Png));
+        assert_eq!(ImageFormat::sniff(&[0xff, 0xd8, 0xff, 0xe0]), Some(ImageFormat::Jpg));
+        assert_eq!(ImageFormat::sniff(b"RIFF\x24\0\0\0WEBPVP8L"), Some(ImageFormat::Webp));
+        // A RIFF that is not a WebP -- a WAV -- and a GIF are neither.
+        assert_eq!(ImageFormat::sniff(b"RIFF\x24\0\0\0WAVEfmt "), None);
+        assert_eq!(ImageFormat::sniff(b"GIF89a"), None);
+        assert_eq!(ImageFormat::sniff(b"RIFF"), None);
+        assert_eq!(ImageFormat::sniff(b""), None);
+    }
+
+    /// A scrolling capture is the one that finds these limits: a long page at 2x is past
+    /// WebP's 16384 rows in a few screens.
+    #[test]
+    fn a_format_too_small_for_the_picture_gives_way_to_png() {
+        assert_eq!(ImageFormat::Webp.for_size(1920, 16_384), ImageFormat::Webp);
+        assert_eq!(ImageFormat::Webp.for_size(1920, 16_385), ImageFormat::Png);
+        assert_eq!(ImageFormat::Jpg.for_size(65_535, 1080), ImageFormat::Jpg);
+        assert_eq!(ImageFormat::Jpg.for_size(1920, 65_536), ImageFormat::Png);
+        assert_eq!(ImageFormat::Png.for_size(1920, 400_000), ImageFormat::Png);
+    }
+
+    // --- save as -------------------------------------------------------------
+
+    fn target(chosen: &str, configured: ImageFormat, fits: &[ImageFormat], exists: &[&str]) -> SaveAsTarget {
+        save_as_target(Path::new(chosen), configured, |f| fits.contains(&f), taken(exists))
+    }
+
+    const ALL: [ImageFormat; 3] = [ImageFormat::Png, ImageFormat::Jpg, ImageFormat::Webp];
+
+    #[test]
+    fn the_chosen_name_decides_the_format() {
+        let t = target("/s/Shot.webp", ImageFormat::Jpg, &ALL, &["/s/Shot.webp"]);
+        assert_eq!(t, SaveAsTarget { path: "/s/Shot.webp".into(), format: ImageFormat::Webp, chosen: true });
+        let t = target("/s/Shot.JPEG", ImageFormat::Png, &ALL, &[]);
+        assert_eq!(t, SaveAsTarget { path: "/s/Shot.JPEG".into(), format: ImageFormat::Jpg, chosen: true });
+    }
+
+    #[test]
+    fn a_name_without_a_format_keeps_every_character_and_gains_one() {
+        let t = target("/s/v1.2 notes", ImageFormat::Jpg, &ALL, &[]);
+        assert_eq!(t, SaveAsTarget { path: "/s/v1.2 notes.jpg".into(), format: ImageFormat::Jpg, chosen: false });
+        // Not the user's name, so not the user's to overwrite.
+        let t = target("/s/Shot.tiff", ImageFormat::Png, &ALL, &["/s/Shot.tiff.png"]);
+        assert_eq!(t, SaveAsTarget { path: "/s/Shot.tiff (2).png".into(), format: ImageFormat::Png, chosen: false });
+    }
+
+    #[test]
+    fn a_format_too_small_saves_as_png_beside_the_chosen_name() {
+        let png = [ImageFormat::Png];
+        let t = target("/s/Long.webp", ImageFormat::Webp, &png, &["/s/Long.png"]);
+        assert_eq!(t, SaveAsTarget { path: "/s/Long (2).png".into(), format: ImageFormat::Png, chosen: false });
+        let t = target("/s/Long", ImageFormat::Webp, &png, &[]);
+        assert_eq!(t, SaveAsTarget { path: "/s/Long.png".into(), format: ImageFormat::Png, chosen: false });
     }
 }

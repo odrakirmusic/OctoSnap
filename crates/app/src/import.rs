@@ -36,16 +36,39 @@ pub fn import_file(path: &Path) -> Option<CaptureResult> {
 }
 
 /// The clipboard's image as a capture, or `None` when it holds none.
+///
+/// Pixels, or else a file: OctoSnap copies a GIF as its file (D165), and Files copies any
+/// file that way. A GIF stays one ([`import_file`]), so it opens in the GIF editor rather
+/// than as its first frame.
 pub async fn import_clipboard() -> Option<CaptureResult> {
-    let display = gdk::Display::default()?;
-    match display.clipboard().read_texture_future().await {
-        Ok(Some(texture)) => import_texture(&texture, "Clipboard"),
-        Ok(None) => {
-            info!("the clipboard holds no image");
-            None
+    let clipboard = gdk::Display::default()?.clipboard();
+    // Another application offers MIME types, not GTypes; the union says which of them GTK
+    // can read as what.
+    let readable = clipboard.formats().union_deserialize_types();
+    if readable.contains_type(gdk::Texture::static_type()) {
+        match clipboard.read_texture_future().await {
+            Ok(Some(texture)) => return import_texture(&texture, "Clipboard"),
+            Ok(None) => {}
+            Err(e) => warn!("could not read an image from the clipboard: {e}"),
         }
+    }
+    if let Some(path) = clipboard_file(&clipboard).await {
+        return import_file(&path);
+    }
+    info!("the clipboard holds no image");
+    None
+}
+
+/// The first file on the clipboard, when it holds a list of them: a GIF OctoSnap copied
+/// (D165), or whatever was copied in Files.
+pub async fn clipboard_file(clipboard: &gdk::Clipboard) -> Option<std::path::PathBuf> {
+    if !clipboard.formats().union_deserialize_types().contains_type(gdk::FileList::static_type()) {
+        return None;
+    }
+    match clipboard.read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT).await {
+        Ok(value) => value.get::<gdk::FileList>().ok()?.files().into_iter().next()?.path(),
         Err(e) => {
-            warn!("could not read an image from the clipboard: {e}");
+            warn!("could not read a file from the clipboard: {e}");
             None
         }
     }

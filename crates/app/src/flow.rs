@@ -19,11 +19,14 @@ use gtk::prelude::*;
 use octosnap_core::actions::{AfterAction, ClipboardPlan, ConfirmModifiers, Plan, Policy, resolve};
 use octosnap_core::request::CaptureRequest;
 use octosnap_core::history::Kind;
-use octosnap_core::savepath::{ImageFormat, recording_dir, screenshot_dir, unique_path};
+use octosnap_core::savepath::{
+    DEFAULT_JPEG_QUALITY, ImageFormat, recording_dir, save_as_target, screenshot_dir, unique_path,
+};
 use octosnap_core::{CaptureResult, Rect, filename};
 use octosnap_shell::{BridgeError, Cue, ShellBridge};
 use tracing::{info, warn};
 
+use crate::encode::{self, EncodeError};
 use crate::recording::render;
 
 /// `ACT-06` and `ACT-07` settings. Defaults are `spec/08`'s.
@@ -34,13 +37,20 @@ pub struct SaveConfig {
     /// `recording-folder`; `None` means XDG Videos/Screencasts. A recording saves here,
     /// with its own file extension, rather than into the screenshot folder as a PNG.
     pub recording_folder: Option<PathBuf>,
+    /// `shot-format`: what a screenshot is saved as, by every Save (D164).
     pub format: ImageFormat,
+    /// `shot-jpg-quality`, 1 to 100.
+    pub jpeg_quality: u8,
     pub template: String,
     pub counter_start: u32,
     pub counter_width: u8,
     pub utc: bool,
     /// `CAP-16`: append `@2x` when the capture is denser than 1x.
     pub retina_suffix: bool,
+    /// Where a GIF the clipboard names is kept (D165); `None` means the app's cache,
+    /// `$XDG_CACHE_HOME/octosnap/clipboard`. Not a setting: a test points it at its own
+    /// directory, as it does the two folders above.
+    pub clipboard_folder: Option<PathBuf>,
 }
 
 impl Default for SaveConfig {
@@ -49,11 +59,13 @@ impl Default for SaveConfig {
             folder: None,
             recording_folder: None,
             format: ImageFormat::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
             template: filename::DEFAULT_TEMPLATE.to_owned(),
             counter_start: 1,
             counter_width: 1,
             utc: false,
             retina_suffix: true,
+            clipboard_folder: None,
         }
     }
 }
@@ -308,9 +320,7 @@ impl<B: ShellBridge> CaptureFlow<B> {
     /// `spec/10` §3.2's `copy-last`: puts the most recent capture back on the clipboard.
     pub async fn copy_last(&self) -> Result<PathBuf, SaveError> {
         let capture = self.last_capture().ok_or(SaveError::NothingCaptured)?;
-        render::ensure(&capture.path).await.map_err(SaveError::Render)?;
-        crate::editor::tools::forget_copied_objects("the app copied an image");
-        self.bridge.set_clipboard_image(&capture.path).await?;
+        self.to_clipboard(&capture).await?;
         info!(path = %capture.path.display(), "copied the last capture again");
         self.cue(Cue::Copied).await;
         Ok(capture.path)
@@ -342,10 +352,7 @@ impl<B: ShellBridge> CaptureFlow<B> {
     /// These copies tink and the after-capture copy does not. That one is part of the
     /// capture, whose shutter has just sounded.
     pub async fn copy(&self, capture: &CaptureResult) -> Result<(), SaveError> {
-        // A recording whose GIF is still frames is written first (D113).
-        render::ensure(&capture.path).await.map_err(SaveError::Render)?;
-        crate::editor::tools::forget_copied_objects("the app copied an image");
-        self.bridge.set_clipboard_image(&capture.path).await?;
+        self.to_clipboard(capture).await?;
         info!(path = %capture.path.display(), "copied a card to the clipboard");
         self.cue(Cue::Copied).await;
         Ok(())
@@ -389,36 +396,63 @@ impl<B: ShellBridge> CaptureFlow<B> {
         let extension = if recording {
             recording_extension(capture)
         } else {
-            config.format.extension().to_owned()
+            still_format(capture, config.format).extension().to_owned()
         };
         format!("{}.{}", filename::render(&config.template, &context), extension)
     }
 
-    /// Copies a capture to a path the user chose (`spec/04` §3's "ask for destination").
+    /// `shot-format` as it stands, for a chooser the flow does not open itself: the
+    /// editor's Save As names its file with it.
+    #[must_use]
+    pub fn image_format(&self) -> ImageFormat {
+        self.save.borrow().format
+    }
+
+    /// Writes a capture to a path the user chose (`spec/04` §3's "ask for destination").
     ///
     /// Separate from [`Self::save_capture`] rather than a flag on it, because the two
     /// differ in more than the destination: this one does not consult the template, does
     /// not touch the `{n}` counter, and must not apply `unique_path` -- the user picked
     /// that name, and quietly writing `name-1.png` instead would be the one thing a
     /// chooser is supposed to make impossible.
+    ///
+    /// A screenshot is written in the format its name asks for, whatever `shot-format`
+    /// says (D164). The two cases where the name is not kept are the ones where keeping
+    /// it would mean bytes it does not describe: a name with no format in it gains the
+    /// configured one's extension, and a format too small for the picture gives way to
+    /// PNG. The answer is the path written, which is how the caller learns of either.
     pub async fn save_capture_as(
         &self,
         capture: &CaptureResult,
         destination: &Path,
     ) -> Result<PathBuf, SaveError> {
         render::ensure(&capture.path).await.map_err(SaveError::Render)?;
-        gio::File::for_path(&capture.path)
-            .copy_future(
-                &gio::File::for_path(destination),
-                gio::FileCopyFlags::OVERWRITE,
-                glib::Priority::DEFAULT,
-            )
-            .0
-            .await
-            .map_err(|e| SaveError::Copy(destination.to_path_buf(), e))?;
-        *self.last_saved.borrow_mut() = Some(destination.to_path_buf());
-        info!(path = %destination.display(), "saved a card to a chosen path");
-        Ok(destination.to_path_buf())
+        let written = if is_recording(capture) {
+            copy_file(&capture.path, destination, true).await?;
+            destination.to_path_buf()
+        } else {
+            let config = self.save.borrow().clone();
+            let size = encode::peek(&capture.path).1;
+            let target = save_as_target(
+                destination,
+                config.format,
+                |format| size.is_none_or(|(w, h)| format.for_size(w, h) == format),
+                |p| p.exists(),
+            );
+            if target.path != destination {
+                info!(
+                    chosen = %destination.display(),
+                    path = %target.path.display(),
+                    "the chosen name could not hold the picture's format"
+                );
+            }
+            write_still(&capture.path, &target.path, target.format, config.jpeg_quality, target.chosen)
+                .await?;
+            target.path
+        };
+        *self.last_saved.borrow_mut() = Some(written.clone());
+        info!(path = %written.display(), "saved a card to a chosen path");
+        Ok(written)
     }
 
     /// Applies changed settings in place.
@@ -477,14 +511,7 @@ impl<B: ShellBridge> CaptureFlow<B> {
         if outputs.copy && !holds {
             // Not held, so a GIF still in frames is written now, before the clipboard is
             // handed a file that is not there yet.
-            let copied = match render::ensure(&capture.path).await {
-                Ok(()) => {
-                    crate::editor::tools::forget_copied_objects("the app copied an image");
-                    self.bridge.set_clipboard_image(&capture.path).await.map_err(SaveError::from)
-                }
-                Err(e) => Err(SaveError::Render(e)),
-            };
-            match copied {
+            match self.to_clipboard(capture).await {
                 Ok(()) => {
                     outcome.copied = true;
                     info!(path = %capture.path.display(), "copied to the clipboard");
@@ -716,6 +743,76 @@ impl<B: ShellBridge> CaptureFlow<B> {
     /// `ACT-06`: renders the name, resolves the folder, picks a non-colliding path, copies.
     /// A recording whose GIF is still frames is written first (D113), before the name
     /// takes a `{n}`: a render that fails must not use one up.
+    /// Every copy's way to the clipboard: the card's, the editors', a pin's, the history's,
+    /// `copy-last` and the after-capture plan's.
+    ///
+    /// A recording whose GIF is still frames is written first (D113). Then the shell is
+    /// handed a file, and what it does with it depends on what it is (D165): a PNG's pixels
+    /// are read at once and the file can go, but a GIF goes on the clipboard as its file,
+    /// which is read when it is pasted -- after the card that held it has closed and its
+    /// spool copy has been filed away. So a GIF is copied first to a place of the
+    /// clipboard's own ([`Self::clipboard_copy`]).
+    async fn to_clipboard(&self, capture: &CaptureResult) -> Result<(), SaveError> {
+        render::ensure(&capture.path).await.map_err(SaveError::Render)?;
+        let path = if octosnap_core::history::is_gif(&capture.path) {
+            self.clipboard_copy(capture).await?
+        } else {
+            capture.path.clone()
+        };
+        crate::editor::tools::forget_copied_objects("the app copied an image");
+        self.bridge.set_clipboard_image(&path).await?;
+        Ok(())
+    }
+
+    /// The copy of a GIF that the clipboard names (D165): `clipboard/<id>/<name>.gif` in
+    /// the app's cache, under the name Save would give it, since that is the name a paste
+    /// into Files or a chat shows.
+    ///
+    /// It lasts until the next GIF is copied, which takes the folder's earlier copies away:
+    /// a page that took the file from a paste may read it later than the paste, so it is
+    /// not removed the moment the clipboard changes, and the cache is where a file that can
+    /// be made again belongs. Its own directory per capture, so two GIFs of one name never
+    /// meet. A copy rather than a link: the file the clipboard names must not change under
+    /// it if the spool's is ever rewritten in place.
+    async fn clipboard_copy(&self, capture: &CaptureResult) -> Result<PathBuf, SaveError> {
+        let root = self
+            .save
+            .borrow()
+            .clipboard_folder
+            .clone()
+            .unwrap_or_else(|| glib::user_cache_dir().join("octosnap").join("clipboard"));
+        let id = capture
+            .path
+            .file_stem()
+            .map_or_else(octosnap_core::capture::fresh_id, |s| s.to_string_lossy().into_owned());
+        let dir = root.join(&id);
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy() != id
+                    && let Err(e) = std::fs::remove_dir_all(entry.path())
+                {
+                    warn!(path = %entry.path().display(), "could not remove an earlier clipboard copy: {e}");
+                }
+            }
+        }
+        if let Err(e) = gio::File::for_path(&dir).make_directory_with_parents(gio::Cancellable::NONE)
+            && !e.matches(gio::IOErrorEnum::Exists)
+        {
+            return Err(SaveError::Directory(dir, e));
+        }
+        let destination = dir.join(self.suggested_name(capture));
+        gio::File::for_path(&capture.path)
+            .copy_future(
+                &gio::File::for_path(&destination),
+                gio::FileCopyFlags::OVERWRITE,
+                glib::Priority::DEFAULT,
+            )
+            .0
+            .await
+            .map_err(|e| SaveError::Copy(destination.clone(), e))?;
+        Ok(destination)
+    }
+
     async fn save(&self, capture: &CaptureResult) -> Result<PathBuf, SaveError> {
         render::ensure(&capture.path).await.map_err(SaveError::Render)?;
         let config = self.save.borrow().clone();
@@ -742,41 +839,92 @@ impl<B: ShellBridge> CaptureFlow<B> {
 
         // A recording saves into the recording folder, keeping the extension the spool
         // file already has (`gif` in M5); a screenshot into the screenshot folder as its
-        // configured image format.
-        let (dir, extension): (PathBuf, String) = if recording {
+        // configured image format (D164).
+        let (dir, extension, format): (PathBuf, String, Option<ImageFormat>) = if recording {
             (
                 recording_dir(config.recording_folder.as_deref(), &videos_dir()),
                 recording_extension(capture),
+                None,
             )
         } else {
+            let format = still_format(capture, config.format);
             (
                 screenshot_dir(config.folder.as_deref(), &pictures_dir()),
-                config.format.extension().to_owned(),
+                format.extension().to_owned(),
+                Some(format),
             )
         };
         let destination = unique_path(&dir, &stem, &extension, |p| p.exists());
 
         // Creating the directory is one syscall chain and has no async variant, so it
-        // stays sync. The copy below is the part that matters: spec/10 §6 caps UI-thread
-        // work at 4 ms and a 4K PNG is megabytes, so that one is a future.
+        // stays sync. The write below is the part that matters: spec/10 §6 caps UI-thread
+        // work at 4 ms and a 4K PNG is megabytes, so that one is a future -- and an encode
+        // is a worker's.
         if let Err(e) = gio::File::for_path(&dir).make_directory_with_parents(gio::Cancellable::NONE)
             && !e.matches(gio::IOErrorEnum::Exists)
         {
             return Err(SaveError::Directory(dir, e));
         }
 
-        gio::File::for_path(&capture.path)
-            .copy_future(
-                &gio::File::for_path(&destination),
-                gio::FileCopyFlags::NONE,
-                glib::Priority::DEFAULT,
-            )
-            .0
-            .await
-            .map_err(|e| SaveError::Copy(destination.clone(), e))?;
-
+        match format {
+            Some(format) => {
+                write_still(&capture.path, &destination, format, config.jpeg_quality, false).await?;
+            }
+            None => copy_file(&capture.path, &destination, false).await?,
+        }
         Ok(destination)
     }
+}
+
+/// The format a screenshot is saved in: `configured`, or PNG when that cannot hold the
+/// picture -- a scrolling capture past WebP's 16384 rows (D164). The size is the file's
+/// own, from its header, because the capture's recorded size can round differently.
+fn still_format(capture: &CaptureResult, configured: ImageFormat) -> ImageFormat {
+    match encode::peek(&capture.path).1 {
+        Some((width, height)) => configured.for_size(width, height),
+        None => configured,
+    }
+}
+
+/// Writes the screenshot at `source` to `destination` as `format` (D164).
+///
+/// A copy when the file is that format already, which is every PNG save as it always
+/// was. An encode otherwise, on a worker: a 5K JPEG is a tenth of a second of CPU, and
+/// `spec/10` §7 gives the main loop a frame.
+async fn write_still(
+    source: &Path,
+    destination: &Path,
+    format: ImageFormat,
+    quality: u8,
+    replace: bool,
+) -> Result<(), SaveError> {
+    if encode::peek(source).0 == Some(format) {
+        return copy_file(source, destination, replace).await;
+    }
+    let started = std::time::Instant::now();
+    let (from, to) = (source.to_path_buf(), destination.to_path_buf());
+    gio::spawn_blocking(move || encode::transcode(&from, &to, format, quality, replace))
+        .await
+        .unwrap_or(Err(EncodeError::Panicked))
+        .map_err(|e| SaveError::Encode(destination.to_path_buf(), e))?;
+    info!(
+        path = %destination.display(),
+        format = format.as_wire(),
+        ms = started.elapsed().as_millis(),
+        "encoded a screenshot"
+    );
+    Ok(())
+}
+
+/// `source` to `destination` as it is. `replace` writes over a file already there, which
+/// only a Save As may.
+async fn copy_file(source: &Path, destination: &Path, replace: bool) -> Result<(), SaveError> {
+    let flags = if replace { gio::FileCopyFlags::OVERWRITE } else { gio::FileCopyFlags::NONE };
+    gio::File::for_path(source)
+        .copy_future(&gio::File::for_path(destination), flags, glib::Priority::DEFAULT)
+        .0
+        .await
+        .map_err(|e| SaveError::Copy(destination.to_path_buf(), e))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -789,6 +937,8 @@ pub enum SaveError {
     Directory(PathBuf, glib::Error),
     #[error("could not write {0}: {1}")]
     Copy(PathBuf, glib::Error),
+    #[error("could not write {0}: {1}")]
+    Encode(PathBuf, EncodeError),
     #[error("the shell bridge failed: {0}")]
     Bridge(#[from] BridgeError),
 }
@@ -895,7 +1045,8 @@ mod tests {
 
     fn capture_in(dir: &Path, modifiers: u32) -> CaptureResult {
         let png = dir.join("01SOURCE.png");
-        // Not a real PNG; nothing in the flow decodes it, it only gets copied.
+        // Not a real PNG; nothing in a PNG save decodes it, it only gets copied. A JPEG or
+        // a WebP save does, and [`still_in`] is for those.
         std::fs::write(&png, b"\x89PNG\r\n\x1a\n fake").expect("write source");
         CaptureResult {
             path: png.clone(),
@@ -927,6 +1078,14 @@ mod tests {
         }
     }
 
+    /// [`capture_in`] with a real `width` x `height` PNG behind it, see-through down its
+    /// left edge when `alpha`, as a window capture's shadow is.
+    fn still_in(dir: &Path, width: u32, height: u32, alpha: bool) -> CaptureResult {
+        let capture = capture_in(dir, 0);
+        encode::tests::write_png(&capture.path, width, height, alpha);
+        capture
+    }
+
     /// Both folders in `dir`: a test that saves a recording must never reach the real
     /// XDG Videos folder, which is where `recording_folder: None` goes.
     fn save_config_in(dir: &Path) -> SaveConfig {
@@ -935,6 +1094,7 @@ mod tests {
             recording_folder: Some(dir.join("recordings")),
             template: "Shot {yyyy}-{MM}-{dd} {n}".to_owned(),
             utc: true,
+            clipboard_folder: Some(dir.join("clipboard")),
             ..SaveConfig::default()
         }
     }
@@ -1005,11 +1165,64 @@ mod tests {
 
         assert!(capture.path.is_file(), "the GIF was written from its frames");
         assert!(outcome.copied);
-        assert_eq!(bridge.clipboard_calls(), vec![capture.path.clone()]);
+        // The clipboard's own copy of it (D165), under the name the save below gets too.
+        let copied = dir.path().join("clipboard/01REC/Shot 2026-09-07 1.gif");
+        assert_eq!(bridge.clipboard_calls(), vec![copied.clone()]);
+        assert_eq!(std::fs::read(&copied).expect("copied"), std::fs::read(&capture.path).expect("written"));
         let saved = outcome.saved_to.expect("saved");
+        assert_eq!(saved.file_name(), copied.file_name());
         assert!(saved.is_file());
         assert_eq!(saved.extension().and_then(|e| e.to_str()), Some("gif"));
         assert!(flow.release(&capture.path).is_none(), "nothing was held");
+    }
+
+    /// D165: a GIF goes on the clipboard as its file, and that file is one of the
+    /// clipboard's own, under the name Save gives it. It is read when it is pasted, which is
+    /// after a Copy has closed the card and the card's closing has taken the spool copy.
+    #[test]
+    fn a_gif_is_copied_as_a_file_that_outlives_the_spool_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bridge = NullBridge::default();
+        let flow = CaptureFlow::new(bridge.clone(), Policy::default(), save_config_in(dir.path()));
+        let capture = recording_capture_in(dir.path());
+
+        run(flow.copy(&capture)).expect("copied");
+
+        let calls = bridge.clipboard_calls();
+        assert_eq!(calls, vec![dir.path().join("clipboard/01REC/Shot 2026-09-07 1.gif")]);
+        std::fs::remove_file(&capture.path).expect("the card closed and filed the spool copy away");
+        assert_eq!(std::fs::read(&calls[0]).expect("still there to paste"), b"GIF89a fake");
+    }
+
+    /// D165: the clipboard's folder keeps the GIF it names and no older one, and a PNG,
+    /// whose pixels the shell reads at once, is handed over as it is.
+    #[test]
+    fn the_next_gif_takes_the_last_ones_copy_and_a_png_needs_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bridge = NullBridge::default();
+        let flow = CaptureFlow::new(bridge.clone(), Policy::default(), save_config_in(dir.path()));
+        let first = recording_capture_in(dir.path());
+        let later = dir.path().join("01LATER.gif");
+        std::fs::write(&later, b"GIF89a later").expect("write source");
+        let second = CaptureResult { path: later.clone(), meta_path: later.with_extension("json"), ..first.clone() };
+        let shot = capture_in(dir.path(), 0);
+
+        run(flow.copy(&first)).expect("first GIF");
+        run(flow.copy(&shot)).expect("a screenshot");
+        let kept = bridge.clipboard_calls()[0].clone();
+        assert!(kept.is_file(), "a screenshot's copy leaves the GIF's alone");
+        run(flow.copy(&second)).expect("second GIF");
+
+        let calls = bridge.clipboard_calls();
+        assert_eq!(calls[1], shot.path);
+        assert!(!kept.exists(), "the first GIF's copy went when the second was copied");
+        assert_eq!(std::fs::read(&calls[2]).expect("the second's copy"), b"GIF89a later");
+        let left: Vec<_> = std::fs::read_dir(dir.path().join("clipboard"))
+            .expect("the folder")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("01LATER")]);
     }
 
     /// `spec/08` §5: a recording saves into the recording folder, not the screenshot one,
@@ -1283,6 +1496,82 @@ mod tests {
         let again = run(flow.save_capture_as(&capture, &chosen)).expect("save as again");
         assert_eq!(again, chosen);
         assert_eq!(std::fs::read_dir(dir.path()).expect("read dir").count(), 2);
+    }
+
+    /// D164: `shot-format` is what a Save writes -- the bytes, not only the name. After a
+    /// capture by the plan, and from a card, a pin or the editor, which all save through
+    /// [`CaptureFlow::save_capture`].
+    #[test]
+    fn every_save_writes_the_configured_format() {
+        for format in [ImageFormat::Png, ImageFormat::Jpg, ImageFormat::Webp] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let policy = Policy {
+                configured: vec![AfterAction::Save],
+                ..Policy::default()
+            };
+            let save = SaveConfig { format, jpeg_quality: 80, ..save_config_in(dir.path()) };
+            let flow = CaptureFlow::new(NullBridge::default(), policy, save);
+            let capture = still_in(dir.path(), 64, 48, true);
+
+            let after_capture = run(flow.handle(&capture)).saved_to.expect("saved by the plan");
+            let from_a_card = run(flow.save_capture(&capture)).expect("saved from a card");
+
+            for saved in [after_capture, from_a_card] {
+                encode::tests::assert_is(&saved, format);
+            }
+            let suggested = flow.suggested_name(&capture);
+            assert!(suggested.ends_with(&format!(".{}", format.extension())), "{suggested}");
+        }
+    }
+
+    /// D164: Save As writes what the chosen name asks for, whatever the setting says, and
+    /// a name that asks for nothing gains the setting's extension rather than holding
+    /// bytes it does not describe. A card's, the history's and the editor's Save As all
+    /// come here.
+    #[test]
+    fn save_as_writes_the_format_its_name_asks_for() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let save = SaveConfig { format: ImageFormat::Jpg, ..save_config_in(dir.path()) };
+        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save);
+        let capture = still_in(dir.path(), 64, 48, true);
+
+        for (name, format) in [
+            ("a.png", ImageFormat::Png),
+            ("b.webp", ImageFormat::Webp),
+            ("c.JPEG", ImageFormat::Jpg),
+            ("d.jpg", ImageFormat::Jpg),
+        ] {
+            let chosen = dir.path().join(name);
+            let written = run(flow.save_capture_as(&capture, &chosen)).expect("save as");
+            assert_eq!(written, chosen);
+            encode::tests::assert_is(&written, format);
+        }
+
+        let written = run(flow.save_capture_as(&capture, &dir.path().join("notes v1.2")))
+            .expect("save as with no format in the name");
+        assert_eq!(written, dir.path().join("notes v1.2.jpg"));
+        encode::tests::assert_is(&written, ImageFormat::Jpg);
+        assert_eq!(flow.last_saved(), Some(written));
+    }
+
+    /// D164: a WebP holds 16384 rows and a scrolling capture can have more. It is saved as
+    /// a PNG under a PNG's name rather than failed, or written as a PNG called `.webp`.
+    #[test]
+    fn a_capture_too_long_for_its_format_saves_as_png() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let save = SaveConfig { format: ImageFormat::Webp, ..save_config_in(dir.path()) };
+        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save);
+        let capture = still_in(dir.path(), 2, 16_385, false);
+
+        assert!(flow.suggested_name(&capture).ends_with(".png"));
+        let saved = run(flow.save_capture(&capture)).expect("save");
+        encode::tests::assert_is(&saved, ImageFormat::Png);
+
+        let chosen = dir.path().join("long.webp");
+        let written = run(flow.save_capture_as(&capture, &chosen)).expect("save as");
+        assert_eq!(written, dir.path().join("long.png"));
+        encode::tests::assert_is(&written, ImageFormat::Png);
+        assert!(!chosen.exists());
     }
 
     #[test]

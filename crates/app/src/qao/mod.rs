@@ -1366,7 +1366,8 @@ pub fn open_editor_paths() -> Vec<std::path::PathBuf> {
 
 /// The card's own view of its owner (`spec/04` §3's behaviour table).
 impl<B: ShellBridge + 'static> CardHost for Qao<B> {
-    /// `spec/04` §3: "Copies image + file URI; card closes with a 'copied' tick".
+    /// `spec/04` §3: "Copies image + file URI; card closes with a 'copied' tick". The image
+    /// or the file, as D165 has it: a screenshot's pixels, a GIF's file.
     ///
     /// The tick, and the closing, wait for the clipboard to actually take the image.
     ///

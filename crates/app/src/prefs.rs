@@ -719,16 +719,23 @@ fn screenshots_page(
     // spec/08 §0 point 1: a dependent row stays on screen and goes insensitive, so the
     // user learns that choosing JPEG will give them a quality control.
     // The format from the signal: a copy of it held in its own handler kept it (D139).
-    let follow_quality = {
+    // The subtitle says what the choice costs (D164): JPEG has nowhere to keep a window's
+    // see-through shadow and corners, and WebP is lossless here, not a smaller JPEG.
+    let follow_format = {
         let quality = quality.clone();
         let available = app_settings.is_some();
         move |format: &adw::ComboRow| {
-            let is_jpeg = FORMAT_ORDER.get(format.selected() as usize) == Some(&ImageFormat::Jpg);
-            quality.set_sensitive(is_jpeg && available);
+            let chosen = FORMAT_ORDER.get(format.selected() as usize).copied().unwrap_or_default();
+            quality.set_sensitive(chosen == ImageFormat::Jpg && available);
+            format.set_subtitle(match chosen {
+                ImageFormat::Png => "Lossless, and keeps transparency",
+                ImageFormat::Jpg => "Smallest files. Transparent parts become white",
+                ImageFormat::Webp => "Lossless and keeps transparency, smaller than PNG",
+            });
         }
     };
-    follow_quality(&format);
-    format.connect_selected_notify(follow_quality);
+    follow_format(&format);
+    format.connect_selected_notify(follow_format);
 
     let retina = adw::SwitchRow::builder()
         .title("Add \u{201c}@2x\u{201d} to names of HiDPI captures")
