@@ -15,13 +15,17 @@ pub mod download;
 pub mod pill;
 pub mod prefs;
 pub mod reading;
+pub mod runtime;
 pub mod window;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use octosnap_ocr::{Breaks, Engine, Gray, Read, Reader, Script, packs, rapid::Rapid};
+use octosnap_ocr::{
+    Breaks, Engine, Gray, OcrError, Read, Reader, Script, packs,
+    rapid::{RUNTIME, Rapid},
+};
 use octosnap_stitch::Frame;
 use tracing::{info, warn};
 
@@ -30,14 +34,6 @@ fn slot() -> &'static Mutex<Option<Arc<dyn Engine>>> {
     static ENGINE: OnceLock<Mutex<Option<Arc<dyn Engine>>>> = OnceLock::new();
     ENGINE.get_or_init(|| Mutex::new(None))
 }
-
-/// What to tell the user when the models are there and the runtime that runs them is not.
-///
-/// `spec/07` §2.1's read has two ways to be impossible and they want different words. D85
-/// gave the missing pack an **Open Settings** button because there is something to press;
-/// this one has nothing in the app to press, so it names the library and stops (D97).
-pub const NO_ENGINE: &str =
-    "Text recognition needs the ONNX Runtime library, which is not installed on this machine.";
 
 /// The engine, opened on first use and kept for the process.
 ///
@@ -55,6 +51,16 @@ pub const NO_ENGINE: &str =
 /// A failure is **not** kept. The two reasons to fail -- no ONNX Runtime, no detection
 /// model -- are both things a user fixes from outside this process, and a cached refusal
 /// would outlive the fix. Retrying costs a failed `dlopen`, which is a few microseconds.
+/// Until D172 `crates/ocr` kept the runtime's failure for the process all the same, so an
+/// install the refusal had asked for did not count until the next login. It still keeps
+/// one kind, a library that was found and would not load, because `ort` cannot be asked
+/// twice (`rapid::runtime`), and that refusal says so.
+///
+/// `spec/07` §2.1's read has two ways to be impossible and they want different words. D85
+/// gave the missing pack an **Open Settings** button, now Settings itself (D171), because
+/// there is something there to press. A runtime that will not load has nothing in the app
+/// to press (D97), so its refusal says where to get one: the package, or the Flatpak
+/// (D172, [`runtime`]).
 ///
 /// # Errors
 /// The message to show the user, already phrased for them.
@@ -62,7 +68,7 @@ fn engine() -> Result<Arc<dyn Engine>, String> {
     let mut held = slot().lock().map_err(|_| {
         // Poisoned: something panicked while the engine was being swapped.
         warn!("the text-recognition engine is unavailable after a panic");
-        NO_ENGINE.to_owned()
+        "the reader stopped unexpectedly".to_owned()
     })?;
     if let Some(engine) = held.as_ref() {
         return Ok(Arc::clone(engine));
@@ -71,7 +77,14 @@ fn engine() -> Result<Arc<dyn Engine>, String> {
     let at = std::time::Instant::now();
     let rapid = Rapid::open(&home).map_err(|why| {
         warn!(home = %home.display(), "no text-recognition engine: {why}");
-        NO_ENGINE.to_owned()
+        match why {
+            OcrError::NoRuntime => runtime::refusal().body.clone(),
+            OcrError::Engine(what, detail) if what == RUNTIME => runtime::would_not_load(&detail),
+            // A detection model that would not load, which its SHA-256 at download makes
+            // rare (D86). Not the runtime's words: they would send the user to install a
+            // library that is there.
+            other => format!("{other}"),
+        }
     })?;
     let ms = at.elapsed().as_millis();
     info!(home = %home.display(), ms, "opened the text-recognition engine");

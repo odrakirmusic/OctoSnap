@@ -101,6 +101,16 @@ impl Outcome {
     pub fn waits_for_pack(&self) -> bool {
         matches!(&self.recognised, Some(Recognised::Failed(why)) if why == NO_PACK)
     }
+
+    /// Whether this was a read that could not load ONNX Runtime (D172). Unlike a missing
+    /// pack, nothing waits for it: the library is installed from outside the app.
+    #[must_use]
+    pub fn lacks_runtime(&self) -> bool {
+        matches!(
+            &self.recognised,
+            Some(Recognised::Failed(why)) if crate::ocr::runtime::is_refusal(why)
+        )
+    }
 }
 
 /// `spec/07` §2.1's text capture, as far as the user is concerned.

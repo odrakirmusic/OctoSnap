@@ -419,6 +419,11 @@ language packs, with the pack for your language ready to install. Press Install 
 and the text you captured is read as soon as the pack is in. Settings says when it is
 copied.
 
+The Flatpak brings ONNX Runtime, the library the packs run on. The app built natively uses
+the system's, and when it has none, a read says which package to install. **How to Install**
+opens the README's list, and its way for a distribution with no package. The next read after the
+install finds it.
+
 The notification that says the text was copied has **Show**, which opens the text in a
 window:
 

@@ -114,6 +114,16 @@
   </categories>
 
   <releases>
+    <release version="0.1.8" date="2026-10-08">
+      <description>
+        <p>Text recognition says where to get the library it runs on.</p>
+        <ul>
+          <li>OctoSnap built from source reads text with the system's ONNX Runtime. When it is missing, a read now names the package to install for your distribution, with a button to the instructions, where before it only named the library</li>
+          <li>Once ONNX Runtime is installed, the next read uses it. Before, OctoSnap only noticed it after you logged out and back in</li>
+          <li>ONNX Runtime is found where Fedora and openSUSE install it</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.7" date="2026-10-08">
       <description>
         <p>Text recognition tells you what it needs, and gets it.</p>

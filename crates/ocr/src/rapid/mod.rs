@@ -75,7 +75,9 @@ impl Rapid {
     /// Loads the runtime and the detection model.
     ///
     /// # Errors
-    /// If ONNX Runtime cannot be found or loaded, or the detection model is not installed.
+    /// [`OcrError::NoRuntime`] if ONNX Runtime cannot be found, [`OcrError::Engine`] with
+    /// [`RUNTIME`] if it cannot be loaded, and an error about the model if the detection
+    /// model is not installed or will not load.
     pub fn open(home: &Path) -> Result<Self, OcrError> {
         runtime()?;
         let detect = session(&home.join(DETECT).join(MODEL))?;
@@ -326,27 +328,44 @@ fn threads() -> usize {
     std::thread::available_parallelism().map_or(2, |cores| (cores.get() / 2).clamp(1, 4))
 }
 
+/// What [`OcrError::Engine`] names when ONNX Runtime itself is the trouble.
+///
+/// From [`Rapid::open`] it means a library was found and would not load -- one older than
+/// this build's API level, or not a library at all. None found is [`OcrError::NoRuntime`].
+pub const RUNTIME: &str = "onnxruntime";
+
 /// ONNX Runtime, found and loaded once for the process.
+///
+/// **A library that is not there is looked for again by the next read** (D172), so an
+/// install that a read asked for counts from the next one. Until D172 every failure was
+/// kept in the same `OnceLock` as the success, and the app is a service that runs until the
+/// session ends: the install did not count until the next login.
+///
+/// **A library that is there and would not load is kept, failure and all**, and that is
+/// `ort`'s doing. Its `OnceLock` (2.0.0-rc.13, `util/once_lock_std.rs`) completes the
+/// `Once` when the load fails, with no library in it, and every later call into `ort` then
+/// looks a null handle up for `OrtGetApiBase` and panics -- inside its environment's lock,
+/// so the process aborts on its way out (D172 found it by hiding the library in a mount
+/// namespace and asking twice). So `ort` is asked once, and only about a file that exists.
 fn runtime() -> Result<(), OcrError> {
-    static LOADED: OnceLock<Result<(), String>> = OnceLock::new();
-    LOADED
-        .get_or_init(|| {
-            let Some(library) = library() else {
-                return Err("onnxruntime is not installed".to_string());
-            };
-            match ort::init_from(&library) {
-                // `commit` answers false when something already committed an environment,
-                // which is not a failure: the runtime is loaded either way, and this runs
-                // once per process.
-                Ok(environment) => {
-                    let _ = environment.commit();
-                    Ok(())
-                }
-                Err(why) => Err(format!("{}: {why}", library.display())),
-            }
-        })
-        .clone()
-        .map_err(|why| OcrError::Engine("onnxruntime".to_string(), why))
+    static TRIED: OnceLock<Result<(), String>> = OnceLock::new();
+    let engine = |why: String| OcrError::Engine(RUNTIME.to_string(), why);
+    if let Some(tried) = TRIED.get() {
+        return tried.clone().map_err(engine);
+    }
+    // Not kept: `ort` has not been asked.
+    let library = library().ok_or(OcrError::NoRuntime)?;
+    let tried = match ort::init_from(&library) {
+        // `commit` answers false when something already committed an environment, which
+        // is not a failure: the runtime is loaded either way, and this runs once per
+        // process.
+        Ok(environment) => {
+            let _ = environment.commit();
+            Ok(())
+        }
+        Err(why) => Err(format!("{}: {why}", library.display())),
+    };
+    TRIED.get_or_init(|| tried).clone().map_err(engine)
 }
 
 /// The file name a linker would use, which is the one a `-dev` package installs.
@@ -360,6 +379,11 @@ const SONAME: &str = "libonnxruntime.so";
 /// the runtime installed and no `-dev` package had a `dlopen` failure and a read that
 /// said "no text-recognition engine". Any 1.17 or newer answers the API level this build
 /// pins, so the newest one present is the right one to take.
+///
+/// Only ever a file that exists (D172). The last resort used to be the bare [`SONAME`],
+/// for the loader to search, and a search that failed left `ort` unable to load anything
+/// for the rest of the process ([`runtime`]). `LD_LIBRARY_PATH`'s directories stand in for
+/// it: they are where the loader looked that this list did not.
 fn library() -> Option<PathBuf> {
     let named = |path: PathBuf| path.is_file().then_some(path);
     // Two environment variables, both an exact file: ours, and the one the `ort` crate's
@@ -371,15 +395,22 @@ fn library() -> Option<PathBuf> {
         // Beside the model packs, where a copy can be put by hand on a system that has
         // none. Nothing downloads it there: the packs are models, not the runtime.
         .or_else(|| in_directory(&Rapid::home().with_file_name("onnxruntime")))
-        // The Flatpak's own prefix, then the system's, then Debian's multiarch one, then
-        // where a hand-built copy lands.
+        // The Flatpak's own prefix, then the system's: Arch's, Debian's multiarch one,
+        // Fedora's and openSUSE's `lib64` (D172: Fedora's `onnxruntime` installs only
+        // `/usr/lib64/libonnxruntime.so.1.22.2`, which nothing here looked in), then where
+        // a hand-built copy lands.
         .or_else(|| in_directory(Path::new("/app/lib")))
         .or_else(|| in_directory(Path::new("/usr/lib")))
         .or_else(|| in_directory(&PathBuf::from("/usr/lib").join(multiarch())))
+        .or_else(|| in_directory(Path::new("/usr/lib64")))
         .or_else(|| in_directory(Path::new("/usr/local/lib")))
-        // Nothing found: let the loader search, which covers a distribution that does ship
-        // the symlink, and produces the error message when it does not.
-        .or_else(|| Some(PathBuf::from(SONAME)))
+        .or_else(|| in_directory(Path::new("/usr/local/lib64")))
+        .or_else(|| {
+            let paths = std::env::var_os("LD_LIBRARY_PATH")?;
+            std::env::split_paths(&paths)
+                .filter(|directory| directory.is_absolute())
+                .find_map(|directory| in_directory(&directory))
+        })
 }
 
 /// Debian and Ubuntu's multiarch directory name for this build's architecture.
@@ -415,7 +446,7 @@ fn in_directory(directory: &Path) -> Option<PathBuf> {
 }
 
 fn ort_failed(why: ort::Error) -> OcrError {
-    OcrError::Engine("onnxruntime".to_string(), why.to_string())
+    OcrError::Engine(RUNTIME.to_string(), why.to_string())
 }
 
 fn poisoned<T>(_: std::sync::PoisonError<T>) -> OcrError {

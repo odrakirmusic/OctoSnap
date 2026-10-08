@@ -42,6 +42,11 @@ pub enum OcrError {
     Missing(&'static str),
     #[error("{0}: {1}")]
     Engine(String, String),
+    /// No ONNX Runtime library anywhere it is looked for (D172). Apart from
+    /// [`OcrError::Engine`] with [`rapid::RUNTIME`], which is a library that was found and
+    /// would not load: this one is asked again by the next read, so an install counts.
+    #[error("ONNX Runtime is not installed")]
+    NoRuntime,
 }
 
 /// An axis-aligned box in the **captured image's own pixels**.

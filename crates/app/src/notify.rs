@@ -86,6 +86,12 @@ pub fn capture_outcome(
         notification.add_button("Show", "app.show-text");
     }
 
+    // A native install with no ONNX Runtime: the body names the package, and the README's
+    // section has the rest (D172).
+    if outcome.lacks_runtime() && crate::ocr::runtime::refusal().help {
+        notification.add_button(HOW_TO_INSTALL, "app.runtime-help");
+    }
+
     app.send_notification(Some(CAPTURE_ID), &notification);
     info!(title, "notified");
     true
@@ -95,21 +101,12 @@ pub fn capture_outcome(
 /// Text, and Settings when a pack it installed finished a read that waited (D171).
 ///
 /// The notification's words and buttons, so a read says the same thing wherever it ends:
-/// **Show** for the text, and for a missing pack the button that installs one. `None`
-/// for an outcome that is not a read.
+/// **Show** for the text, for a missing pack the button that installs one, and for a
+/// missing runtime the README's section on getting one (D172). `None` for an outcome that
+/// is not a read.
 #[must_use]
 pub fn read_toast(outcome: &Outcome) -> Option<adw::Toast> {
-    /// A button's label, its application action, and the action's string target if any.
-    type Button = (&'static str, &'static str, Option<&'static str>);
-    let (title, button): (String, Option<Button>) = match outcome.recognised.as_ref()? {
-        Recognised::Copied(_) => ("Text copied".to_owned(), Some(("Show", "show-text", None))),
-        Recognised::Nothing => ("No text found".to_owned(), None),
-        Recognised::Failed(why) if why == crate::flow::NO_PACK => (
-            "No language pack is installed".to_owned(),
-            Some(("Install\u{2026}", "open-settings", Some(crate::prefs::PACKS))),
-        ),
-        Recognised::Failed(why) => (format!("Could not read the text: {why}"), None),
-    };
+    let (title, button) = toast_words(outcome)?;
     let toast = adw::Toast::new(&title);
     toast.set_timeout(crate::editor::actions::toast_seconds(button.is_some()));
     if let Some((label, action, target)) = button {
@@ -124,6 +121,33 @@ pub fn read_toast(outcome: &Outcome) -> Option<adw::Toast> {
         });
     }
     Some(toast)
+}
+
+/// A toast button's label, its application action, and the action's string target if any.
+type Button = (&'static str, &'static str, Option<&'static str>);
+
+/// The button that opens the README's section on ONNX Runtime, on the notification and on
+/// the toasts.
+const HOW_TO_INSTALL: &str = "How to Install";
+
+/// [`read_toast`]'s words, apart from the widget, so they can be tested without a display.
+fn toast_words(outcome: &Outcome) -> Option<(String, Option<Button>)> {
+    Some(match outcome.recognised.as_ref()? {
+        Recognised::Copied(_) => ("Text copied".to_owned(), Some(("Show", "show-text", None))),
+        Recognised::Nothing => ("No text found".to_owned(), None),
+        Recognised::Failed(why) if why == crate::flow::NO_PACK => (
+            "No language pack is installed".to_owned(),
+            Some(("Install\u{2026}", "open-settings", Some(crate::prefs::PACKS))),
+        ),
+        // One line, where the notification has two: a toast is not wide enough for the
+        // sentence, and its button has the rest.
+        Recognised::Failed(_) if outcome.lacks_runtime() => {
+            let refusal = crate::ocr::runtime::refusal();
+            let button = refusal.help.then_some((HOW_TO_INSTALL, "runtime-help", None));
+            (refusal.toast.clone(), button)
+        }
+        Recognised::Failed(why) => (format!("Could not read the text: {why}"), None),
+    })
 }
 
 /// One id for "this build cannot do that yet", so repeated presses replace rather than
@@ -250,6 +274,10 @@ pub fn describe(outcome: &Outcome) -> Option<(String, Option<String>)> {
                 "No text found".to_owned(),
                 Some("There was nothing to recognise in that area.".to_owned()),
             ),
+            // Its own title, so a native install is told what it needs before why (D172).
+            Recognised::Failed(why) if outcome.lacks_runtime() => {
+                (crate::ocr::runtime::refusal().title.to_owned(), Some(why.clone()))
+            }
             Recognised::Failed(why) => ("Could not read the text".to_owned(), Some(why.clone())),
         });
     }
@@ -429,6 +457,44 @@ mod tests {
         let (title, body) = describe(&broken).expect("a message");
         assert_eq!(title, "Could not read the text");
         assert_eq!(body.as_deref(), Some("no Latin pack is installed"));
+    }
+
+    /// D172: a read that could not load ONNX Runtime says what it needs in the title and
+    /// where to get it in the body, and its toast is one line with the way to the rest.
+    /// Whichever refusal this machine has: a test run in the Flatpak's builder gets the
+    /// Flatpak's, and `ocr::runtime`'s own tests read every one.
+    #[test]
+    fn a_read_with_no_runtime_says_how_to_get_one() {
+        let refusal = crate::ocr::runtime::refusal();
+        let broken = Outcome {
+            recognised: Some(Recognised::Failed(refusal.body.clone())),
+            ..outcome()
+        };
+        assert!(broken.lacks_runtime());
+        assert!(!broken.waits_for_pack());
+        let (title, body) = describe(&broken).expect("a message");
+        assert_eq!(title, refusal.title);
+        assert_eq!(body.as_deref(), Some(refusal.body.as_str()));
+
+        let (line, button) = toast_words(&broken).expect("a toast");
+        assert_eq!(line, refusal.toast, "the toast's own line, not the sentence after a colon");
+        assert_eq!(button.is_some(), refusal.help);
+        if let Some((label, action, target)) = button {
+            assert_eq!((label, action, target), (HOW_TO_INSTALL, "runtime-help", None));
+        }
+    }
+
+    /// Any other failure keeps its words, and is not taken for the runtime's.
+    #[test]
+    fn a_failure_that_is_not_the_runtime_is_not_its_refusal() {
+        let broken = Outcome {
+            recognised: Some(Recognised::Failed("the capture is not a PNG".to_owned())),
+            ..outcome()
+        };
+        assert!(!broken.lacks_runtime());
+        let (line, button) = toast_words(&broken).expect("a toast");
+        assert_eq!(line, "Could not read the text: the capture is not a PNG");
+        assert_eq!(button, None);
     }
 
     /// A joined paragraph is one line and can be hundreds of characters; the popup is not.

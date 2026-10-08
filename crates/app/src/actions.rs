@@ -88,6 +88,9 @@ const REGISTERED: &[&str] = &[
     // "also works on a file" -- `capture-text?filepath=` and `octosnap text FILE`.
     "show-text",
     "read-text",
+    // The README's section on ONNX Runtime, the button on a read that could not load it
+    // (D172).
+    "runtime-help",
     "quit",
 ];
 
@@ -707,6 +710,26 @@ pub fn register(app: &adw::Application) {
         });
     }
     app.add_action(&show_text);
+
+    // D172: a native install with no ONNX Runtime is told the package in the refusal, and
+    // this opens the README's section with the rest -- the other distributions, and a copy
+    // put by hand. A page in the browser, only ever on a click, like a link in the text
+    // window (D84).
+    let runtime_help = gio::SimpleAction::new("runtime-help", None);
+    {
+        let app = app.clone();
+        runtime_help.connect_activate(move |_, _| {
+            let uri = crate::ocr::runtime::HELP;
+            info!(uri, "runtime-help");
+            let opened =
+                gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>);
+            if let Err(e) = opened {
+                warn!("could not open {uri}: {e}");
+                notify::action_failed(&app, "How to Install", &e.to_string());
+            }
+        });
+    }
+    app.add_action(&runtime_help);
 
     // `spec/07` §2.1's file source. A vardict rather than a plain path because the two
     // shortcuts differ by one boolean and `octosnap text --linebreaks FILE` has to be
