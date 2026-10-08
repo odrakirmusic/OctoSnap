@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use octosnap_core::qao::{Edge, Size};
 use octosnap_core::request::CaptureRequest;
@@ -30,6 +30,16 @@ impl PlacementMonitor {
             Self::Window => "window",
         }
     }
+}
+
+/// What the extension read off the clipboard for the app (`ReadClipboardImage`, D169).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardImage {
+    /// The file the extension wrote beside the spool: the clipboard's pixels, or a copy of
+    /// the image file it named. The reader's to remove.
+    pub path: PathBuf,
+    /// The copied file's own name when the clipboard held a file; `None` for pixels.
+    pub name: Option<String>,
 }
 
 /// A sound the app asks the extension to play (`PlaySound`, D134).
@@ -186,6 +196,17 @@ pub trait ShellBridge {
     /// notes the latter only works once the app has had focus or input -- and the point of
     /// copy-on-capture is that it happens without the app ever taking focus.
     async fn set_clipboard_image(&self, path: &Path) -> Result<(), BridgeError>;
+
+    /// The clipboard's image, read by the extension (D169): its pixels, or the image file
+    /// it names, written where this app can read it. `None` when it holds no image.
+    ///
+    /// Through the extension for the reason copies go through it, the other way round:
+    /// Mutter offers the selection to the focused client only, and Annotate the Clipboard's
+    /// Image is asked for while another application has the keyboard. `Gdk.Clipboard` then
+    /// reads nothing, or only the types the app was offered when one of its windows last
+    /// had focus.
+    /// An extension from before D169 answers [`BridgeError::Unsupported`].
+    async fn read_clipboard_image(&self) -> Result<Option<ClipboardImage>, BridgeError>;
 
     /// Puts text on the clipboard (`spec/07` §2.1's "recognized text is copied").
     ///

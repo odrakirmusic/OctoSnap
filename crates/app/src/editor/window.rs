@@ -109,15 +109,19 @@ pub struct Editor {
     pub(super) capture: CaptureResult,
     /// What the bottom bar asks of the capture flow (`spec/05` §7).
     pub(super) actions: EditorActions,
-    /// The undo depth at the last Copy, Save or Pin.
+    /// The document at the last Copy, Save or Pin, and at the last Save with the file it
+    /// wrote (D168).
     ///
     /// The unsaved dot's question is not "has anything changed" but "has what changed
-    /// left the editor" (`spec/13` #11). A depth is enough to answer it and needs no
-    /// invalidating.
-    pub(super) saved_at: Cell<usize>,
-    /// The depth at the last Save or Save as, and the file it wrote: a card left behind
-    /// for exactly that state has its picture on disk already.
-    pub(super) saved_file: RefCell<Option<(usize, std::path::PathBuf)>>,
+    /// left the editor" (`spec/13` #11), and a card left behind for exactly the saved
+    /// document has its picture on disk already. Documents and not undo depths, which an
+    /// undo and a new mark bring back to the same number with different marks.
+    pub(super) saved: RefCell<super::saved::Saved>,
+    /// The document as the last Save as Project wrote it, or as one was opened, and the
+    /// `.octosnap` file: a render of exactly that document is the project's picture, and
+    /// carries it to its card and the history (D167). The document and not the undo depth,
+    /// which an undo and a new mark bring back to the same number with different marks.
+    pub(super) project: RefCell<Option<(Scene, std::path::PathBuf)>>,
     /// How the window is closing, set by whichever way out was taken (D108).
     pub(super) closing: Cell<Closing>,
     /// Whether [`Editor::hand_back`] has run: a close-request can be emitted twice.
@@ -381,8 +385,8 @@ impl Editor {
             app: app.clone(),
             capture: capture.clone(),
             actions,
-            saved_at: Cell::new(0),
-            saved_file: RefCell::new(None),
+            saved: RefCell::new(super::saved::Saved::default()),
+            project: RefCell::new(None),
             closing: Cell::new(Closing::ToPreview),
             handed_back: Cell::new(false),
             opened_on: RefCell::new(None),
@@ -524,13 +528,12 @@ impl Editor {
         document: super::actions::Document,
         actions: EditorActions,
     ) -> Rc<Self> {
-        let super::actions::Document { capture, scene, history, saved_at, saved_file, .. } =
-            document;
+        let super::actions::Document { capture, scene, history, saved, project, .. } = document;
         let editor = Self::open_with(app, &capture, actions, Some(scene));
         editor.opened_on.replace(None);
         *editor.history.borrow_mut() = history;
-        editor.saved_at.set(saved_at);
-        *editor.saved_file.borrow_mut() = saved_file;
+        *editor.saved.borrow_mut() = saved;
+        *editor.project.borrow_mut() = project;
         editor.refresh_unsaved();
         info!(undo = editor.history.borrow().depth(), "editor reopened on its document");
         editor
@@ -540,9 +543,13 @@ impl Editor {
     /// was opened on -- no objects, no crop or padding, no rotate, flip or resize -- or,
     /// opened on a project file, still the project as it was read.
     pub(super) fn untouched(&self) -> bool {
-        let Some(scene) = self.canvas.scene() else { return true };
+        self.canvas.scene().is_none_or(|scene| self.untouched_as(&scene))
+    }
+
+    /// [`Self::untouched`], asked of a document the caller already holds.
+    pub(super) fn untouched_as(&self, scene: &Scene) -> bool {
         if let Some(opened) = self.opened_on.borrow().as_ref() {
-            return scene == *opened;
+            return scene == opened;
         }
         let base = base_of(&self.capture);
         scene.objects().is_empty() && scene.base == base && scene.canvas == base.bounds()
@@ -559,6 +566,13 @@ impl Editor {
     #[must_use]
     pub fn window(&self) -> &adw::ApplicationWindow {
         &self.window
+    }
+
+    /// The project this editor was opened from, which its document then carries (D167).
+    pub fn set_project(&self, path: &std::path::Path) {
+        if let Some(scene) = self.canvas.scene() {
+            *self.project.borrow_mut() = Some((scene, path.to_path_buf()));
+        }
     }
 
     /// The window's exported D-Bus path, the way the cards and the pins derive theirs.

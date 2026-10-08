@@ -106,6 +106,8 @@ pub struct BackgroundPanel {
     picker: RefCell<Option<Rc<Picker>>>,
     /// The Presets menu, rebuilt whenever the saved list changes.
     presets: RefCell<Option<gtk::MenuButton>>,
+    /// True while the None button's place is waiting to be logged (`log_none_button`).
+    none_logging: Rc<Cell<bool>>,
 }
 
 impl std::fmt::Debug for BackgroundPanel {
@@ -306,11 +308,21 @@ impl Editor {
                 if id.is_empty() {
                     editor.toast("New screenshots will have no background", None);
                 } else {
-                    editor.toast("Saved as the default background", None);
+                    // A default is only ever used by `ann-background-auto`, so choosing
+                    // one turns that on: before D167 it was off with nothing to turn it
+                    // on, and the toast promised a background no screenshot ever got.
+                    crate::settings::set_background_auto(true);
+                    editor.toast("New screenshots will get this background", None);
                 }
             });
         }
         self.window.add_action(&default);
+
+        // The submenu's check item, which Settings → Annotate's switch also writes
+        // (D167). Named for its key, as `gio::Settings::create_action` names it.
+        if let Some(auto) = crate::settings::background_auto_action() {
+            self.window.add_action(&auto);
+        }
 
         let save = gio::SimpleAction::new("background-save", None);
         {
@@ -772,8 +784,18 @@ impl Editor {
                 if editor.background.syncing.get() {
                     return;
                 }
-                let params = editor.background_params();
-                editor.apply_background(&params.with(chosen.clone()), false);
+                let params = editor.background_params().with(chosen.clone());
+                // None takes the background away, margin, corners, shadow and all, and
+                // gives the canvas back (D166). Keeping the rest, it left a margin of
+                // nothing with the picture's shadow in it, and only sliding the padding
+                // and the inset to zero as well took it off. A margin of nothing is
+                // still there to make: None, then the padding.
+                let params = if chosen.is_none() {
+                    BackgroundParams { padding: 0.0, inset: 0.0, ..params }
+                } else {
+                    params
+                };
+                editor.apply_background(&params, false);
             });
         }
         self.background.choices.borrow_mut().push((background, button.clone()));
@@ -838,7 +860,18 @@ impl Editor {
     /// Shows or hides the sidebar, keeping the toolbar's toggle in step.
     pub(super) fn show_background_panel(&self, show: bool) {
         if let Some(split) = self.background.split.borrow().as_ref() {
+            // Focus in the sidebar as it goes is GTK's to put somewhere, and it chose the
+            // Background toggle, which the next Enter pressed: back to the canvas, as
+            // crop mode does (D166).
+            let inside = !show
+                && split.sidebar().is_some_and(|sidebar| {
+                    gtk::prelude::GtkWindowExt::focus(&self.window)
+                        .is_some_and(|focus| focus.is_ancestor(&sidebar))
+                });
             split.set_show_sidebar(show);
+            if inside {
+                self.canvas.grab_focus();
+            }
         }
         if let Some(toggle) = self.background.toggle.borrow().as_ref()
             && toggle.is_active() != show
@@ -847,11 +880,50 @@ impl Editor {
         }
         if show {
             self.sync_background_panel();
+            self.log_none_button();
         }
         // `spec/08` §1's "Remember if background tool was opened", written on every
         // change rather than on close: an editor that is killed, or a session that ends
         // with one open, still remembered the last thing the user actually did.
         crate::settings::set_background_panel_was_open(show);
+    }
+
+    /// Where the None button is in the window once the sidebar has slid in, for
+    /// `editor-test.sh` to click it (D166), as `canvas allocated` is logged for its drags.
+    /// Logged when it has stood still for ten frames, which is after the slide.
+    fn log_none_button(&self) {
+        // Once a showing: the toggle's own handler shows the panel a second time.
+        if self.background.none_logging.replace(true) {
+            return;
+        }
+        let choices = self.background.choices.borrow();
+        let Some((_, none)) = choices.iter().find(|(background, _)| background.is_none()) else {
+            self.background.none_logging.set(false);
+            return;
+        };
+        let last = Cell::new(None::<(i32, i32, i32, i32)>);
+        let still = Cell::new(0_u32);
+        let logging = self.background.none_logging.clone();
+        none.add_tick_callback(move |button, _| {
+            let bounds = button.root().and_then(|root| button.compute_bounds(&root));
+            #[allow(clippy::cast_possible_truncation)]
+            let rect = bounds.map(|b| {
+                (b.x() as i32, b.y() as i32, b.width() as i32, b.height() as i32)
+            });
+            if rect.is_none_or(|r| r.2 <= 0) || last.replace(rect) != rect {
+                still.set(0);
+                return glib::ControlFlow::Continue;
+            }
+            still.set(still.get() + 1);
+            if still.get() < 10 {
+                return glib::ControlFlow::Continue;
+            }
+            if let Some((x, y, width, height)) = rect {
+                tracing::debug!(x, y, width, height, "background none button");
+            }
+            logging.set(false);
+            glib::ControlFlow::Break
+        });
     }
 
     /// The same row, read: whether a newly opened editor starts with the panel showing.
@@ -1039,14 +1111,15 @@ impl Editor {
         let Some(params) = crate::settings::window_background() else { return };
         self.apply_background(&params, false);
         // Not an edit the user made, so the dot stays off (`spec/13` #11).
-        self.saved_at.set(self.history.borrow().depth());
-        self.refresh_unsaved();
+        if let Some(scene) = self.canvas.scene() {
+            self.mark_saved(scene);
+        }
     }
 
     /// `spec/05` §4.13's "automatically apply preset to all screenshots (skippable by
     /// holding Shift at capture)".
     ///
-    /// Silent: no toast, no panel, and the undo depth is marked as saved afterwards. The
+    /// Silent: no toast, no panel, and the document is marked as saved afterwards. The
     /// preference says every screenshot gets this background, so getting it is not news
     /// and the dot beside the document size is for marks the *user* made. One Ctrl+Z
     /// still takes it off, which is what someone who wanted this one plain will reach for.
@@ -1059,8 +1132,9 @@ impl Editor {
         }
         let Some(preset) = crate::settings::background_default() else { return };
         self.apply_background(&preset.params, false);
-        self.saved_at.set(self.history.borrow().depth());
-        self.refresh_unsaved();
+        if let Some(scene) = self.canvas.scene() {
+            self.mark_saved(scene);
+        }
     }
 
     #[must_use]
@@ -1236,6 +1310,10 @@ fn presets_menu() -> gio::Menu {
         );
     }
     menu.append_section(Some("Presets"), &saved);
+    // Shift at capture still skips it (§4.13), as Settings' row says.
+    let auto = gio::Menu::new();
+    auto.append(Some("Add to New Screenshots"), Some("win.ann-background-auto"));
+    defaults.append_section(None, &auto);
 
     let bottom = gio::Menu::new();
     bottom.append_submenu(Some("Default Preset"), &defaults);

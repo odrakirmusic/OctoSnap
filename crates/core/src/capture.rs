@@ -198,6 +198,12 @@ pub struct CaptureResult {
     /// request is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linebreaks: Option<bool>,
+    /// The `.octosnap` project this picture is a render of, when the file holds exactly
+    /// the state rendered (D167). An editor's render carries it to its card and, in the
+    /// twin, into the history and back out: Annotate opens the project rather than the
+    /// flattened picture, and the history's Projects chip finds the entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<PathBuf>,
 }
 
 #[cfg(test)]
@@ -225,6 +231,7 @@ mod tests {
             modifiers: 0,
             external: false,
             linebreaks: None,
+            project: None,
             duration_ms: None,
         }
     }
@@ -256,6 +263,8 @@ mod tests {
         assert!(!json.contains("source_window"), "{json}");
         // cursor_rect is None here and must not appear as a null.
         assert!(!json.contains("cursor_rect"), "{json}");
+        // Nor a project, which only an editor's render has (D167).
+        assert!(!json.contains("project"), "{json}");
 
         let back: CaptureResult = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, c);

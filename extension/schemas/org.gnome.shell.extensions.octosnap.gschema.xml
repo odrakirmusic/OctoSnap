@@ -299,6 +299,7 @@
     <key name="pet-size" type="s">
       <choices>
         <choice value="tiny"/>
+        <choice value="smol"/>
         <choice value="small"/>
         <choice value="medium"/>
         <choice value="large"/>
@@ -306,7 +307,7 @@
       </choices>
       <default>'medium'</default>
       <summary>How big the pets are</summary>
-      <description>Each size is a whole number of physical pixels to the art pixel on every monitor, so the pets stay crisp at any scale.</description>
+      <description>Each size is a whole number of physical pixels to the art pixel on every monitor, so the pets stay crisp at any scale. Smol, between Tiny and Small, is one and a half where no whole number fits between them, as at 100 %.</description>
     </key>
     <key name="pet-menu" type="s">
       <choices>
@@ -334,12 +335,15 @@
     </key>
     <key name="pet-activity" type="s">
       <choices>
+        <choice value="silent"/>
+        <choice value="zen"/>
         <choice value="calm"/>
         <choice value="normal"/>
         <choice value="lively"/>
       </choices>
       <default>'normal'</default>
       <summary>How often the pets do something</summary>
+      <description>Silent: never by themselves, only when something is done to them. Zen: seldom, and mostly sitting.</description>
     </key>
     <key name="pet-hide-sharing" type="b">
       <default>true</default>

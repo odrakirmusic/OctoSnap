@@ -214,6 +214,10 @@ export class Crew {
             }),
             raw.connect('changed::pet-activity', () => {
                 this.#look = null;
+                // Silent starts nothing, and a walk down the whole desk already under way
+                // ends too, as for *Move on their own* turned off (D166).
+                if (this.#settings.petActivity === 'silent') this.#stopMoving();
+                else this.#schedule(now());
             }),
             raw.connect('changed::pet-wander', () => {
                 this.#look = null;

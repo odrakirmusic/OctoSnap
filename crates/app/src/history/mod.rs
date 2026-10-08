@@ -583,6 +583,7 @@ fn read_capture(entry: &Entry) -> Option<CaptureResult> {
         modifiers: 0,
         external: entry.kind == core::Kind::External,
         linebreaks: None,
+        project: entry.project_path.clone(),
         // A recording's length is not in the entry's summary; the twin the card reads
         // carries it. History rebuilds enough to reopen, and the card reads the file.
         duration_ms: None,
@@ -627,6 +628,7 @@ mod tests {
             modifiers: 0,
             external: false,
             linebreaks: None,
+            project: None,
             duration_ms: None,
         };
         write_json(&capture.meta_path, &capture);
@@ -689,6 +691,27 @@ mod tests {
         assert!(history.is_empty());
         assert!(!temp.path().join("history/01C").exists(), "the directory is gone");
         assert!(history.take("01C").is_none());
+    }
+
+    /// D167: a render of a project is filed under Projects, and the project comes back
+    /// out with it, so the restored card's Annotate still opens the project and its next
+    /// close files it under Projects again.
+    #[test]
+    fn a_render_of_a_project_files_as_one_and_keeps_it_through_a_restore() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (history, spool) = store(&temp);
+        let project = temp.path().join("work.octosnap");
+        let mut render = capture(&spool, "01P");
+        render.project = Some(project.clone());
+        write_json(&render.meta_path, &render);
+        let entry = history.file(&render, None, None, false).expect("filed");
+        assert_eq!(entry.kind, core::Kind::Project);
+        assert_eq!(entry.project_path.as_deref(), Some(project.as_path()));
+        assert!(core::Filter::Projects.matches(entry.kind));
+        let (back, _) = history.take("01P").expect("restored");
+        assert_eq!(back.project.as_deref(), Some(project.as_path()));
+        let again = history.file(&back, None, None, false).expect("filed again");
+        assert_eq!(again.kind, core::Kind::Project);
     }
 
     #[test]

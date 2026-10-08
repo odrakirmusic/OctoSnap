@@ -76,6 +76,7 @@ pub fn from_variant(payload: &glib::Variant) -> Result<CaptureResult, BridgeErro
         // Echoed back from the request that started the capture: the shortcut that asked
         // for a single line asked before the pixels existed.
         linebreaks: variant::bool_(&dict, "linebreaks"),
+        project: None,
         // A recording is made by the app, never decoded from an extension payload.
         duration_ms: None,
     })

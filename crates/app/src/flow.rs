@@ -1074,6 +1074,7 @@ mod tests {
             modifiers,
             external: false,
             linebreaks: None,
+            project: None,
             duration_ms: None,
         }
     }

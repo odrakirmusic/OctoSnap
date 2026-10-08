@@ -12,13 +12,15 @@
 //! `docs/decisions.md`; zbus remains a good fit for the M5 recorder, which runs off the
 //! UI thread anyway.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use octosnap_core::protocol::{SHELL_BUS_NAME, SHELL_INTERFACE, SHELL_OBJECT_PATH};
 use octosnap_core::request::CaptureRequest;
 use octosnap_core::{Monitor, Rect, ScrollDirection};
 
-use crate::bridge::{Cue, PickedColor, Placement, RecordingState, ShellBridge, ShellVersion};
+use crate::bridge::{
+    ClipboardImage, Cue, PickedColor, Placement, RecordingState, ShellBridge, ShellVersion,
+};
 use crate::capture;
 use crate::display_config;
 use crate::error::BridgeError;
@@ -32,6 +34,12 @@ const CALL_TIMEOUT_MS: i32 = 2_000;
 /// How long `PickColor` may wait for the user to click: five minutes, after which a
 /// picker left open counts as abandoned.
 const PICK_TIMEOUT_MS: i32 = 300_000;
+
+/// How long `ReadClipboardImage` may take (D169). The application that copied serves its
+/// type when it is read, and a GTK app encodes a picture's PNG only then, so a large one
+/// takes longer than any other method's answer; a client that never answers at all is
+/// given up on here rather than left to hold the action.
+const CLIPBOARD_READ_TIMEOUT_MS: i32 = 30_000;
 
 /// How long one scroll-assist frame may take.
 ///
@@ -211,6 +219,20 @@ impl ShellBridge for GnomeExtensionBridge {
         let params = glib::Variant::from((path.to_string_lossy().into_owned(),));
         self.call("SetClipboardImage", Some(params), "()").await?;
         Ok(())
+    }
+
+    async fn read_clipboard_image(&self) -> Result<Option<ClipboardImage>, BridgeError> {
+        let reply = self
+            .call_with_timeout("ReadClipboardImage", None, "(ss)", CLIPBOARD_READ_TIMEOUT_MS)
+            .await?;
+        let (path, name) = reply.get::<(String, String)>().ok_or_else(|| BridgeError::MalformedReply {
+            method: "ReadClipboardImage",
+            detail: "the reply is not a path and a name".to_owned(),
+        })?;
+        if path.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(ClipboardImage { path: PathBuf::from(path), name: (!name.is_empty()).then_some(name) }))
     }
 
     async fn set_clipboard_text(&self, text: &str) -> Result<(), BridgeError> {

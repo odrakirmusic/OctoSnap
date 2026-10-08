@@ -70,9 +70,14 @@ pub fn append_scene(
 
     // `spec/05` §4.13's rounded corners and shadow are properties of the *picture*, so
     // they wrap it: the shadow is cast by the clip's silhouette, which is why the clip
-    // goes inside the shadow and not beside it. An annotation drawn on the picture adds
-    // nothing to that silhouette, which is right -- an arrow does not cast its own shadow
-    // onto the gradient.
+    // goes inside the shadow and not beside it.
+    //
+    // The frame holds the base image and the picture's own objects, and no annotation
+    // (D166). An arrow drawn on the background's margin is outside the picture's corners,
+    // and inside the clip it vanished as it was drawn, behind a background that is always
+    // at the bottom. Outside the shadow too, so an arrow does not cast the picture's
+    // shadow onto the gradient; its own shadow is its style's (§5.1). The split changes
+    // no order: `ObjectKind::framed` holds for a prefix of the render list.
     let frame = picture_frame(scene);
     let mut pushed = 0_u8;
     if let Some((rect, radius, shadow)) = frame {
@@ -87,33 +92,52 @@ pub fn append_scene(
     }
 
     let place = scene.placement();
-    let transformed = !place.is_identity();
-    if transformed {
-        snapshot.save();
-        #[allow(clippy::cast_possible_truncation)]
-        snapshot.translate(&graphene::Point::new(place.x as f32, place.y as f32));
-        #[allow(clippy::cast_possible_truncation)]
-        snapshot.scale(place.scale as f32, place.scale as f32);
-    }
+    let (framed, annotations): (Vec<&Object>, Vec<&Object>) = order
+        .iter()
+        .copied()
+        .filter(|o| !matches!(o.geometry, Geometry::Background { .. }))
+        .partition(|o| o.kind().framed());
 
-    if let Some(texture) = base {
-        append_base(snapshot, texture, &scene.base);
-    }
-
-    // Then everything else, in the order the scene decided.
-    for object in &order {
-        if matches!(object.geometry, Geometry::Background { .. }) {
-            continue;
+    on_the_picture(snapshot, place, |snapshot| {
+        if let Some(texture) = base {
+            append_base(snapshot, texture, &scene.base);
         }
-        draw(snapshot, object);
-    }
-
-    if transformed {
-        snapshot.restore();
-    }
+        for object in &framed {
+            draw(snapshot, object);
+        }
+    });
     for _ in 0..pushed {
         snapshot.pop();
     }
+
+    // Then the annotations, in the order the scene decided, over the whole canvas.
+    if !annotations.is_empty() {
+        on_the_picture(snapshot, place, |snapshot| {
+            for object in &annotations {
+                draw(snapshot, object);
+            }
+        });
+    }
+}
+
+/// `body`, in the picture's coordinates: every object is in the picture's space, which
+/// §4.13's padding moves and its inset shrinks inside the canvas.
+fn on_the_picture(
+    snapshot: &gtk::Snapshot,
+    place: octosnap_scene::Placement,
+    body: impl FnOnce(&gtk::Snapshot),
+) {
+    if place.is_identity() {
+        body(snapshot);
+        return;
+    }
+    snapshot.save();
+    #[allow(clippy::cast_possible_truncation)]
+    snapshot.translate(&graphene::Point::new(place.x as f32, place.y as f32));
+    #[allow(clippy::cast_possible_truncation)]
+    snapshot.scale(place.scale as f32, place.scale as f32);
+    body(snapshot);
+    snapshot.restore();
 }
 
 /// The capture, laid into the document the way `spec/05` §4.12's Rotate and Flip left it.

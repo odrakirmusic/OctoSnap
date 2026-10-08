@@ -17,7 +17,9 @@ use octosnap_core::qao::{self, Edge, Size};
 use octosnap_core::request::CaptureRequest;
 use octosnap_core::{Monitor, Rect, ScrollDirection};
 
-use crate::bridge::{Cue, PickedColor, Placement, RecordingState, ShellBridge, ShellVersion};
+use crate::bridge::{
+    ClipboardImage, Cue, PickedColor, Placement, RecordingState, ShellBridge, ShellVersion,
+};
 
 /// One recorded `place_window`: the window's object path, its role, what was asked for
 /// and where it landed.
@@ -36,6 +38,11 @@ pub struct NullBridge {
     clipboard: Rc<RefCell<Vec<PathBuf>>>,
     /// Every string handed to `set_clipboard_text`, for the same reason.
     text: Rc<RefCell<Vec<String>>>,
+    /// What `read_clipboard_image` answers (D169), and how often it was asked.
+    clipboard_image: Rc<RefCell<Option<ClipboardImage>>>,
+    clipboard_reads: Rc<RefCell<u32>>,
+    /// Answer `read_clipboard_image` as an extension from before D169 does.
+    clipboard_read_missing: bool,
     /// Every cue handed to `play_sound`, in order.
     sounds: Rc<RefCell<Vec<Cue>>>,
     /// Every request handed to `begin_capture`, so a test can assert that the panel
@@ -99,6 +106,9 @@ impl Default for NullBridge {
             failure: None,
             clipboard: Rc::new(RefCell::new(Vec::new())),
             text: Rc::new(RefCell::new(Vec::new())),
+            clipboard_image: Rc::new(RefCell::new(None)),
+            clipboard_reads: Rc::new(RefCell::new(0)),
+            clipboard_read_missing: false,
             sounds: Rc::new(RefCell::new(Vec::new())),
             captures: Rc::new(RefCell::new(Vec::new())),
             cancels: Rc::new(RefCell::new(Vec::new())),
@@ -146,6 +156,25 @@ impl NullBridge {
     pub fn with_picked_color(mut self, r: f64, g: f64, b: f64) -> Self {
         self.picked = Some(PickedColor { r, g, b });
         self
+    }
+
+    /// What the (pretend) clipboard holds for `read_clipboard_image`: a file the reader
+    /// takes, as it takes the extension's.
+    pub fn set_clipboard_image(&self, image: Option<ClipboardImage>) {
+        *self.clipboard_image.borrow_mut() = image;
+    }
+
+    /// An extension from before D169, which has no `ReadClipboardImage`.
+    #[must_use]
+    pub const fn without_clipboard_read(mut self) -> Self {
+        self.clipboard_read_missing = true;
+        self
+    }
+
+    /// How many times the clipboard was read through the shell.
+    #[must_use]
+    pub fn clipboard_reads(&self) -> u32 {
+        *self.clipboard_reads.borrow()
     }
 
     /// How many times the pipette asked the shell.
@@ -308,6 +337,15 @@ impl ShellBridge for NullBridge {
         self.guard()?;
         self.clipboard.borrow_mut().push(path.to_path_buf());
         Ok(())
+    }
+
+    async fn read_clipboard_image(&self) -> Result<Option<ClipboardImage>, BridgeError> {
+        self.guard()?;
+        *self.clipboard_reads.borrow_mut() += 1;
+        if self.clipboard_read_missing {
+            return Err(BridgeError::Unsupported { method: "ReadClipboardImage" });
+        }
+        Ok(self.clipboard_image.borrow().clone())
     }
 
     async fn set_clipboard_text(&self, text: &str) -> Result<(), BridgeError> {

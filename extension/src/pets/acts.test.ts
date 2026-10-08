@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { PETS, PET_KINDS, type PetKind } from './art/index.js';
 import { type View, poseKey } from './art/pose.js';
 import { ACTS, type ActContext, LICK_REACH, facing, lickReach } from './acts.js';
-import { type Place, type Temperament, nextAct, pause } from './brain.js';
+import { LIVELINESS, type Place, type Temperament, isLiveliness, nextAct, pause, startsTricks } from './brain.js';
 import { BAND_CLEARANCE_ART, FLOOR_BAND_ART } from './physics.js';
 import { Rng } from './rng.js';
 import { type Fx, Runner, arc, fx, hold, move } from './runner.js';
@@ -432,8 +432,41 @@ describe('the brain', () => {
             for (let i = 0; i < 200; i++) sum += pause(rng, { ...normal, liveliness });
             return sum / 200;
         };
+        expect(mean('zen')).toBeGreaterThan(mean('calm') * 2.5);
         expect(mean('calm')).toBeGreaterThan(mean('normal'));
         expect(mean('normal')).toBeGreaterThan(mean('lively'));
+    });
+
+    it('starts nothing by itself when Silent, whatever else is set', () => {
+        for (const temperament of [normal, anywhere, { ...anywhere, wander: false }, { ...normal, reduced: true }]) {
+            const silent: Temperament = { ...temperament, liveliness: 'silent' };
+            expect(startsTricks(silent)).toBe(false);
+            expect(pause(new Rng(4), silent)).toBe(Infinity);
+        }
+        for (const liveliness of LIVELINESS.filter(l => l !== 'silent')) expect(startsTricks({ ...normal, liveliness })).toBe(true);
+    });
+
+    it('when Zen, does a trick of its own far more rarely than when Calm, and sits more', () => {
+        const share = (liveliness: Temperament['liveliness'], names: readonly string[]) => {
+            const rng = new Rng(17);
+            let last: string | null = null;
+            let hits = 0;
+            for (let i = 0; i < 2000; i++) {
+                last = nextAct(rng, PETS.octopus, { ...normal, liveliness }, last);
+                if (names.includes(last)) hits++;
+            }
+            return hits / 2000;
+        };
+        const own = PETS.octopus.specials;
+        expect(share('zen', own)).toBeLessThan(share('calm', own) / 2.5);
+        expect(share('zen', ['sit'])).toBeGreaterThan(share('calm', ['sit']) * 1.5);
+        expect(share('zen', own)).toBeGreaterThan(0);
+    });
+
+    it('knows every liveliness by name, and nothing else', () => {
+        expect([...LIVELINESS]).toEqual(['silent', 'zen', 'calm', 'normal', 'lively']);
+        expect(LIVELINESS.every(isLiveliness)).toBe(true);
+        expect(['Silent', 'toString', '', 'busy'].some(isLiveliness)).toBe(false);
     });
 });
 

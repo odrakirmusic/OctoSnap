@@ -284,6 +284,9 @@ pub enum Control {
     TextStyle,
     /// §4.5's thirteen presets over a continuous value ([`crate::style::FONT_SIZES`]).
     FontSize,
+    /// How a text's lines line up with each other ([`TextAlign`]). The model had it from
+    /// the start and nothing could set it until D167.
+    TextAlign,
     /// §2's "corner radius toggle", stored as the radius itself.
     CornerRadius,
     /// §4.6's "smoothing on/off".
@@ -329,7 +332,9 @@ impl Tool {
             // tool lists neither.
             Self::FilledRect => &[Control::ColorWithAlpha, Control::CornerRadius],
             Self::Ellipse => &[Control::Color, Control::Size, Control::Shadow],
-            Self::Text => &[Control::Color, Control::FontSize, Control::TextStyle],
+            Self::Text => {
+                &[Control::Color, Control::FontSize, Control::TextStyle, Control::TextAlign]
+            }
             Self::Pencil => &[Control::Color, Control::Size, Control::Smoothing],
             Self::Highlighter => &[Control::Color, Control::Size, Control::SmartMode],
             // No colour: the spotlight paints a scrim, not a stroke.
@@ -414,6 +419,11 @@ impl Control {
                     *font_size = settings.font_size;
                 }
             }
+            Self::TextAlign => {
+                if let Geometry::Text { align, .. } = &mut object.geometry {
+                    *align = settings.align;
+                }
+            }
             Self::CornerRadius => {
                 let radius = corner_radius(settings.rounded_corners, &object.style);
                 if let Geometry::Rect { radius: r, .. } = &mut object.geometry {
@@ -474,6 +484,8 @@ pub struct ToolSettings {
     pub head: ArrowHead,
     pub text: TextStyle,
     pub font_size: f64,
+    /// How a new text's lines line up, and what the row sets on a selected one.
+    pub align: TextAlign,
     pub spotlight: SpotlightShape,
     pub spotlight_opacity: f64,
     pub counter: CounterStyle,
@@ -507,9 +519,10 @@ impl ToolSettings {
                 settings.head = *head;
             }
             Geometry::Rect { radius, .. } => settings.rounded_corners = *radius > 0.0,
-            Geometry::Text { style, font_size, .. } => {
+            Geometry::Text { style, font_size, align, .. } => {
                 settings.text = *style;
                 settings.font_size = *font_size;
+                settings.align = *align;
             }
             Geometry::Path { smoothing, .. } => settings.smoothing = *smoothing,
             Geometry::Spotlight { shape, opacity, .. } => {
@@ -543,6 +556,7 @@ impl Default for ToolSettings {
             text: TextStyle::default(),
             // The middle of §4.5's thirteen presets.
             font_size: 24.0,
+            align: TextAlign::Start,
             spotlight: SpotlightShape::default(),
             spotlight_opacity: 0.5,
             counter: CounterStyle::default(),
@@ -740,7 +754,7 @@ impl Draft {
                     text: String::new(),
                     style: self.settings.text,
                     font_size: self.settings.font_size,
-                    align: TextAlign::default(),
+                    align: self.settings.align,
                     width,
                 }
             }
@@ -1030,6 +1044,37 @@ mod tests {
         assert!(Control::Color.apply(&recoloured, &mut copy));
         assert_eq!(copy.style.color, recoloured.style.color);
         assert_eq!(copy.style.size, 5, "a colour change is not a size change");
+    }
+
+    /// A text's alignment is the row's to set (D167): a new text takes the tool's, the row
+    /// reads a selected text's back, and changing it leaves the style and the size alone.
+    #[test]
+    fn a_text_is_drawn_with_the_tools_alignment_and_the_row_changes_only_that() {
+        assert!(Tool::Text.controls().contains(&Control::TextAlign));
+        let settings = ToolSettings { align: TextAlign::Center, ..ToolSettings::default() };
+        let mut draft = Draft::begin(Tool::Text, settings, Point::new(0.0, 0.0), Modifiers::none())
+            .expect("creates");
+        draft.extend(Point::new(200.0, 40.0), Modifiers::none());
+        let mut text = draft.object(0, 0, 1).expect("committable");
+        assert!(matches!(text.geometry, Geometry::Text { align: TextAlign::Center, .. }));
+
+        let read = ToolSettings::from_object(&text, ToolSettings::default());
+        assert_eq!(read.align, TextAlign::Center);
+        for control in Tool::Text.controls() {
+            let changed = control.apply(&read, &mut text);
+            assert!(!changed, "{control:?} changed a value it had just read");
+        }
+
+        let right = ToolSettings { align: TextAlign::End, ..read };
+        assert!(Control::TextAlign.apply(&right, &mut text));
+        let Geometry::Text { align, style, font_size, .. } = text.geometry else { panic!("text") };
+        assert_eq!(align, TextAlign::End);
+        assert_eq!((style, font_size), (read.text, read.font_size));
+
+        // Nothing else has an alignment to set.
+        let mut arrow = drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none())
+            .expect("committable");
+        assert!(!Control::TextAlign.apply(&right, &mut arrow));
     }
 
     /// The head is its own control: changing it leaves the style, and a document from
@@ -1365,7 +1410,8 @@ mod options_row_tests {
             (Tool::Rect, &[C::Color, C::Size, C::CornerRadius, C::Shadow]),
             (Tool::FilledRect, &[C::ColorWithAlpha, C::CornerRadius]),
             (Tool::Ellipse, &[C::Color, C::Size, C::Shadow]),
-            (Tool::Text, &[C::Color, C::FontSize, C::TextStyle]),
+            // §2's three, plus the alignment the model always had (D167).
+            (Tool::Text, &[C::Color, C::FontSize, C::TextStyle, C::TextAlign]),
             (Tool::Pencil, &[C::Color, C::Size, C::Smoothing]),
             (Tool::Highlighter, &[C::Color, C::Size, C::SmartMode]),
             (Tool::Spotlight, &[C::SpotlightShape, C::SpotlightOpacity]),

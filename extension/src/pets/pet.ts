@@ -32,7 +32,7 @@ import { PETS, type PetKind, type PetSpec, baselineOf } from './art/index.js';
 import type { Grid } from './art/painter.js';
 import { type Face, type Pose, type View, poseKey, quantizePose } from './art/pose.js';
 import { ACTS, type ActContext } from './acts.js';
-import { BLINK_MS, BREATH_MS, type Place, type Temperament, nextAct, nextBlink, pause } from './brain.js';
+import { BLINK_MS, BREATH_MS, type Place, type Temperament, nextAct, nextBlink, pause, startsTricks } from './brain.js';
 import { Effects } from './effects.js';
 import { type PetSize, artPixel, snapToPhysical } from './frames.js';
 import {
@@ -498,7 +498,8 @@ export class Pet {
         if (this.#runner === null) {
             const queued = this.#queue.shift();
             if (queued !== undefined) this.play(queued[0], now, s, queued[1]);
-            else if (this.#nextThink === 0) this.#nextThink = now + pause(this.rng, s.temperament);
+            // Infinity is Silent's never, asked again each step, so a pet starts again when Silent ends.
+            else if (this.#nextThink === 0 || this.#nextThink === Infinity) this.#nextThink = now + pause(this.rng, s.temperament);
             else if (now >= this.#nextThink) this.#think(now, s);
         }
 
@@ -561,6 +562,11 @@ export class Pet {
     }
 
     #think(now: number, s: Surroundings): void {
+        // Made Silent while it waited.
+        if (!startsTricks(s.temperament)) {
+            this.#nextThink = Infinity;
+            return;
+        }
         const where: Place = this.#view === 'top' ? 'desk' : this.platform !== null ? 'pin' : 'floor';
         let name = nextAct(this.rng, this.spec, s.temperament, this.#lastAct, where);
         // A way up or down the desk could cross an area kept clear; across it, the walk keeps out.

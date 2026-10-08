@@ -114,6 +114,20 @@
   </categories>
 
   <releases>
+    <release version="0.1.6" date="2026-10-08">
+      <description>
+        <p>Quieter pets, aligned text, and a clipboard read from anywhere.</p>
+        <ul>
+          <li>Two new Liveliness settings for the pets: Silent, where they start nothing by themselves but still react to you, and Zen, far calmer than Calm. A new size, Smol, sits between Tiny and Small</li>
+          <li>Marks drawn on a background's margin are no longer cut away, and None in the Background panel takes the whole background away</li>
+          <li>Text can be aligned left, centred or right</li>
+          <li>The default background preset can be added to every new screenshot, from the editor's Presets menu or from Settings</li>
+          <li>A picture made from a saved project remembers it: the history's Projects filter finds it, and Annotate opens the project again</li>
+          <li>The unsaved-changes dot and a card's Trash button follow what was really saved, so undoing and drawing again is no longer taken for saved work</li>
+          <li>Annotate the Clipboard's Image works while another application has the keyboard, for a copied picture or a copied image file</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-10-07">
       <description>
         <p>Saved files are the format you chose, and a copied GIF stays animated.</p>

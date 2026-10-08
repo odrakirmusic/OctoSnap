@@ -18,6 +18,7 @@ pub mod options;
 pub mod picker;
 pub mod preview;
 pub mod redact;
+pub mod saved;
 pub mod text;
 pub mod tools;
 pub mod transform;

@@ -8,19 +8,23 @@
  * thing a pet must not look like. **The settings shape the draw**: with moving on their
  * own off nothing that walks is drawn, with the pets allowed anywhere a pet on the floor
  * now and then climbs onto the desk and one on the desk roams it and now and then comes
- * down, and Liveliness stretches or shrinks the pauses between tricks. **Reduced motion
- * keeps it still**: GNOME's "Reduce animation" leaves a pet that blinks and looks around,
- * and nothing else (`spec/14` §9). No `gi://` imports.
+ * down, and Liveliness stretches or shrinks the pauses between tricks and shifts the mix.
+ * **Silent starts nothing**: a pet breathes, blinks and answers what is done to it, and
+ * chooses no trick of its own (D166). **Reduced motion keeps it still**: GNOME's "Reduce
+ * animation" leaves a pet that blinks and looks around, and nothing else (`spec/14` §9).
+ * No `gi://` imports.
  */
 
 import type { PetSpec } from './art/index.js';
 import type { Rng } from './rng.js';
 
-/** `pet-activity` (`spec/08` §11). */
-export type Liveliness = 'calm' | 'normal' | 'lively';
+/** `pet-activity` (`spec/08` §11), quietest first. Silent and Zen since 2026-10-07 (D166). */
+export const LIVELINESS = ['silent', 'zen', 'calm', 'normal', 'lively'] as const;
+
+export type Liveliness = (typeof LIVELINESS)[number];
 
 export function isLiveliness(name: string): name is Liveliness {
-    return name === 'calm' || name === 'normal' || name === 'lively';
+    return (LIVELINESS as readonly string[]).includes(name);
 }
 
 /** `pet-roam` (`spec/14` §4): along the bottom only, or anywhere on the screen. */
@@ -42,8 +46,16 @@ export interface Temperament {
     reduced: boolean;
 }
 
-/** How much longer or shorter the pauses between tricks are. */
-const PAUSE: Record<Liveliness, number> = { calm: 1.8, normal: 1, lively: 0.55 };
+/**
+ * How much longer or shorter the pauses between tricks are. Silent's never end: it starts
+ * nothing by itself. Zen's are five times Normal's, 4.5 to 17 seconds.
+ */
+const PAUSE: Record<Liveliness, number> = { silent: Infinity, zen: 5, calm: 1.8, normal: 1, lively: 0.55 };
+
+/** Whether a pet chooses tricks of its own at all: under Silent it never does. */
+export function startsTricks(temperament: Temperament): boolean {
+    return temperament.liveliness !== 'silent';
+}
 
 /**
  * The prototype's mix, which the owner saw and approved (2026-09-26). With the pets allowed
@@ -53,12 +65,29 @@ const PAUSE: Record<Liveliness, number> = { calm: 1.8, normal: 1, lively: 0.55 }
  */
 const WEIGHTS = { walk: 34, jump: 14, special: 30, look: 14, sit: 8, climb: 10, descend: 6 } as const;
 
+type Mix = Record<'walk' | 'jump' | 'special' | 'look' | 'sit', number>;
+
+/**
+ * How Liveliness shifts the mix: a lively pet does more of its own tricks, a calm one sits
+ * more. Zen mostly sits and looks about, now and then wanders, and only rarely does a trick
+ * of its own. With its longer pauses that is about five things a minute against Calm's ten,
+ * and one of its own tricks every three minutes or so against Calm's two or three a minute,
+ * by tricks' own lengths (D166). Silent draws nothing, so its mix is never read.
+ */
+const MIX: Record<Liveliness, Mix> = {
+    silent: { walk: 0, jump: 0, special: 0, look: 1, sit: 0 },
+    zen: { walk: 0.6, jump: 0.4, special: 0.15, look: 1.5, sit: 3 },
+    calm: { walk: 1, jump: 1, special: 0.7, look: 1, sit: 1.6 },
+    normal: { walk: 1, jump: 1, special: 1, look: 1, sit: 1 },
+    lively: { walk: 1, jump: 1, special: 1.3, look: 1, sit: 1 },
+};
+
 /**
  * The next trick, by the name `ACTS` knows it, for a pet at `where`. `last` is the trick
  * before, which this one is never the same as when there is anything else to draw.
  */
 export function nextAct(rng: Rng, spec: PetSpec, temperament: Temperament, last: string | null, where: Place = 'floor'): string {
-    if (temperament.reduced) return 'look';
+    if (temperament.reduced || !startsTricks(temperament)) return 'look';
     for (let attempt = 0; attempt < 4; attempt++) {
         const name = draw(rng, spec, temperament, where);
         if (name !== last) return name;
@@ -70,19 +99,21 @@ export function nextAct(rng: Rng, spec: PetSpec, temperament: Temperament, last:
 /** How the walk's weight is shared out at `where`: `[name, weight]`. */
 function walks(temperament: Temperament, where: Place): [string, number][] {
     if (!temperament.wander) return [['walk', 0]];
-    if (where === 'desk') return [['roam', WEIGHTS.walk - WEIGHTS.descend], ['descend', WEIGHTS.descend]];
+    const k = MIX[temperament.liveliness].walk;
+    if (where === 'desk') return [['roam', (WEIGHTS.walk - WEIGHTS.descend) * k], ['descend', WEIGHTS.descend * k]];
     if (where === 'floor' && temperament.roam === 'anywhere')
-        return [['walk', WEIGHTS.walk - WEIGHTS.climb], ['climb', WEIGHTS.climb]];
-    return [['walk', WEIGHTS.walk]];
+        return [['walk', (WEIGHTS.walk - WEIGHTS.climb) * k], ['climb', WEIGHTS.climb * k]];
+    return [['walk', WEIGHTS.walk * k]];
 }
 
 function draw(rng: Rng, spec: PetSpec, temperament: Temperament, where: Place): string {
+    const mix = MIX[temperament.liveliness];
     const weights: [string, number][] = [
         ...walks(temperament, where),
-        [temperament.wander ? 'jump' : 'bounce', WEIGHTS.jump],
-        ['special', WEIGHTS.special * (temperament.liveliness === 'lively' ? 1.3 : temperament.liveliness === 'calm' ? 0.7 : 1)],
-        ['look', WEIGHTS.look],
-        ['sit', WEIGHTS.sit * (temperament.liveliness === 'calm' ? 1.6 : 1)],
+        [temperament.wander ? 'jump' : 'bounce', WEIGHTS.jump * mix.jump],
+        ['special', WEIGHTS.special * mix.special],
+        ['look', WEIGHTS.look * mix.look],
+        ['sit', WEIGHTS.sit * mix.sit],
     ];
     const total = weights.reduce((sum, [, w]) => sum + w, 0);
     let roll = rng.next() * total;
@@ -100,8 +131,9 @@ function draw(rng: Rng, spec: PetSpec, temperament: Temperament, where: Place): 
     return specials.length > 0 ? rng.pick(specials) : 'look';
 }
 
-/** How long to wait, in milliseconds, before the next trick. */
+/** How long to wait, in milliseconds, before the next trick: for ever, under Silent. */
 export function pause(rng: Rng, temperament: Temperament): number {
+    if (!startsTricks(temperament)) return Infinity;
     if (temperament.reduced) return rng.range(2500, 6000);
     return rng.range(900, 3400) * PAUSE[temperament.liveliness];
 }

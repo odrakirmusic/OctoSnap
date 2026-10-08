@@ -774,6 +774,7 @@ fn build_capture(
         duration_ms: Some(u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)),
         external: false,
         linebreaks: None,
+        project: None,
     }
 }
 

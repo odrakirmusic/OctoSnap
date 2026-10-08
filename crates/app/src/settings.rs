@@ -722,6 +722,20 @@ pub fn background_auto() -> bool {
     open_settings().is_some_and(|settings| settings.boolean("ann-background-auto"))
 }
 
+pub fn set_background_auto(on: bool) {
+    let Some(settings) = open_settings() else { return };
+    if let Err(e) = settings.set_boolean("ann-background-auto", on) {
+        warn!("could not save ann-background-auto: {e}");
+    }
+}
+
+/// The key above as a check item's action, for the editor's Default Preset menu. The
+/// key had no control anywhere until D167, so a default preset did nothing at all.
+#[must_use]
+pub fn background_auto_action() -> Option<gio::Action> {
+    open_settings().map(|settings| settings.create_action("ann-background-auto"))
+}
+
 /// `spec/08` §1's Annotate row "Remember if background tool was opened".
 ///
 /// Two keys, because a preference and the thing it remembers are different questions --

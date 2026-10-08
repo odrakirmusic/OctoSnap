@@ -15,7 +15,8 @@ pub mod null;
 pub mod variant;
 
 pub use bridge::{
-    Cue, PickedColor, Placement, PlacementMonitor, RecordingState, ShellBridge, ShellVersion,
+    ClipboardImage, Cue, PickedColor, Placement, PlacementMonitor, RecordingState, ShellBridge,
+    ShellVersion,
 };
 pub use capture::APP1_INTERFACE_XML;
 pub use error::BridgeError;

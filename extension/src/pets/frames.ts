@@ -7,7 +7,10 @@
  * **One art pixel is a whole number of screen pixels, at every scale.** A pet is drawn
  * `artPixel()` physical pixels to the art pixel -- the size setting's base times the
  * monitor's scale, rounded -- and never an in-between: 3 at 100 %, 4 at 125 % and 133 %,
- * 5 at 150 % and 167 %, 6 at 200 % for Medium. The stage lays actors out in logical pixels,
+ * 5 at 150 % and 167 %, 6 at 200 % for Medium. Smol is the one exception (D166): where no
+ * whole number lies between Tiny's and Small's, as at 100 %, its art pixel is one and a
+ * half, and the nearest texel draws some art pixels a screen pixel wider than others, each
+ * still one colour. The stage lays actors out in logical pixels,
  * so the pet's logical size is that divided by the scale, and its position is put on the
  * monitor's physical grid (`snapToPhysical`). The texture is the grid itself, one texel per
  * art pixel, scaled up with nearest-neighbour filtering: every screen pixel then shows
@@ -18,9 +21,10 @@ import type { Grid } from './art/painter.js';
 
 /**
  * `pet-size` (`spec/08` §11): screen pixels per art pixel at 100 %. Tiny is one, the
- * fewest there can be, which puts Omni at 32 pixels at 100 % (D155).
+ * fewest there can be, which puts Omni at 32 pixels at 100 % (D155). Smol is between Tiny
+ * and Small, 48 pixels at 100 % (D166).
  */
-export const SIZE_BASES = { tiny: 1, small: 2, medium: 3, large: 4, huge: 5 } as const;
+export const SIZE_BASES = { tiny: 1, smol: 1.5, small: 2, medium: 3, large: 4, huge: 5 } as const;
 
 export type PetSize = keyof typeof SIZE_BASES;
 
@@ -32,8 +36,20 @@ export function isPetSize(name: string): name is PetSize {
  * Physical pixels per art pixel for a size on a monitor at `scale`. Rounded, and never
  * below one: Small at 100 % is 2, and at 125 % it is 3, not 2.5. Tiny is 1 up to 133 %
  * and 2 from 150 %.
+ *
+ * Smol is always more than Tiny and less than Small, so it is whole only where a whole
+ * number lies between theirs: 2 at 125 % and 133 %, 3 at 175 % and 200 %. Elsewhere it is
+ * its base times the scale to the quarter pixel, 1.5 at 100 %, 2.25 at 150 % and 2.5 at
+ * 167 %, which keeps every pet's width and height whole.
  */
 export function artPixel(size: PetSize, scale: number): number {
+    if (size === 'smol') {
+        const target = SIZE_BASES.smol * scale;
+        const above = artPixel('tiny', scale) + 1;
+        const below = artPixel('small', scale) - 1;
+        if (above <= below) return Math.min(below, Math.max(above, Math.round(target)));
+        return Math.round(target * 4) / 4;
+    }
     return Math.max(1, Math.round(SIZE_BASES[size] * scale));
 }
 

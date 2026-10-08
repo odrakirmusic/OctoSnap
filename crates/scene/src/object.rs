@@ -223,6 +223,29 @@ pub enum TextAlign {
     End,
 }
 
+impl TextAlign {
+    /// In the order the text row's menu lists them (D167).
+    pub const ALL: [Self; 3] = [Self::Start, Self::Center, Self::End];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Start => "Left",
+            Self::Center => "Centre",
+            Self::End => "Right",
+        }
+    }
+
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
+        match self {
+            Self::Start => "format-justify-left-symbolic",
+            Self::Center => "format-justify-center-symbolic",
+            Self::End => "format-justify-right-symbolic",
+        }
+    }
+}
+
 /// One annotation: `spec/05` §5.1's common fields plus its geometry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Object {

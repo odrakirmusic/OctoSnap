@@ -1115,6 +1115,15 @@ impl<B: ShellBridge + 'static> Qao<B> {
             self.open_gif_editor(capture, origin);
             return;
         }
+        // A render of a project opens the project, so its marks are objects again rather
+        // than pixels (D167). One that cannot be read leaves the picture to annotate.
+        if let Some(project) = capture.project.as_deref().filter(|path| path.is_file())
+            && self.open_project_from(project, origin.clone())
+        {
+            // The picture is lent as any capture is, so its card goes (`spec/04` §3).
+            self.close_cards_for(&capture.path);
+            return;
+        }
         let editor =
             crate::editor::Editor::open(&self.app, capture, self.editor_actions(origin));
 
@@ -1255,7 +1264,13 @@ impl<B: ShellBridge + 'static> Qao<B> {
     /// The base image is extracted **beside the project file's own spool entry**, not into
     /// the project's directory: `spec/05` §8 makes the container self-contained precisely
     /// so that opening one does not write next to the user's file.
-    pub fn open_project(self: &Rc<Self>, path: &std::path::Path) -> bool {
+    pub fn open_project(&self, path: &std::path::Path) -> bool {
+        self.open_project_from(path, Origin::Kept)
+    }
+
+    /// [`Self::open_project`], for a render of one (D167): a card or a history entry whose
+    /// picture is the project's lends that picture, as any capture does, and gets it back.
+    fn open_project_from(&self, path: &std::path::Path, origin: Origin) -> bool {
         let into = glib::user_cache_dir()
             .join("octosnap")
             .join("projects")
@@ -1300,6 +1315,7 @@ impl<B: ShellBridge + 'static> Qao<B> {
             modifiers: 0,
             external: false,
             linebreaks: None,
+            project: None,
             duration_ms: None,
         };
 
@@ -1312,9 +1328,10 @@ impl<B: ShellBridge + 'static> Qao<B> {
         let editor = crate::editor::Editor::open_with(
             &self.app,
             &capture,
-            self.editor_actions(Origin::Kept),
+            self.editor_actions(origin),
             Some(opened.scene),
         );
+        editor.set_project(path);
         let window = editor.window().clone();
         hold_until_closed(editor, &window, capture.path.clone());
         true

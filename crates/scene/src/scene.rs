@@ -378,6 +378,24 @@ impl Placement {
     }
 }
 
+impl ObjectKind {
+    /// Whether an object of this kind is part of the picture, and so is held by `spec/05`
+    /// §4.13's frame -- its rounded corners and the shadow it casts -- or is drawn over the
+    /// whole canvas (D166).
+    ///
+    /// The crop, an inserted image, a redaction and a spotlight are the picture's own: a
+    /// stitched image takes its rounded corners (D89), and a redaction or a spotlight is
+    /// about what the picture shows. A shape, a line, a text or a counter is an annotation,
+    /// and one drawn on a background's margin has to show there: clipped to the picture,
+    /// an arrow drawn on the gradient vanished as it was drawn. In render order every
+    /// framed kind comes before every annotation, so the renderer closes the frame once,
+    /// between the two, without changing what is drawn over what.
+    #[must_use]
+    pub const fn framed(self) -> bool {
+        matches!(render_group(self), 1..=3)
+    }
+}
+
 /// `spec/05` §5.3's groups, bottom to top. The number is the layer, not a `z`.
 const fn render_group(kind: ObjectKind) -> u8 {
     match kind {
@@ -526,6 +544,43 @@ mod tests {
             s.add(object);
         }
         assert_eq!(s.render_order(), expected);
+    }
+
+    /// D166: the renderer closes the picture's frame once, between the framed objects and
+    /// the annotations, so in render order no framed object may come after an annotation,
+    /// whatever their z.
+    #[test]
+    fn the_picture_s_own_objects_render_before_every_annotation() {
+        use ObjectKind::{
+            Arrow, Counter, Crop, Ellipse, Image, Line, Path, Rect, Redact, Spotlight, Text,
+        };
+        let mut s = scene();
+        let background = Object::new(90, 0, style(), Geometry::Background {
+            params: crate::background::BackgroundParams::default(),
+            source: None,
+        });
+        let image = Object::new(80, 0, style(), Geometry::Image {
+            bounds: Bounds::new(0.0, 0.0, 10.0, 10.0),
+            file: "assets/a.png".into(),
+        });
+        let objects =
+            [counter_at(1), rect_at(2, 0.0), redact_at(70), spotlight_at(60, 0.0), image];
+        for object in objects.into_iter().chain([background]) {
+            s.add(object);
+        }
+        let kinds: Vec<ObjectKind> = s.render_list().iter().map(|o| o.kind()).collect();
+        assert_eq!(kinds[0], ObjectKind::Background);
+        assert!(!ObjectKind::Background.framed(), "the background is drawn before the frame");
+        let rest = &kinds[1..];
+        let annotations = rest.iter().position(|k| !k.framed()).expect("an annotation");
+        assert!(rest[..annotations].iter().all(|k| k.framed()));
+        assert!(rest[annotations..].iter().all(|k| !k.framed()), "{kinds:?}");
+        for kind in [Arrow, Line, Rect, Ellipse, Path, Text, Counter] {
+            assert!(!kind.framed(), "{kind:?} is drawn over the whole canvas");
+        }
+        for kind in [Crop, Image, Redact, Spotlight] {
+            assert!(kind.framed(), "{kind:?} is the picture's own");
+        }
     }
 
     /// Two overlapping spotlights brighten one region rather than darkening the overlap

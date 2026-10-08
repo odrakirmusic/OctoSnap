@@ -41,8 +41,9 @@ import { tellPets } from './pets/events.js';
 import { playCue } from './sound.js';
 import { SettingsBridge } from './settingsBridge.js';
 import { setAnnouncedSpool, spoolDir } from './spool.js';
-import { readBytes, readHead } from './files.js';
+import { copyFile, readBytes, readHead, writeBytes } from './files.js';
 import { type ClipboardOffer, SNIFF_LENGTH, gifOffer, pngOffer, sniff } from './clipboardOffer.js';
+import { READ_NAME, chooseRead, firstUri, readName } from './clipboardRead.js';
 import { error, info, recentLog } from './log.js';
 
 /**
@@ -104,6 +105,10 @@ const INTERFACE_XML = `
     </method>
     <method name="SetClipboardText">
       <arg type="s" direction="in" name="text"/>
+    </method>
+    <method name="ReadClipboardImage">
+      <arg type="s" direction="out" name="path"/>
+      <arg type="s" direction="out" name="name"/>
     </method>
     <method name="PlaySound">
       <arg type="s" direction="in" name="cue"/>
@@ -499,6 +504,104 @@ function pruneWallpaperCopies(dir: string): void {
         Gio.File.new_for_path(GLib.build_filenamev([dir, name])).delete(null);
 }
 
+/** How long a read the app has not taken away is kept: long enough for any import. */
+const CLIPBOARD_READ_KEPT_S = 60;
+
+/**
+ * One type of the clipboard's, read whole; `null` when its owner gave nothing.
+ *
+ * Copied out inside the callback. St unrefs the `GBytes` once the callback returns, and
+ * the wrapper GJS hands the callback does not keep it alive: read after the promise
+ * resolved, it was freed memory (a refcount assertion, and "2 bytes" of a 123x77 PNG, in
+ * the nested shell).
+ */
+function clipboardContent(mime: string): Promise<Uint8Array | null> {
+    return new Promise(resolve => {
+        St.Clipboard.get_default().get_content(St.ClipboardType.CLIPBOARD, mime,
+            (_clipboard: St.Clipboard, bytes: GLib.Bytes | null) => {
+                resolve(bytes === null ? null : bytes.toArray().slice());
+            });
+    });
+}
+
+/**
+ * The clipboard's image, written beside the spool for the app (D169): its pixels, or the
+ * image file it names, copied. Answers the written path and, for a file, the file's name;
+ * `['', '']` when the clipboard holds no image. `clipboardRead.ts` says what is read.
+ *
+ * Beside the spool rather than in it, as the wallpaper's copy is, so the history janitor
+ * never takes a read for a capture; in a folder of its own, where only the names this
+ * gives are ever removed, and only once they are older than any import takes.
+ */
+async function readClipboardImage(): Promise<[string, string]> {
+    const offered = St.Clipboard.get_default().get_mimetypes(St.ClipboardType.CLIPBOARD);
+    const read = chooseRead(offered);
+    if (read === null) {
+        info(`the clipboard holds no image: ${offered.join(', ') || 'nothing'}`);
+        return ['', ''];
+    }
+    const dir = GLib.build_filenamev([GLib.path_get_dirname(await spoolDir()), 'clipboard-read']);
+    GLib.mkdir_with_parents(dir, 0o700);
+    pruneClipboardReads(dir);
+    const id = ulidFrom(Date.now(), () => GLib.random_int_range(0, 32));
+
+    if (read.kind === 'pixels') {
+        const bytes = await clipboardContent(read.mime);
+        if (bytes === null || bytes.length === 0) return ['', ''];
+        const target = GLib.build_filenamev([dir, readName(id, read.mime)]);
+        await writeBytes(target, new GLib.Bytes(bytes));
+        info(`read the clipboard's ${read.mime} for the app (${bytes.length} bytes)`);
+        return [target, ''];
+    }
+
+    const list = await clipboardContent('text/uri-list');
+    const uri = list === null ? null : firstUri(new TextDecoder().decode(list));
+    if (uri === null) {
+        info(`the clipboard's file list names no file (${list === null ? 'unread' : `${list.length} bytes`})`);
+        return ['', ''];
+    }
+    // Only an image file: a video or a folder copied in Files is not copied into the
+    // app's cache to be refused there. A file that has gone since it was copied is no
+    // image either, rather than a failure.
+    const source = Gio.File.new_for_uri(uri);
+    let found: Gio.FileInfo;
+    try {
+        found = await source.query_info_async('standard::type,standard::content-type,standard::display-name',
+            Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null);
+    } catch (e) {
+        if (!(e instanceof GLib.Error) || !e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND)) throw e;
+        info('the clipboard names a file that is not there any more');
+        return ['', ''];
+    }
+    const mime = Gio.content_type_get_mime_type(found.get_content_type() ?? '') ?? '';
+    if (found.get_file_type() !== Gio.FileType.REGULAR || !mime.startsWith('image/')) {
+        info(`the clipboard names a file that is not an image (${mime || 'no type'})`);
+        return ['', ''];
+    }
+    const target = GLib.build_filenamev([dir, readName(id, mime)]);
+    await copyFile(source, target);
+    info(`read the clipboard's ${mime} file for the app`);
+    return [target, found.get_display_name()];
+}
+
+/** Removes the reads in `dir` older than [`CLIPBOARD_READ_KEPT_S`]: a crashed import's. */
+function pruneClipboardReads(dir: string): void {
+    const now = Date.now() / 1000;
+    const children = Gio.File.new_for_path(dir).enumerate_children(
+        'standard::name,time::modified', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+    for (let found = children.next_file(null); found !== null; found = children.next_file(null)) {
+        const modified = found.get_modification_date_time()?.to_unix() ?? 0;
+        if (READ_NAME.test(found.get_name()) && now - modified > CLIPBOARD_READ_KEPT_S) {
+            try {
+                Gio.File.new_for_path(GLib.build_filenamev([dir, found.get_name()])).delete(null);
+            } catch (e) {
+                error('could not remove an old clipboard read', e);
+            }
+        }
+    }
+    children.close(null);
+}
+
 function returnError(invocation: Gio.DBusMethodInvocation, e: unknown): void {
     invocation.return_error_literal(
         Gio.DBusError.quark(),
@@ -745,6 +848,37 @@ export class ShellService {
         St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text);
         info(`clipboard set to ${text.length} characters of text`);
         tellPets({ kind: 'copied' });
+    }
+
+    /**
+     * Annotate the Clipboard's Image's read (D169): the clipboard's picture, or the image
+     * file it names, written beside the spool, answered with its path and, for a file,
+     * the file's name. `('', '')` when the clipboard holds no image.
+     *
+     * The shell rather than the app, as a copy is (`SetClipboardImage`): Mutter offers the
+     * selection to the focused client only, and this is asked for from a shortcut, the CLI
+     * or a link while another application has the keyboard. Read through GDK, the app got
+     * nothing, or only the types it was offered when one of its windows last had focus.
+     *
+     * A file is copied rather than named, so a sandboxed app, which cannot open the path,
+     * gets it too; and the file is the editor's to open either way.
+     *
+     * The app's alone to ask for: the selection is what Wayland keeps from every client
+     * without the keyboard, and this would hand it to any process on the bus.
+     */
+    ReadClipboardImageAsync(_params: [], invocation: Gio.DBusMethodInvocation): void {
+        if (!callerIsTheApp(invocation.get_sender())) {
+            returnError(invocation, new Error('the clipboard is the app\'s to read'));
+            return;
+        }
+        void (async () => {
+            try {
+                invocation.return_value(new GLib.Variant('(ss)', await readClipboardImage()));
+            } catch (e) {
+                error('could not read the clipboard for the app', e);
+                returnError(invocation, e);
+            }
+        })();
     }
 
     /**

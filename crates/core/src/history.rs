@@ -82,7 +82,8 @@ pub enum Kind {
     /// A file opened with the app rather than captured by it (`HIS-04`).
     External,
     /// A `.octosnap` project: §4.2's "Video Projects" chip, generalised to the one
-    /// project type this app has.
+    /// project type this app has. A picture is one when it is the render of a project
+    /// file that holds exactly what it shows (D167); nothing filed as one before that.
     Project,
 }
 
@@ -262,7 +263,9 @@ impl Entry {
     /// in the spool -- so that restoring is moving them back, nothing more.
     ///
     /// `saved_path` and `project_path` travel with the capture (`spec/04` §7), and the
-    /// physical size is the rect at its scale, which is what the PNG contains.
+    /// physical size is the rect at its scale, which is what the PNG contains. The
+    /// project is the capture's own when the caller names none, and a capture with one
+    /// is a [`Kind::Project`] (D167).
     #[must_use]
     pub fn filed(
         capture: &CaptureResult,
@@ -274,9 +277,10 @@ impl Entry {
         let inside = |file: &Path| {
             file.file_name().map_or_else(|| dir.join("capture.png"), |name| dir.join(name))
         };
+        let project_path = project_path.or(capture.project.as_deref());
         Self {
             id: id_of(capture).unwrap_or_else(|| "capture".to_owned()),
-            kind: Kind::of(capture),
+            kind: if project_path.is_some() { Kind::Project } else { Kind::of(capture) },
             created_at: capture.timestamp,
             filed_at,
             path: inside(&capture.path),
@@ -474,6 +478,7 @@ mod tests {
             modifiers: 0,
             external: false,
             linebreaks: None,
+            project: None,
             duration_ms: None,
         }
     }
@@ -546,6 +551,25 @@ mod tests {
         assert!(Filter::Screenshots.matches(Kind::External));
         assert!(!Filter::Screenshots.matches(Kind::Video));
         assert!(Filter::Projects.matches(Kind::Project));
+    }
+
+    /// D167: nothing was ever filed as a project, so the Projects chip showed nothing. A
+    /// render of a project file is one now, whether the capture carries the project or
+    /// the caller names it, and only that chip shows it.
+    #[test]
+    fn a_capture_with_a_project_files_under_projects() {
+        let dir = Path::new("/home/u/.local/share/octosnap/history/01JTEST");
+        assert_eq!(Entry::filed(&capture(), dir, 1, None, None).kind, Kind::Screenshot);
+        let project = Path::new("/home/u/Documents/work.octosnap");
+        let render = CaptureResult { project: Some(project.to_path_buf()), ..capture() };
+        let entry = Entry::filed(&render, dir, 1, None, None);
+        assert_eq!(entry.kind, Kind::Project);
+        assert_eq!(entry.project_path.as_deref(), Some(project));
+        let chips: Vec<_> =
+            Filter::ALL.into_iter().filter(|chip| chip.matches(entry.kind)).collect();
+        assert_eq!(chips, [Filter::All, Filter::Projects]);
+        let named = Entry::filed(&capture(), dir, 1, None, Some(project));
+        assert_eq!(named.kind, Kind::Project);
     }
 
     #[test]

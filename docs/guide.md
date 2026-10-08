@@ -232,6 +232,11 @@ The editor opens from a card, from After Capture, from the history, or with the 
 Annotate the Last Capture and Annotate the Clipboard's Image. The tools' keys work without
 Ctrl, except while you are typing text.
 
+Annotate the Clipboard's Image opens what you copied last, in whichever application you
+copied it: a picture, or an image file copied in Files, which keeps its name. A GIF opens
+in the GIF editor. Its shortcut has no key until you give it one in Settings, and
+`octosnap open-from-clipboard` does the same from a terminal.
+
 ### Tools
 
 | Key | Tool |
@@ -270,7 +275,9 @@ from anywhere on the screen, and Esc puts it away.
 
 Click for a box that grows with its text, or drag for one that wraps at the width you drag.
 Enter finishes, Shift+Enter starts a new line, and Esc finishes too, keeping the text.
-Double-click a piece of text to change it, and a counter to change its number.
+Double-click a piece of text to change it, and a counter to change its number. The
+options row's alignment menu lines a label's lines up on the left, in the centre or on the
+right.
 
 ### Selecting and arranging
 
@@ -300,11 +307,27 @@ as you do anywhere else.
 Dropping an image from another app into the middle of the picture adds it as an object.
 Dropping it at one of the four edges places it beside the picture.
 
+### Background
+
+G opens the Background panel: a gradient, a wallpaper, a blur of the picture or a colour
+behind it, with padding, shadow and corners. Its Presets menu saves a set of these by name.
+Presets → Default Preset chooses one for every new screenshot. Its Add to New Screenshots
+item, like Settings → Annotate → Add the default background, turns that off and on again.
+Shift as you confirm a capture leaves it off that one.
+
 ### Crop
 
 Press X, then drag the handles, move the rectangle, or drag a new one. Enter or the Crop
 button applies it, and Esc, Cancel or another tool leaves it. The crop's own toolbar can
 keep the proportions and snap to the picture's edges and to objects.
+
+### Background
+
+Press G for the Background panel, on the left: a gradient, a wallpaper, the picture
+blurred or a plain colour behind the picture, with a margin, round corners and a shadow.
+The background is always at the back. What you draw shows over it, on the margin as well
+as on the picture. None, at the top of the panel, takes the background away again, margin,
+corners and shadow too, and gives the picture back its own size.
 
 ### Looking around
 
@@ -323,7 +346,7 @@ keep the proportions and snap to the picture's edges and to objects.
 | Key or button | What it does |
 |---|---|
 | Ctrl+S, Save | Saves it. The editor stays open |
-| Ctrl+Shift+S, Save as… | Asks where to save it |
+| Ctrl+Shift+S, Save as… | Asks where to save it. A project (`.octosnap`) keeps the marks editable |
 | Copy | Copies the picture. Its menu has Copy Text |
 | Drag me | Drag the picture into another app |
 | Ctrl+Shift+P, Pin | Pins it to the screen and closes the editor |
@@ -455,8 +478,10 @@ strip of what you have captured, with the newest selected.
 | The wheel | Scrolls the strip |
 | Esc, or the shortcut again | Closes it |
 
-The chips at the top show only screenshots, GIFs or projects. The strip's menu has Select
-All and Clear History…, which asks first. Settings → Advanced → Capture history chooses how
+The chips at the top show only screenshots, videos, GIFs or projects. A capture is a
+project when the editor closed on what its project file holds, and opening it from here
+opens the project, its marks still editable. The strip's menu has Select All and Clear
+History…, which asks first. Settings → Advanced → Capture history chooses how
 long closed captures are kept, and whether saved ones stay in the history as well.
 
 ## Desktop pets
@@ -494,8 +519,12 @@ They keep out of the way:
 - While another app shares or records your screen they hide, unless you turn off Settings →
   Pets → Hide while the screen is shared.
 
-Settings → Pets chooses which pets come out and how big they are: five sizes, from Tiny to
-Huge, each sharp at any display scale. It also sets how lively they are, whether they move on their own or stay
+Settings → Pets chooses which pets come out and how big they are: six sizes, from Tiny to
+Huge, each sharp at any display scale. Smol, between Tiny and Small, is drawn one and a half
+screen pixels to the pixel of art where it has to be, as at 100 %: some of its pixels are
+then a little wider than others. It also sets how lively they are, from Silent, which does
+nothing until you do something to it, and Zen, which mostly sits and only now and then
+does a trick, to Lively. And whether they move on their own or stay
 where you put them, whether they keep to the bottom of the screen or can be anywhere on it,
 and where a pet's menu opens: above it, below it or around it. They come back where you
 left them after you log out. With GNOME's Reduce Animation on, they only blink and look

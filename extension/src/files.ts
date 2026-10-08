@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 /**
- * Reading a file without holding up gnome-shell's main loop.
+ * Reading and writing a file without holding up gnome-shell's main loop.
  *
  * The extension runs inside the compositor, so a synchronous read stops every frame of the
  * session until the disk answers. A 5K capture's PNG, which the clipboard is given, is
@@ -10,8 +10,10 @@
  */
 
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 
 Gio._promisify(Gio.File.prototype, 'load_contents_async');
+Gio._promisify(Gio.File.prototype, 'replace_contents_bytes_async', 'replace_contents_finish');
 Gio._promisify(Gio.File.prototype, 'read_async');
 Gio._promisify(Gio.InputStream.prototype, 'read_bytes_async');
 Gio._promisify(Gio.InputStream.prototype, 'close_async');
@@ -43,4 +45,30 @@ export async function readHead(path: string, length: number): Promise<Uint8Array
     } finally {
         await stream.close_async(0, null);
     }
+}
+
+/** Writes `bytes` to a file that only its owner can read, off the main loop. */
+export async function writeBytes(path: string, bytes: GLib.Bytes): Promise<void> {
+    await Gio.File.new_for_path(path).replace_contents_bytes_async(
+        bytes, null, false, Gio.FileCreateFlags.PRIVATE, null);
+}
+
+/**
+ * Copies a file, off the main loop. Rejects when the target is already there.
+ *
+ * Its callback by hand: `copy_async` takes a progress callback as well, and the bindings
+ * type no promise for it.
+ */
+export function copyFile(source: Gio.File, target: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        source.copy_async(Gio.File.new_for_path(target), Gio.FileCopyFlags.NONE, GLib.PRIORITY_DEFAULT, null,
+            null, (_file: Gio.File | null, result: Gio.AsyncResult) => {
+                try {
+                    source.copy_finish(result);
+                    resolve();
+                } catch (e) {
+                    reject(e);
+                }
+            });
+    });
 }

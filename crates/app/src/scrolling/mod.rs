@@ -681,6 +681,7 @@ pub fn file(shot: &Shot, rect: Rect, display: String) -> Result<CaptureResult, S
         duration_ms: None,
         external: false,
         linebreaks: None,
+        project: None,
     };
     match serde_json::to_vec_pretty(&capture) {
         Ok(bytes) => {

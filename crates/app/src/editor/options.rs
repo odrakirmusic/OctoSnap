@@ -42,7 +42,7 @@ use gtk::glib;
 use octosnap_scene::tool::{Control, Tool, ToolSettings};
 use octosnap_scene::{
     ArrowHead, ArrowStyle, COUNTER_SIZES, Command, CounterStyle, FONT_SIZES, RedactStyle, Rgba,
-    SIZE_LEVELS, SpotlightShape, TextStyle,
+    SIZE_LEVELS, SpotlightShape, TextAlign, TextStyle,
 };
 
 use super::picker::Picker;
@@ -211,6 +211,15 @@ impl Editor {
                     |value| format!("{value:.0} pt"),
                     |s| s.font_size,
                     |s, v| s.font_size = v,
+                ),
+                Control::TextAlign => self.choice_menu(
+                    Control::TextAlign,
+                    &settings,
+                    "Alignment",
+                    &TextAlign::ALL,
+                    (TextAlign::label, Some(TextAlign::icon)),
+                    |s| s.align,
+                    |s, v| s.align = v,
                 ),
                 Control::CornerRadius => self.flag_toggle(
                     Control::CornerRadius,

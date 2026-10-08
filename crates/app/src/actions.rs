@@ -412,7 +412,9 @@ pub fn register(app: &adw::Application) {
                 info!("open-from-clipboard");
                 let app = app.clone();
                 glib::spawn_future_local(async move {
-                    match crate::import::import_clipboard().await {
+                    // The shell reads it (D169): the app has no keyboard focus here.
+                    let flow = capture_flow();
+                    match crate::import::import_clipboard(flow.as_ref().map(|flow| flow.bridge())).await {
                         Some(capture) => {
                             if let Some(overlay) = crate::overlay() {
                                 overlay.open_editor(&capture);

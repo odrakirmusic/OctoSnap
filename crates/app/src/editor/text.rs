@@ -120,7 +120,7 @@ impl Editor {
                 // Not a text object; nothing to edit.
                 _ => return,
             },
-            None => (settings.text, settings.font_size, TextAlign::default(), width, String::new()),
+            None => (settings.text, settings.font_size, settings.align, width, String::new()),
         };
         let color = subject.as_ref().map_or(settings.style.color, |object| object.style.color);
 
@@ -132,6 +132,13 @@ impl Editor {
         });
         view.buffer().set_text(&text);
         view.set_monospace(style.is_monospaced());
+        // Lined up as the committed text will be (D167), so a centred text does not jump
+        // to the left while it is being typed.
+        view.set_justification(match align {
+            TextAlign::Start => gtk::Justification::Left,
+            TextAlign::Center => gtk::Justification::Center,
+            TextAlign::End => gtk::Justification::Right,
+        });
         // The document's font at the document's size. The zoom is applied as a transform
         // on the layer, not by scaling the font, so the glyphs the user types are laid out
         // exactly as `Canvas::text_layout` will lay them out when the edit commits --

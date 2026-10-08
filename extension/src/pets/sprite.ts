@@ -2,8 +2,9 @@
 
 /**
  * A pet on the stage (`spec/14` §3 and §5): one actor showing one texture, the pose the
- * pet is in, scaled up by a whole number of physical pixels to the art pixel with no
- * smoothing, and answering the pointer only where it is drawn.
+ * pet is in, scaled up by a whole number of physical pixels to the art pixel -- or by
+ * Smol's one and a half where no whole number fits (D166) -- with no smoothing, and
+ * answering the pointer only where it is drawn.
  *
  * **Textures.** Each pose is painted once (`art/`), turned into a texture, and kept: a pet
  * that breathes, blinks and walks shows a few dozen poses over and over, and painting one

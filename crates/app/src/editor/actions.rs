@@ -25,7 +25,7 @@ use gtk::glib;
 use octosnap_core::{CaptureResult, Rect, print};
 use octosnap_scene::project;
 use octosnap_scene::tool::Modifiers;
-use octosnap_scene::{Point, Rgba};
+use octosnap_scene::{Point, Rgba, Scene};
 use tracing::{info, warn};
 
 use super::window::{Closing, Editor};
@@ -140,10 +140,11 @@ pub struct Document {
     pub capture: CaptureResult,
     pub scene: octosnap_scene::Scene,
     pub history: octosnap_scene::History,
-    /// [`Editor`]'s `saved_at` and `saved_file`, so the unsaved dot means the same thing
-    /// after a reopen as before it.
-    pub saved_at: usize,
-    pub saved_file: Option<(usize, PathBuf)>,
+    /// [`Editor`]'s `saved`, so the unsaved dot means the same thing after a reopen as
+    /// before it.
+    pub saved: super::saved::Saved,
+    /// [`Editor`]'s `project`: the document the file holds, and the file (D167).
+    pub project: Option<(octosnap_scene::Scene, PathBuf)>,
 }
 
 /// How an output action ended: the path it wrote, if it wrote one, or why it failed.
@@ -455,7 +456,15 @@ impl Editor {
             width: (scene.canvas.width / base_scale).round() as i32,
             height: (scene.canvas.height / base_scale).round() as i32,
         };
-        Some(CaptureResult { path, rect, scale: base_scale * scale, ..self.capture.clone() })
+        // Not the capture's project: the render is of the document as it is now, which
+        // only `keep_document` can match to one (D167).
+        Some(CaptureResult {
+            path,
+            rect,
+            scale: base_scale * scale,
+            project: None,
+            ..self.capture.clone()
+        })
     }
 
     /// Renders the document to a path the caller names.
@@ -518,7 +527,8 @@ impl Editor {
                     total_ms = format!("{:.1}", started.elapsed().as_secs_f64() * 1000.0),
                     "project saved"
                 );
-                self.mark_saved();
+                self.mark_saved(scene.clone());
+                *self.project.borrow_mut() = Some((scene, path.to_path_buf()));
                 true
             }
             Err(e) => {
@@ -1208,6 +1218,7 @@ impl Editor {
             crate::notify::action_failed(&self.app, "Copy", "the document could not be rendered");
             return;
         };
+        let Some(scene) = self.canvas.scene() else { return };
         let editor = Rc::downgrade(self);
         (self.actions.copy)(
             capture,
@@ -1216,7 +1227,7 @@ impl Editor {
                 if outcome.is_err() {
                     return;
                 }
-                editor.mark_saved();
+                editor.mark_saved(scene);
                 editor.toast("Copied", None);
             }),
         );
@@ -1234,13 +1245,14 @@ impl Editor {
             crate::notify::action_failed(&self.app, "Save", "the document could not be rendered");
             return;
         };
+        let Some(scene) = self.canvas.scene() else { return };
         let editor = Rc::downgrade(self);
         (self.actions.save)(
             capture,
             Box::new(move |outcome| {
                 let Some(editor) = editor.upgrade() else { return };
                 if let Ok(path) = outcome {
-                    editor.mark_saved_to(path.as_deref());
+                    editor.mark_saved_to(scene, path.as_deref());
                     editor.toast_saved(path.as_deref());
                 }
             }),
@@ -1394,6 +1406,7 @@ impl Editor {
                 );
                 return;
             };
+            let Some(scene) = editor.canvas.scene() else { return };
             let weak = Rc::downgrade(&editor);
             (editor.actions.save_as_path)(
                 capture,
@@ -1401,7 +1414,7 @@ impl Editor {
                 Box::new(move |outcome| {
                     let Some(editor) = weak.upgrade() else { return };
                     if let Ok(path) = outcome {
-                        editor.mark_saved_to(path.as_deref());
+                        editor.mark_saved_to(scene, path.as_deref());
                         editor.toast_saved(path.as_deref());
                     }
                 }),
@@ -1421,10 +1434,11 @@ impl Editor {
             crate::notify::action_failed(&self.app, "Pin", "the document could not be rendered");
             return;
         };
+        let Some(scene) = self.canvas.scene() else { return };
         if !(self.actions.pin)(capture) {
             return;
         }
-        self.mark_saved();
+        self.mark_saved(scene);
         if keep {
             self.toast("Pinned", None);
         } else {
@@ -1434,27 +1448,35 @@ impl Editor {
         }
     }
 
-    /// Remembers that the document has left the editor, for the unsaved dot.
-    fn mark_saved(&self) {
-        self.saved_at.set(self.history.borrow().depth());
+    /// Remembers that `scene` has left the editor, for the unsaved dot.
+    ///
+    /// The document that was rendered, taken when the action started, and not the one on
+    /// the canvas when it ends: a save is written by a future -- an async copy, or a JPEG
+    /// or WebP encoded on a worker (D164) -- and a mark made while it runs is not in the
+    /// file (D168).
+    pub(super) fn mark_saved(&self, scene: Scene) {
+        self.saved.borrow_mut().mark(scene);
         self.refresh_unsaved();
     }
 
     /// [`Self::mark_saved`], and where to: a card the editor leaves behind for exactly
-    /// this state is a card whose picture is already on disk, and offers Trash rather
+    /// this document is a card whose picture is already on disk, and offers Trash rather
     /// than a second Save (D47).
-    fn mark_saved_to(&self, path: Option<&std::path::Path>) {
-        self.mark_saved();
-        if let Some(path) = path {
-            *self.saved_file.borrow_mut() = Some((self.saved_at.get(), path.to_path_buf()));
-        }
+    fn mark_saved_to(&self, scene: Scene, path: Option<&std::path::Path>) {
+        self.saved.borrow_mut().mark_to(scene, path);
+        self.refresh_unsaved();
     }
 
     /// Whether marks exist that have not left the editor -- §7's Close question, asked
     /// without closing.
+    ///
+    /// Asked of the document rather than the undo depth (D168): a capture with nothing on
+    /// it has nothing to lose however deep the history is -- a rectangle drawn and deleted
+    /// is two steps and no mark -- and a Save, an undo and a new mark is back at the saved
+    /// depth with a mark that never left.
     pub(super) fn has_unsaved(&self) -> bool {
-        let depth = self.history.borrow().depth();
-        depth != 0 && depth != self.saved_at.get()
+        let Some(scene) = self.canvas.scene() else { return false };
+        !self.untouched_as(&scene) && !self.saved.borrow().holds(&scene)
     }
 
     /// The unsaved indicator (`spec/13` #11): a dot beside the document size and a
@@ -1562,20 +1584,31 @@ impl Editor {
             modifiers: super::window::SHIFT_MASK,
             ..described
         };
-        crate::import::write_twin(&render);
         let depth = self.history.borrow().depth();
-        let saved_file = self.saved_file.borrow().clone();
-        let saved_to =
-            saved_file.as_ref().filter(|(at, _)| *at == depth).map(|(_, path)| path.clone());
-        info!(path = %render.path.display(), depth, "the document went back as a render");
+        let scene = self.canvas.scene()?;
+        // The project only when it holds what this picture shows: Annotate on the card or
+        // in the history opens it in place of the picture, and an older state would lose
+        // the marks made since (D167).
+        let project = self.project.borrow().clone();
+        let held = project.as_ref().filter(|(saved, _)| *saved == scene);
+        let render = CaptureResult { project: held.map(|(_, path)| path.clone()), ..render };
+        crate::import::write_twin(&render);
+        let saved = self.saved.borrow().clone();
+        let saved_to = saved.file_of(&scene).map(std::path::Path::to_path_buf);
+        info!(
+            path = %render.path.display(),
+            depth,
+            saved = saved_to.is_some(),
+            "the document went back as a render"
+        );
         Some(Document {
             render,
             saved_to,
             capture: self.capture.clone(),
-            scene: self.canvas.scene()?,
+            scene,
             history: std::mem::take(&mut *self.history.borrow_mut()),
-            saved_at: self.saved_at.get(),
-            saved_file,
+            saved,
+            project,
         })
     }
 }

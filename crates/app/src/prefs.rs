@@ -1956,15 +1956,58 @@ fn annotate_page(app_settings: Option<&gio::Settings>) -> adw::PreferencesPage {
         .build();
     bind_boolean(app_settings, "ann-background-remember", &remember);
     tools.add(&remember);
+
+    // `spec/05` §4.13's "automatically apply preset to all screenshots". The key was in
+    // the schema from M6 with nothing that could set it, so the editor's default preset
+    // never reached a screenshot (D167). The preset itself is chosen in the editor, where
+    // the presets are, and the subtitle names it so the switch says what it adds.
+    let auto = adw::SwitchRow::builder().title("Add the default background").build();
+    bind_boolean(app_settings, "ann-background-auto", &auto);
+    if let Some(settings) = with_key(app_settings, "ann-background-default") {
+        let name = |row: &adw::SwitchRow, settings: &gio::Settings| {
+            row.set_subtitle(&default_background_subtitle(settings));
+        };
+        name(&auto, settings);
+        watch(settings, "ann-background-default", &auto, name);
+        watch(settings, "ann-background-presets", &auto, name);
+    }
+    tools.add(&auto);
     page.add(&tools);
     page
+}
+
+/// The automatic background row's subtitle: which preset it adds, or where to choose one.
+fn default_background_subtitle(settings: &gio::Settings) -> String {
+    let id = settings.string("ann-background-default");
+    let preset = (!id.is_empty())
+        .then(|| {
+            settings
+                .strv("ann-background-presets")
+                .iter()
+                .filter_map(|text| octosnap_scene::Preset::parse(text))
+                .find(|preset| preset.id == id)
+        })
+        .flatten();
+    match preset {
+        // What the switch adds, which is true whether it is on or off.
+        Some(preset) => format!(
+            "Adds \u{201c}{}\u{201d}, the editor\u{2019}s default preset. \
+             Hold Shift as you capture to leave it off",
+            preset.name
+        ),
+        None => "Choose a default in the editor\u{2019}s Background panel, under Presets".into(),
+    }
 }
 
 // --- Pets ----------------------------------------------------------------------------
 
 /// `pet-size`'s choices, in the Size row's order: smallest first. Tiny came first on
-/// 2026-09-28 (D155).
-const PET_SIZES_WIRE: [&str; 5] = ["tiny", "small", "medium", "large", "huge"];
+/// 2026-09-28 (D155), and Smol between it and Small on 2026-10-07 (D166).
+const PET_SIZES_WIRE: [&str; 6] = ["tiny", "smol", "small", "medium", "large", "huge"];
+
+/// `pet-activity`'s choices, in the Liveliness row's order: quietest first. Silent and Zen
+/// came before Calm on 2026-10-07 (D166).
+const PET_ACTIVITY_WIRE: [&str; 5] = ["silent", "zen", "calm", "normal", "lively"];
 
 /// `spec/14` §11: the desktop pets. Every key here is the extension's, since the pets live
 /// in the shell (D142).
@@ -2018,8 +2061,8 @@ fn pets_page(ext_settings: Option<&gio::Settings>) -> adw::PreferencesPage {
     let behaviour = adw::PreferencesGroup::builder().title("Behaviour").build();
     let size = adw::ComboRow::builder()
         .title("Size")
-        .subtitle("Each art pixel is a whole number of screen pixels, so they stay sharp at any scale")
-        .model(&gtk::StringList::new(&["Tiny", "Small", "Medium", "Large", "Huge"]))
+        .subtitle("Drawn pixel by pixel, so they stay sharp at any scale")
+        .model(&gtk::StringList::new(&["Tiny", "Smol", "Small", "Medium", "Large", "Huge"]))
         .build();
     match with_key(Some(settings), "pet-size") {
         Some(s) => bind_enum_row(s, "pet-size", &size, &PET_SIZES_WIRE, |v| v),
@@ -2029,12 +2072,11 @@ fn pets_page(ext_settings: Option<&gio::Settings>) -> adw::PreferencesPage {
 
     let activity = adw::ComboRow::builder()
         .title("Liveliness")
-        .subtitle("How often they get up to something")
-        .model(&gtk::StringList::new(&["Calm", "Normal", "Lively"]))
+        .subtitle("How often they get up to something by themselves")
+        .model(&gtk::StringList::new(&["Silent", "Zen", "Calm", "Normal", "Lively"]))
         .build();
-    const ACTIVITY_ORDER: [&str; 3] = ["calm", "normal", "lively"];
     match with_key(Some(settings), "pet-activity") {
-        Some(s) => bind_enum_row(s, "pet-activity", &activity, &ACTIVITY_ORDER, |v| v),
+        Some(s) => bind_enum_row(s, "pet-activity", &activity, &PET_ACTIVITY_WIRE, |v| v),
         None => activity.set_sensitive(false),
     }
     behaviour.add(&activity);
@@ -2656,7 +2698,9 @@ fn bind_string_list_member(
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{PET_SIZES_WIRE, SHUTTER_SOUNDS_WIRE, shutter_kind, usable_as_global};
+    use super::{
+        PET_ACTIVITY_WIRE, PET_SIZES_WIRE, SHUTTER_SOUNDS_WIRE, shutter_kind, usable_as_global,
+    };
 
     /// Settings writes the index of the row the user picked, through this list, into a
     /// key whose schema only takes its own choices. A list that drifted from the schema
@@ -2677,21 +2721,24 @@ mod tests {
         assert_eq!(choices, SHUTTER_SOUNDS_WIRE);
     }
 
-    /// The same for the pets' Size row, whose schema quotes its choices the other way.
+    /// The same for the pets' Size and Liveliness rows, whose schema quotes its choices the
+    /// other way.
     #[test]
-    fn the_pet_size_row_offers_the_schemas_choices_in_its_order() {
+    fn the_pet_rows_offer_the_schemas_choices_in_their_order() {
         let schema = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../extension/schemas/org.gnome.shell.extensions.octosnap.gschema.xml"
         ));
-        let key = &schema[schema.find(r#"<key name="pet-size""#).expect("the key")..];
-        let key = &key[..key.find("</key>").expect("its end")];
-        let choices: Vec<&str> = key
-            .split(r#"<choice value=""#)
-            .skip(1)
-            .map(|rest| &rest[..rest.find('"').expect("a closing quote")])
-            .collect();
-        assert_eq!(choices, PET_SIZES_WIRE);
+        let choices = |name: &str| -> Vec<&str> {
+            let key = &schema[schema.find(&format!(r#"<key name="{name}""#)).expect("the key")..];
+            let key = &key[..key.find("</key>").expect("its end")];
+            key.split(r#"<choice value=""#)
+                .skip(1)
+                .map(|rest| &rest[..rest.find('"').expect("a closing quote")])
+                .collect()
+        };
+        assert_eq!(choices("pet-size"), PET_SIZES_WIRE);
+        assert_eq!(choices("pet-activity"), PET_ACTIVITY_WIRE);
     }
 
     /// D136: the recorder stored a bare letter, which the shell would then have taken

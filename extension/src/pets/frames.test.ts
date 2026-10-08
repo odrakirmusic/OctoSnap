@@ -32,17 +32,17 @@ describe('art pixels', () => {
         expect(LADDER.map(s => artPixel('medium', s))).toEqual(MEDIUM);
     });
 
-    it('come in five sizes, read from the settings by name alone', () => {
-        expect(['tiny', 'small', 'medium', 'large', 'huge'].every(isPetSize)).toBe(true);
+    it('come in six sizes, read from the settings by name alone', () => {
+        expect(['tiny', 'smol', 'small', 'medium', 'large', 'huge'].every(isPetSize)).toBe(true);
         // A stored value that is an object's own property name is still not a size.
         expect(['toString', 'constructor', '__proto__', 'Medium', ''].some(isPetSize)).toBe(false);
     });
 
-    it('are whole physical pixels at every size and scale, and at least one', () => {
+    it('are whole physical pixels at every size but Smol and every scale, and at least one', () => {
         for (const size of Object.keys(SIZE_BASES) as (keyof typeof SIZE_BASES)[]) {
             for (const scale of LADDER) {
                 const k = artPixel(size, scale);
-                expect(Number.isInteger(k)).toBe(true);
+                if (size !== 'smol') expect(Number.isInteger(k)).toBe(true);
                 expect(k).toBeGreaterThanOrEqual(1);
                 // A pet is never much smaller on a sharper screen: three-quarters of its
                 // size at 100 % at the least, which Tiny is at 133 %, as Mutter's single
@@ -63,6 +63,26 @@ describe('art pixels', () => {
                 expect(Math.round(physical)).toBe(PETS[kind].width * artPixel('medium', scale));
             }
         }
+    });
+
+    it('are between Tiny and Small at Smol on every rung, and whole wherever a whole number fits', () => {
+        // Mutter's 175 %, besides the ladder: Tiny 2 and Small 4 there, so Smol is 3.
+        for (const scale of [...LADDER, 1.7518248558044434]) {
+            const k = artPixel('smol', scale);
+            const tiny = artPixel('tiny', scale);
+            const small = artPixel('small', scale);
+            expect(k).toBeGreaterThan(tiny);
+            expect(k).toBeLessThan(small);
+            if (small - tiny > 1) expect(Number.isInteger(k)).toBe(true);
+            // Every pet's size is whole, so its last art pixel ends on a physical one.
+            for (const kind of PET_KINDS) {
+                expect(Number.isInteger(PETS[kind].width * k)).toBe(true);
+                expect(Number.isInteger(PETS[kind].height * k)).toBe(true);
+            }
+        }
+        expect(LADDER.map(s => artPixel('smol', s))).toEqual([1.5, 2, 2, 2.25, 2.5, 3]);
+        // Omni is 48 pixels at 100 %, against 32 at Tiny and 64 at Small.
+        expect(PETS.octopus.width * artPixel('smol', 1)).toBe(48);
     });
 
     it('are physical pixels as they are when the stage is laid out in physical pixels', () => {
