@@ -409,7 +409,15 @@ three seconds throws the capture away. The pill's Help button explains all of th
 **Capture Text** reads the text in an area and copies it, keeping the line breaks. **Capture
 Text as One Line** joins each paragraph into one line. Both start out Disabled. Give them
 keys in Settings → Shortcuts, or use All-In-One's Text mode. The Copy Text of a card, a pin
-or the editor reads a capture you already have.
+or the editor reads a capture you already have. A text capture makes no shutter sound and
+does not fly to the corner, because no card comes for it: the sound is the one that says the
+text was copied.
+
+Reading needs a language pack, which OctoSnap downloads once, when you choose one (about
+13 MB for the first). The first time you read text without one, Settings opens on the
+language packs, with the pack for your language ready to install. Press Install (or Enter)
+and the text you captured is read as soon as the pack is in. Settings says when it is
+copied.
 
 The notification that says the text was copied has **Show**, which opens the text in a
 window:
@@ -423,9 +431,9 @@ window:
 | A click on a link | Opens it |
 | Esc | Closes the find bar, and then the window |
 
-A QR code's address has an Open button. Settings → Advanced → Text recognition installs the
-language packs and chooses the language. It also says whether to keep line breaks and
-whether to detect links.
+A QR code's address has an Open button. Settings → Advanced → Language packs installs and
+removes the packs. Text recognition, above it, chooses the language and says whether to keep
+line breaks and whether to detect links.
 
 ## Recording a GIF
 

@@ -946,31 +946,13 @@ impl Editor {
 
     /// How a Copy Text read ended, in the editor rather than in a notification: the user
     /// asked from here and is looking here (`spec/13` #6). The buttons are the
-    /// notification's -- **Show** for the text, **Open Settings** for a missing pack.
+    /// notification's -- **Show** for the text, **Install…** for a missing pack, which
+    /// opens Settings at the packs and finishes this read once one is in (D171).
     fn toast_read(&self, outcome: &crate::flow::Outcome) {
-        use crate::flow::Recognised;
-        /// A button's label, its action, and the action's string target if it takes one.
-        type Button = (&'static str, &'static str, Option<&'static str>);
-        let (title, button): (String, Option<Button>) = match &outcome.recognised {
-            Some(Recognised::Copied(_)) => ("Text copied".to_owned(), Some(("Show", "app.show-text", None))),
-            Some(Recognised::Nothing) => ("No text found".to_owned(), None),
-            Some(Recognised::Failed(why)) if why == crate::flow::NO_PACK => (
-                "No language pack is installed".to_owned(),
-                Some(("Open Settings", "app.open-settings", Some("advanced"))),
-            ),
-            Some(Recognised::Failed(why)) => (format!("Could not read the text: {why}"), None),
-            None => return,
-        };
-        let toast = adw::Toast::new(&title);
-        toast.set_timeout(toast_seconds(button.is_some()));
-        if let Some((label, action, target)) = button {
-            toast.set_button_label(Some(label));
-            toast.set_action_name(Some(action));
-            if let Some(target) = target {
-                toast.set_action_target_value(Some(&target.to_variant()));
-            }
-        }
-        info!(title, button = button.map(|b| b.0).unwrap_or_default(), "toast");
+        let Some(toast) = crate::notify::read_toast(outcome) else { return };
+        let title = toast.title().map(String::from).unwrap_or_default();
+        let button = toast.button_label().map(String::from).unwrap_or_default();
+        info!(title, button, "toast");
         self.toasts.add_toast(toast);
     }
 

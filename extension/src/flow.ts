@@ -33,6 +33,7 @@ import {
 import { waitForRedraw } from './later.js';
 import { AreaOverlay, type OverlayOptions } from './overlay/engine.js';
 import { Countdown } from './overlay/countdown.js';
+import { takenAsPicture } from './captureFeedback.js';
 import { flyToCorner } from './overlay/fly.js';
 import { FROZEN_FADE } from './overlay/motion.js';
 import { resolveRectScale, scalesUnder } from './overlay/selection.js';
@@ -391,8 +392,10 @@ export async function runCapture(
         let started: StartedCapture | null = null;
 
         // The shutter sounds *here*, between hiding the chrome and reading the pixels,
-        // because that instant is what the user perceives as the capture. `ACT-04`.
-        playShutter(settings.shutterSound);
+        // because that instant is what the user perceives as the capture. `ACT-04`. Not
+        // for a text capture, whose sound is the text's, when the read lands (D171).
+        const picture = takenAsPicture(reported);
+        if (picture) playShutter(settings.shutterSound);
         // And the pets squint at the flash. They are never in the pixels (`pets/crew.ts`).
         tellPets({ kind: 'captured', rect: target.rect, mode: reported });
 
@@ -454,15 +457,19 @@ export async function runCapture(
         // "Capture -> card visible" counts to the fly's start (D127). `flyToCorner` starts a
         // Clutter transition and returns. The app times its card's fade-in to the
         // animation's end from `animation_ms` and `timestamp`, which is stamped here.
+        // A text capture stays where it was read: no card comes for it, so nothing flies
+        // to where one would be (D171), and `animation_ms` 0 says so.
         const flying = GLib.get_monotonic_time();
         const flewAt = GLib.get_real_time();
-        const animationMs = flyToCorner({
-            path: entry.png,
-            rect: target.rect,
-            scale: target.scale,
-            pixels: started?.pixels ?? null,
-            handedOver,
-        });
+        const animationMs = picture
+            ? flyToCorner({
+                path: entry.png,
+                rect: target.rect,
+                scale: target.scale,
+                pixels: started?.pixels ?? null,
+                handedOver,
+            })
+            : 0;
         // The pixels are read, so the grab, the chrome and the icons have no more to do,
         // and the desktop is the user's again while the file is written.
         release();
@@ -511,7 +518,9 @@ export async function runCapture(
             `captured ${mode} ${target.rect.width}x${target.rect.height} logical ` +
             `at scale ${target.scale} -> ${entry.id}.png in ${captureMs.toFixed(1)} ms` +
             (selectionMs > 0 ? ` (after ${selectionMs.toFixed(0)} ms selecting)` : '') +
-            `, flying after ${flyMs.toFixed(1)} ms` +
+            (picture
+                ? `, flying after ${flyMs.toFixed(1)} ms`
+                : ', read where it was, with no shutter') +
             (cost === null
                 ? ''
                 : `; repaint ${cost.paintMs.toFixed(1)} ms and readback ` +

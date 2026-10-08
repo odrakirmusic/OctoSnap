@@ -42,6 +42,16 @@ pub fn capture_outcome(
     outcome: &Outcome,
     enabled: bool,
 ) -> bool {
+    // D171: a read that found no pack opens the packs instead. A notification was all a
+    // text capture had to say it, and one that went by unread left a capture that looked
+    // like a screenshot and an empty clipboard. Every read ends here -- a text capture, a
+    // file, a card's or a pin's Copy Text, an editor closed while it read -- so they all
+    // land on the same Install button, with the read kept until it is pressed.
+    if outcome.waits_for_pack() {
+        info!("a read waits for a language pack; Settings shows the packs");
+        crate::prefs::present(crate::prefs::PACKS);
+        return true;
+    }
     let Some((title, body)) = describe(outcome) else {
         return false;
     };
@@ -76,19 +86,44 @@ pub fn capture_outcome(
         notification.add_button("Show", "app.show-text");
     }
 
-    // A read that failed for want of a pack has somewhere to go; every other kind of
-    // failure has already been described and has nothing to press.
-    if matches!(&outcome.recognised, Some(Recognised::Failed(why)) if why == crate::flow::NO_PACK) {
-        notification.add_button_with_target_value(
-            "Open Settings",
-            "app.open-settings",
-            Some(&"advanced".to_variant()),
-        );
-    }
-
     app.send_notification(Some(CAPTURE_ID), &notification);
     info!(title, "notified");
     true
+}
+
+/// How a read ended, as a toast for the window the user asked from: the editor's Copy
+/// Text, and Settings when a pack it installed finished a read that waited (D171).
+///
+/// The notification's words and buttons, so a read says the same thing wherever it ends:
+/// **Show** for the text, and for a missing pack the button that installs one. `None`
+/// for an outcome that is not a read.
+#[must_use]
+pub fn read_toast(outcome: &Outcome) -> Option<adw::Toast> {
+    /// A button's label, its application action, and the action's string target if any.
+    type Button = (&'static str, &'static str, Option<&'static str>);
+    let (title, button): (String, Option<Button>) = match outcome.recognised.as_ref()? {
+        Recognised::Copied(_) => ("Text copied".to_owned(), Some(("Show", "show-text", None))),
+        Recognised::Nothing => ("No text found".to_owned(), None),
+        Recognised::Failed(why) if why == crate::flow::NO_PACK => (
+            "No language pack is installed".to_owned(),
+            Some(("Install\u{2026}", "open-settings", Some(crate::prefs::PACKS))),
+        ),
+        Recognised::Failed(why) => (format!("Could not read the text: {why}"), None),
+    };
+    let toast = adw::Toast::new(&title);
+    toast.set_timeout(crate::editor::actions::toast_seconds(button.is_some()));
+    if let Some((label, action, target)) = button {
+        toast.set_button_label(Some(label));
+        // Activated on the application, not named on the toast. A toast's action name is
+        // looked up from the window it is in, and Settings is a window of its own rather
+        // than one of the application's, where `app.show-text` named nothing and Show
+        // was drawn insensitive (D171).
+        toast.connect_button_clicked(move |_| {
+            let Some(app) = gio::Application::default() else { return };
+            app.activate_action(action, target.map(ToVariant::to_variant).as_ref());
+        });
+    }
+    Some(toast)
 }
 
 /// One id for "this build cannot do that yet", so repeated presses replace rather than
@@ -209,7 +244,7 @@ pub fn describe(outcome: &Outcome) -> Option<(String, Option<String>)> {
             Recognised::Copied(first) => {
                 ("Text copied".to_owned(), Some(preview(first)))
             }
-            // Not a failure and not silent: the shutter sounded and a second went by, so
+            // Not a failure and not silent: an area was read and a moment went by, so
             // something has to say why nothing arrived on the clipboard.
             Recognised::Nothing => (
                 "No text found".to_owned(),

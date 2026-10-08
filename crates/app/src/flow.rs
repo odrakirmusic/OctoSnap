@@ -95,6 +95,14 @@ pub struct Outcome {
     pub recording: bool,
 }
 
+impl Outcome {
+    /// Whether this was a read that found no language pack, and now waits for one (D171).
+    #[must_use]
+    pub fn waits_for_pack(&self) -> bool {
+        matches!(&self.recognised, Some(Recognised::Failed(why)) if why == NO_PACK)
+    }
+}
+
 /// `spec/07` §2.1's text capture, as far as the user is concerned.
 ///
 /// Three outcomes and not a `Result<String, String>`, because "there was no text in it"
@@ -112,11 +120,49 @@ pub enum Recognised {
 
 /// What a text capture says when there is nothing installed to read it with.
 ///
-/// Phrased as the missing step rather than as a failure, and it names the size, because
-/// the notification that carries it has an **Open Settings** button beside it and the
-/// user is about to decide whether to spend that.
+/// Phrased as the missing step rather than as a failure, and it names the size. Since
+/// D171 it is also the sign, matched by value, that the read now waits for a pack: no
+/// notification carries it any more, because Settings opens on the packs instead
+/// (`notify::capture_outcome`), and the editor says it in its own words.
 pub const NO_PACK: &str =
     "No language pack is installed. Settings > Advanced has them, from about 13 MB.";
+
+/// How long a read that found no pack waits for one (D171).
+///
+/// Long enough to choose a pack and download it, with time over for a slow connection.
+/// Not open-ended: a pack installed from Settings an afternoon later would otherwise read
+/// a capture the user has long forgotten and replace whatever is on the clipboard by then.
+pub const WAITS_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// A read that found no language pack, kept so that installing one finishes it (D171).
+///
+/// The file is kept as it was asked for, and nothing about the capture is copied: a text
+/// capture's file stays in the spool with its twin (`spec/10` §8), and a card's, a pin's
+/// or the editor's render stays beside it. Only a file that is gone by the time the pack
+/// arrives is dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    pub path: PathBuf,
+    pub rect: Option<Rect>,
+    pub linebreaks: Option<bool>,
+    pub asked: std::time::Instant,
+}
+
+impl Waiting {
+    /// Whether this read should still happen at `now`, and if not, why not.
+    ///
+    /// # Errors
+    /// The reason it is dropped, for the log.
+    pub fn due(&self, now: std::time::Instant, exists: bool) -> Result<(), &'static str> {
+        if now.saturating_duration_since(self.asked) > WAITS_FOR {
+            return Err("it waited longer than a pack takes to install");
+        }
+        if !exists {
+            return Err("its file is gone");
+        }
+        Ok(())
+    }
+}
 
 /// What puts a capture on screen as a card, and reports whether one appeared.
 ///
@@ -199,6 +245,8 @@ pub struct CaptureFlow<B: ShellBridge> {
     /// The Copy and Save a recording's plan holds back while its card is up, by the
     /// capture's path (D113): see [`Self::release`].
     held: RefCell<HashMap<PathBuf, Held>>,
+    /// The last read that found no language pack, until a pack is installed (D171).
+    waiting: RefCell<Option<Waiting>>,
 }
 
 /// What a recording's plan held back for its card: the outputs that need its GIF written.
@@ -235,6 +283,7 @@ impl<B: ShellBridge> CaptureFlow<B> {
             pinner: RefCell::new(None),
             reading_shower: RefCell::new(None),
             held: RefCell::default(),
+            waiting: RefCell::new(None),
         }
     }
 
@@ -658,6 +707,44 @@ impl<B: ShellBridge> CaptureFlow<B> {
         outcome
     }
 
+    /// Finishes the read that found no pack, now that one is installed (D171).
+    ///
+    /// `None` when there is nothing to finish: no read waited, it waited too long or its
+    /// file is gone, or there is still no pack to read with -- an install that brought a
+    /// script and not the detection model, which keeps the read for the next one. A read
+    /// that happens is the read it would have been, with its own rect and line breaks, and
+    /// a text capture's `copy-last` already points at it from the first attempt.
+    pub async fn read_waiting(&self) -> Option<Outcome> {
+        let waiting = self.waiting.borrow_mut().take()?;
+        if !crate::ocr::ready() {
+            info!(path = %waiting.path.display(), "a read still waits for a language pack");
+            *self.waiting.borrow_mut() = Some(waiting);
+            return None;
+        }
+        if let Err(why) = waiting.due(std::time::Instant::now(), waiting.path.exists()) {
+            info!(path = %waiting.path.display(), why, "dropped the read that waited for a pack");
+            return None;
+        }
+        info!(path = %waiting.path.display(), "reading what waited for a language pack");
+        Some(self.read_text(&waiting.path, waiting.rect, waiting.linebreaks).await)
+    }
+
+    /// Whether a read is waiting for a pack and would still be read if one came now,
+    /// which is what Settings says when it opens on the packs (D171).
+    pub fn is_waiting(&self) -> bool {
+        let now = std::time::Instant::now();
+        self.waiting
+            .borrow()
+            .as_ref()
+            .is_some_and(|waiting| waiting.due(now, waiting.path.exists()).is_ok())
+    }
+
+    /// The read waiting for a pack, for the tests.
+    #[cfg(test)]
+    fn waiting(&self) -> Option<Waiting> {
+        self.waiting.borrow().clone()
+    }
+
     /// The same read, on a file the user named rather than on a capture.
     ///
     /// `spec/07` §2.1's "also works on a file (`capture-text?filepath=`)". One
@@ -685,6 +772,14 @@ impl<B: ShellBridge> CaptureFlow<B> {
         // they need is a 13 MB download.
         if !crate::ocr::ready() {
             warn!("a text capture arrived with no language pack installed");
+            // Kept for the pack the user is about to be shown (D171). A later read that
+            // also finds none takes its place: the newest is the one they are waiting on.
+            *self.waiting.borrow_mut() = Some(Waiting {
+                path: path.to_owned(),
+                rect,
+                linebreaks,
+                asked: std::time::Instant::now(),
+            });
             return Outcome {
                 recognised: Some(Recognised::Failed(NO_PACK.to_owned())),
                 ..Outcome::default()
@@ -1617,5 +1712,70 @@ mod tests {
 
         assert!(matches!(outcome.recognised, Some(Recognised::Failed(_))), "{outcome:?}");
         assert_eq!(asked.get(), 0, "a read that failed at once still put something on screen");
+    }
+
+    fn waiting_since(asked: std::time::Instant) -> Waiting {
+        Waiting { path: PathBuf::from("/spool/a.png"), rect: None, linebreaks: None, asked }
+    }
+
+    /// D171: a pack installed while the read waits finishes it.
+    #[test]
+    fn a_read_that_waited_for_a_pack_is_due_while_its_file_is_there() {
+        let asked = std::time::Instant::now();
+        let waiting = waiting_since(asked);
+        assert_eq!(waiting.due(asked, true), Ok(()));
+        assert_eq!(waiting.due(asked + std::time::Duration::from_secs(90), true), Ok(()));
+        assert_eq!(waiting.due(asked + WAITS_FOR, true), Ok(()), "the window is inclusive");
+    }
+
+    /// D171: a pack installed an afternoon later does not read a forgotten capture over
+    /// whatever is on the clipboard by then.
+    #[test]
+    fn a_read_that_waited_too_long_is_dropped() {
+        let asked = std::time::Instant::now();
+        let later = asked + WAITS_FOR + std::time::Duration::from_secs(1);
+        assert!(waiting_since(asked).due(later, true).is_err());
+    }
+
+    /// D171: a card closed into the history moves its file, and the janitor files a
+    /// cardless spool file; either way there is nothing left to read.
+    #[test]
+    fn a_read_whose_file_is_gone_is_dropped() {
+        let asked = std::time::Instant::now();
+        assert_eq!(waiting_since(asked).due(asked, false), Err("its file is gone"));
+    }
+
+    /// D171: an install with no read waiting reads nothing, so installing a second pack
+    /// from Settings does not touch the clipboard.
+    #[test]
+    fn an_install_with_nothing_waiting_reads_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
+        assert!(flow.waiting().is_none());
+        assert_eq!(run(flow.read_waiting()), None);
+    }
+
+    /// D171, from the flow's side, on whichever machine runs it: a read that found no pack
+    /// is kept for one, and a read that found one keeps nothing.
+    #[test]
+    fn a_read_waits_exactly_when_there_is_no_pack() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
+        let file = dir.path().join("capture.png");
+        let rect = Rect { x: 4, y: 8, width: 120, height: 40 };
+
+        let outcome = run(flow.read_text(&file, Some(rect), Some(false)));
+
+        let no_pack = matches!(&outcome.recognised, Some(Recognised::Failed(why)) if why == NO_PACK);
+        assert_eq!(no_pack, !crate::ocr::ready(), "{outcome:?}");
+        match flow.waiting() {
+            Some(waiting) => {
+                assert!(no_pack, "a read kept waiting although it was read: {outcome:?}");
+                assert_eq!(waiting.path, file);
+                assert_eq!(waiting.rect, Some(rect));
+                assert_eq!(waiting.linebreaks, Some(false));
+            }
+            None => assert!(!no_pack, "a read that found no pack was not kept for one"),
+        }
     }
 }

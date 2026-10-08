@@ -32,7 +32,7 @@ export const APP_INTERFACE = 'io.github.odrakirmusic.OctoSnap.App1';
 export const PROTOCOL_VERSION = 1;
 
 /** Extension release, independent of the protocol. Reported by Version(). */
-export const EXTENSION_VERSION = '0.1.6';
+export const EXTENSION_VERSION = '0.1.7';
 
 /** `spec/10` §8: extension logs via console.log with a [octosnap] prefix. */
 export const LOG_PREFIX = '[octosnap]';

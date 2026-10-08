@@ -114,6 +114,16 @@
   </categories>
 
   <releases>
+    <release version="0.1.7" date="2026-10-08">
+      <description>
+        <p>Text recognition tells you what it needs, and gets it.</p>
+        <ul>
+          <li>Reading text with no language pack installed opens Settings at the language packs, with the one for your language ready to install. Once it is in, the text you captured is read and copied, with no need to capture it again</li>
+          <li>The Install and Remove buttons of the language packs work. Before, they did nothing, so a new installation could not get a pack from Settings</li>
+          <li>A text capture no longer plays the camera shutter or flies to the corner as a screenshot does: its sound is the one that says the text was copied</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.6" date="2026-10-08">
       <description>
         <p>Quieter pets, aligned text, and a clipboard read from anywhere.</p>

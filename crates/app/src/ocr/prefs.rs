@@ -17,7 +17,7 @@
 //! rather than four rows of bindings.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use adw::prelude::*;
@@ -31,6 +31,11 @@ use super::download::{self, Progress};
 /// How often the bar reads the counters while a download runs. Fast enough to look live,
 /// slow enough that it is not redrawing between packets.
 const TICK: Duration = Duration::from_millis(120);
+
+thread_local! {
+    /// The rows of the group on screen, for [`point_at`]. Weak: the group owns them.
+    static SHOWN: RefCell<Vec<Weak<PackRow>>> = const { RefCell::new(Vec::new()) };
+}
 
 /// The group `prefs.rs` puts on the Advanced page under the Text Recognition rows.
 pub fn packs_group() -> adw::PreferencesGroup {
@@ -46,7 +51,57 @@ pub fn packs_group() -> adw::PreferencesGroup {
     for row in &rows {
         group.add(&row.row);
     }
+    SHOWN.with(|shown| *shown.borrow_mut() = rows.iter().map(Rc::downgrade).collect());
+    // The group owns its rows, for as long as it is there (D171). Every button holds its
+    // row weakly, and until D171 nothing held it strongly: the rows were dropped when this
+    // returned, and Install and Remove did nothing at all, from D86 on.
+    group.connect_destroy(move |_| {
+        info!(rows = rows.len(), "the language pack rows went with their group");
+    });
     group
+}
+
+/// Puts the keyboard on `script`'s Install button and makes it the page's accent (D171),
+/// which also scrolls the Advanced page down to it. Says whether there was one to point
+/// at: an installed pack has Remove there instead, and nothing to suggest.
+pub fn point_at(script: Script) -> bool {
+    let row = SHOWN.with(|shown| {
+        shown.borrow().iter().filter_map(Weak::upgrade).find(|row| row.script == script)
+    });
+    let Some(row) = row else {
+        info!(script = script.tag(), "no language pack row to point at");
+        return false;
+    };
+    if row.running.borrow().is_some() || installed(script) {
+        return false;
+    }
+    row.button.add_css_class("suggested-action");
+    info!(script = script.tag(), "pointed at a language pack");
+    focus_when_shown(&row.button);
+    true
+}
+
+/// Gives `button` the keyboard now, or as soon as it is on screen.
+///
+/// Settings is usually not open yet when it is pointed at, and a button in a window that
+/// is not mapped cannot take the keyboard. Taking it is also what scrolls the Advanced page
+/// down to the packs, which are its last group.
+fn focus_when_shown(button: &gtk::Button) {
+    if button.is_mapped() {
+        let focused = button.grab_focus();
+        info!(focused, "the language pack's button has the keyboard");
+        return;
+    }
+    let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+    let held = Rc::clone(&handler);
+    let id = button.connect_map(move |button| {
+        let focused = button.grab_focus();
+        info!(focused, "the language pack's button has the keyboard");
+        if let Some(id) = held.borrow_mut().take() {
+            button.disconnect(id);
+        }
+    });
+    *handler.borrow_mut() = Some(id);
 }
 
 /// One script's row: what it costs, and the button that fetches or removes it.
@@ -170,17 +225,20 @@ impl PackRow {
         glib::spawn_future_local(async move {
             let outcome =
                 gio::spawn_blocking(move || download::install(&home, script, &watched)).await;
+            // Before the row, which is gone if Settings was closed during the download:
+            // the pack is installed either way, and the read that waited for it is due.
+            if matches!(outcome, Ok(Ok(()))) {
+                // The first pack is also the first detection model, so the engine
+                // this process opened is the one that found nothing. D85.
+                super::reopen();
+                info!(script = script.tag(), "installed a language pack");
+                super::pack_installed();
+            }
             let Some(row) = weak.upgrade() else { return };
             *row.running.borrow_mut() = None;
             row.run.set(row.run.get() + 1);
             match outcome {
-                Ok(Ok(())) => {
-                    // The first pack is also the first detection model, so the engine
-                    // this process opened is the one that found nothing. D85.
-                    super::reopen();
-                    info!(script = script.tag(), "installed a language pack");
-                    row.rest(true);
-                }
+                Ok(Ok(())) => row.rest(true),
                 Ok(Err(download::Failure::Cancelled)) => {
                     info!(script = script.tag(), "the download was cancelled");
                     row.rest(false);

@@ -118,6 +118,61 @@ fn ready_in(home: &Path) -> bool {
     packs::detector(home) && packs::all().iter().any(|pack| packs::installed(home, pack.script))
 }
 
+/// The pack Settings points at when a read found none (D171).
+///
+/// The script `ocr-language` names, when it names one: the user has said what they read.
+/// Otherwise the one the user's own language is written in, from the first of `languages`
+/// (`g_get_language_names`, most preferred first) that names a language, and Latin when
+/// none does, because Latin is the script of the most languages and of every URL.
+#[must_use]
+pub fn suggested<S: AsRef<str>>(configured: Option<Script>, languages: &[S]) -> Script {
+    if let Some(script) = configured {
+        return script;
+    }
+    let language = languages
+        .iter()
+        .map(|name| {
+            // `de_CH.UTF-8@euro` -> `de`.
+            let name = name.as_ref();
+            name.split(['_', '.', '@']).next().unwrap_or(name)
+        })
+        .find(|code| !code.is_empty() && *code != "C" && *code != "POSIX");
+    match language {
+        Some("zh" | "ja" | "ko") => Script::Cjk,
+        Some("ru" | "uk" | "be" | "bg" | "sr" | "mk" | "kk" | "ky" | "mn" | "tg" | "tt") => {
+            Script::Cyrillic
+        }
+        Some("ar" | "fa" | "ur" | "ps" | "ug" | "ckb") => Script::Arabic,
+        Some("hi" | "mr" | "ne" | "sa" | "mai" | "bho") => Script::Devanagari,
+        _ => Script::Latin,
+    }
+}
+
+/// A pack has just been installed: the read that waited for one is read now (D171).
+///
+/// Its result goes where the user is looking. Settings, where they pressed Install, says
+/// it in a toast while it is open; when it has been closed during the download, the
+/// notification a text capture always ends with says it instead.
+pub fn pack_installed() {
+    use gtk::prelude::*;
+    let Some(flow) = crate::capture_flow() else { return };
+    glib::spawn_future_local(async move {
+        let Some(outcome) = flow.read_waiting().await else { return };
+        if crate::prefs::read_finished(&outcome) {
+            return;
+        }
+        let Some(app) = gio::Application::default().and_downcast::<adw::Application>() else {
+            warn!("no application to tell how the waiting read ended");
+            return;
+        };
+        crate::notify::capture_outcome(
+            &app,
+            &outcome,
+            crate::settings::Settings::load().notifications_enabled(),
+        );
+    });
+}
+
 /// Every pack, installed or not, with the size `spec/07` §2.1 wants shown.
 ///
 /// One branch where there were two: the engine's own list and a hand-built copy of it for
@@ -270,6 +325,25 @@ mod tests {
         std::fs::create_dir_all(&directory).expect("a pack directory");
         std::fs::write(directory.join(octosnap_ocr::packs::MODEL), b"weights").expect("model");
         std::fs::write(directory.join(octosnap_ocr::packs::METADATA), b"alphabet").expect("yml");
+    }
+
+    /// D171: the pack Settings points at.
+    #[test]
+    fn the_suggested_pack_is_the_chosen_script_then_the_users_language() {
+        let none: [&str; 0] = [];
+        assert_eq!(suggested(None, &none), Script::Latin, "nothing to go on reads Latin");
+        assert_eq!(suggested(None, &["C"]), Script::Latin);
+        assert_eq!(suggested(None, &["de_CH.UTF-8", "de_CH", "de", "C"]), Script::Latin);
+        assert_eq!(suggested(None, &["ja_JP.UTF-8", "ja", "C"]), Script::Cjk);
+        assert_eq!(suggested(None, &["uk_UA.UTF-8"]), Script::Cyrillic);
+        assert_eq!(suggested(None, &["fa_IR"]), Script::Arabic);
+        assert_eq!(suggested(None, &["hi_IN.UTF-8"]), Script::Devanagari);
+        assert_eq!(suggested(None, &["C", "ru_RU"]), Script::Cyrillic, "C is no language");
+        assert_eq!(
+            suggested(Some(Script::Arabic), &["ja_JP.UTF-8"]),
+            Script::Arabic,
+            "a script chosen in Settings wins over the locale"
+        );
     }
 
     #[test]

@@ -37,6 +37,9 @@ const PAGE_ANNOTATE: &str = "annotate";
 const PAGE_PETS: &str = "pets";
 const PAGE_ADVANCED: &str = "advanced";
 const PAGE_ABOUT: &str = "about";
+/// Not a page: the Advanced page at its language packs, with the pack to install pointed
+/// at (D171). Where a read that found no pack sends the user, and the editor's toast.
+pub const PACKS: &str = "language-packs";
 
 /// Where the project lives, for the About page's links.
 const REPOSITORY: &str = "https://github.com/odrakirmusic/OctoSnap";
@@ -45,6 +48,9 @@ thread_local! {
     /// The dialog is a singleton: `open-settings` arriving twice must raise the window
     /// the user already has, not stack a second copy of it behind the first.
     static OPEN: std::cell::RefCell<Option<adw::PreferencesDialog>> =
+        const { std::cell::RefCell::new(None) };
+    /// The toast saying a read waits for a pack, while it is up (D171).
+    static WAITING: std::cell::RefCell<Option<adw::Toast>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -157,6 +163,7 @@ pub fn present(tab: &str) {
     select_page(&dialog, tab);
     dialog.connect_closed(|_| {
         OPEN.with(|open| *open.borrow_mut() = None);
+        WAITING.with(|waiting| *waiting.borrow_mut() = None);
         info!("settings closed");
     });
     OPEN.with(|open| *open.borrow_mut() = Some(dialog.clone()));
@@ -173,11 +180,58 @@ fn select_page(dialog: &adw::PreferencesDialog, tab: &str) {
             dialog.set_visible_page_name(tab);
             info!(page = tab, "settings page shown");
         }
+        PACKS => show_packs(dialog),
         "" => {}
         // `spec/08` §0's Wallpaper, Screen Recording and Cloud tabs wait for the features
         // that give their rows meaning (M6, M5, M8). The first page, and a line.
         other => info!(tab = other, "no such settings page in this build"),
     }
+}
+
+/// The Advanced page at its language packs, the suggested one ready to install (D171).
+///
+/// What a read that found no pack opens, instead of a notification about it. A text
+/// capture puts nothing on screen, so a notification was all it had, and one that went by
+/// unread left a shutter, a flight to the corner and an empty clipboard: a screenshot, to
+/// anyone who heard and saw it. The read is kept, and installing a pack finishes it
+/// ([`read_finished`]); the toast says so while it waits.
+fn show_packs(dialog: &adw::PreferencesDialog) {
+    dialog.set_visible_page_name(PAGE_ADVANCED);
+    info!(page = PAGE_ADVANCED, "settings page shown at the language packs");
+    let configured = crate::settings::ocr_config().script;
+    let script = crate::ocr::suggested(configured, &glib::language_names());
+    crate::ocr::prefs::point_at(script);
+
+    if !crate::capture_flow().is_some_and(|flow| flow.is_waiting()) {
+        return;
+    }
+    let toast = adw::Toast::new("Install a language pack to read the text you captured");
+    // Until the pack is in, or the user closes it: it says why this window opened, and
+    // a few seconds would leave a download of a minute or more with no reason beside it.
+    toast.set_timeout(0);
+    WAITING.with(|waiting| {
+        if let Some(old) = waiting.borrow_mut().replace(toast.clone()) {
+            old.dismiss();
+        }
+    });
+    dialog.add_toast(toast);
+}
+
+/// Says how the read that waited for a pack ended, in Settings while it is open (D171).
+///
+/// The user pressed Install there and is looking there (`spec/13` #6), so the toast that
+/// said the read was waiting gives way to the read's result, with the notification's own
+/// words and buttons. `false` when Settings has been closed, and the caller notifies.
+pub fn read_finished(outcome: &crate::flow::Outcome) -> bool {
+    let Some(dialog) = OPEN.with(|open| open.borrow().clone()) else { return false };
+    if let Some(waiting) = WAITING.with(|waiting| waiting.borrow_mut().take()) {
+        waiting.dismiss();
+    }
+    let Some(toast) = crate::notify::read_toast(outcome) else { return false };
+    let title = toast.title().map(String::from).unwrap_or_default();
+    info!(title, "settings told how the waiting read ended");
+    dialog.add_toast(toast);
+    true
 }
 
 fn build() -> adw::PreferencesDialog {
