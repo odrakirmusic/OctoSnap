@@ -149,6 +149,9 @@ const INTERFACE_XML = `
       <arg type="s" direction="in" name="state"/>
       <arg type="u" direction="in" name="elapsed_ms"/>
     </method>
+    <method name="SetUpdateOffered">
+      <arg type="b" direction="in" name="offered"/>
+    </method>
     <method name="ShowRecordingFrame">
       <arg type="(iiii)" direction="in" name="rect"/>
       <arg type="b" direction="in" name="visible"/>
@@ -676,12 +679,19 @@ const KNOWN_MODES = [
     'self-timer', 'scrolling', 'ocr', 'record',
 ] as const;
 
+/** What `SetUpdateOffered` needs of the panel indicator. */
+export interface UpdatePanel {
+    setUpdateOffered(offered: boolean): void;
+}
+
 export class ShellService {
     #exported: Gio.DBusExportedObject | null = null;
     #nameOwnerId = 0;
     #settings: Settings;
     #desktopIcons: DesktopIcons | null;
     #recording: RecordingCoordinator | null;
+    /** The top bar's menu, for `SetUpdateOffered` (D170). */
+    #panel: UpdatePanel | null;
     /**
      * `spec/03` §6's state machine allows exactly one capture at a time: the overlay
      * takes a modal grab, so a second one would fight the first for input. A second
@@ -724,10 +734,12 @@ export class ShellService {
         settings: Settings,
         desktopIcons: DesktopIcons | null = null,
         recording: RecordingCoordinator | null = null,
+        panel: UpdatePanel | null = null,
     ) {
         this.#settings = settings;
         this.#desktopIcons = desktopIcons;
         this.#recording = recording;
+        this.#panel = panel;
     }
 
     export(): void {
@@ -1637,6 +1649,16 @@ export class ShellService {
      */
     SetRecordingState(state: string, elapsedMs: number): void {
         this.#recording?.setState(state, elapsedMs);
+    }
+
+    /**
+     * `spec/10` §3.1's `SetUpdateOffered` (D170): the app has a newer release it can
+     * install, or no longer has. The top bar's menu shows Update OctoSnap for it, which
+     * runs the app's `update` action. Added without a protocol bump: an app calling this
+     * on an older extension gets `UnknownMethod`, and the item is simply not there.
+     */
+    SetUpdateOffered(offered: boolean): void {
+        this.#panel?.setUpdateOffered(offered);
     }
 
     /**

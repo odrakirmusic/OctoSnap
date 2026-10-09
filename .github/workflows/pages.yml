@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Serves OctoSnap's Flatpak repository, which every install updates from, on this
+# repository's GitHub Pages: https://odrakirmusic.github.io/OctoSnap/
+#
+# The repository is made and signed on the maintainer's computer, and each release carries it
+# as OctoSnap-<version>-flatpak-repository.tar. This puts that file's contents on Pages and
+# does nothing else. The signing key is never here, and an install checks every release's
+# signature, so nothing served from here installs unless that key signed it.
+#
+# Pages takes deployments from main only, and a release's run is on its tag. So publishing a
+# release asks for a run from main, which serves that release's repository. To serve one
+# again, or a release's whose file was added after its page was published:
+#
+#   gh workflow run pages.yml -R odrakirmusic/OctoSnap -f tag=v0.1.9
+name: Update repository
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release whose update repository Pages serves
+        required: true
+
+permissions: {}
+
+jobs:
+  ask:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Ask for this release's repository to be served, from main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
+
+  serve:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Take the release's repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          # The release page's files are uploaded before it is published, and a few tries
+          # cover one that is still arriving.
+          for try in 1 2 3 4 5 6; do
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'OctoSnap-*-flatpak-repository.tar' --dir release --clobber && break
+            sleep 10
+          done
+          set -- release/OctoSnap-*-flatpak-repository.tar
+          [ -f "$1" ] || { echo "::error::$TAG has no OctoSnap-*-flatpak-repository.tar"; exit 1; }
+          mkdir site
+          tar -xf "$1" -C site
+          for f in repo/config repo/summary repo/summary.sig io.github.odrakirmusic.OctoSnap.flatpakref \
+                   octosnap.flatpakrepo octosnap.gpg index.html; do
+            [ -s "site/$f" ] || { echo "::error::$TAG's repository has no $f"; exit 1; }
+          done
+          echo "$TAG: $(find site -type f | wc -l) files, $(du -sh site | cut -f1)"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

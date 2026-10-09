@@ -391,5 +391,12 @@
       <description>The version of the extension the app copied into the user's extensions folder, and the login it did so in, as version|login. GNOME Shell finds an extension at login only, so the first start after the logout turns it on and empties this. Still unfound after a login, the extension is one GNOME Shell does not load.</description>
     </key>
 
+    <!-- D170: one notification a release. -->
+    <key name="update-offered" type="s">
+      <default>''</default>
+      <summary>The newer release last told about</summary>
+      <description>The commit of the release in OctoSnap's Flatpak repository that the app last sent a notification about, so that a release stays one notification however long it waits to be installed.</description>
+    </key>
+
   </schema>
 </schemalist>

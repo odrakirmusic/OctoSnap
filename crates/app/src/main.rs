@@ -32,6 +32,7 @@ mod service;
 mod session;
 mod settings;
 mod setup;
+mod update;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -184,10 +185,20 @@ fn main() -> glib::ExitCode {
         warn!(log = %crash.display(), "the last run did not end cleanly; its log is kept");
     }
 
-    let app = adw::Application::builder()
-        .application_id(APP_BUS_NAME)
-        .flags(gio::ApplicationFlags::IS_SERVICE)
-        .build();
+    // In a Flatpak a new release can take the bus name over, which is how it starts in this
+    // one's place after an update (D170, `update.rs`). Only the app's own sandbox may own the
+    // name there; a native build allows no replacement.
+    let mut flags = gio::ApplicationFlags::IS_SERVICE;
+    if settings::sandboxed() {
+        flags |= gio::ApplicationFlags::ALLOW_REPLACEMENT;
+    }
+    let app = adw::Application::builder().application_id(APP_BUS_NAME).flags(flags).build();
+    // GApplication quits when its name is taken. Said in the log, since the run's end
+    // otherwise looks like any other.
+    app.connect_name_lost(|_| {
+        info!("the new release took the name over; this one quits");
+        false
+    });
 
     app.connect_startup(move |app| {
         HOLD.with(|hold| *hold.borrow_mut() = Some(app.hold()));
@@ -350,6 +361,8 @@ fn main() -> glib::ExitCode {
 
         actions::register(app);
         setup::register(app);
+        update::register(app);
+        update::start(app);
         diagnostics::register(app);
         background::register(app);
         prefs::refresh_autostart();
@@ -376,7 +389,10 @@ fn main() -> glib::ExitCode {
         let log_dir = log_dir.clone();
         app.connect_shutdown(move |_| {
             info!("service stopping");
-            diagnostics::end(&log_dir);
+            // A run handed to a new release ended cleanly then; the marker is the new one's.
+            if !update::handed_over() {
+                diagnostics::end(&log_dir);
+            }
         });
     }
 

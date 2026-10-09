@@ -444,6 +444,9 @@ fn general_page(
     // --- The app itself: `SYS-02`.
     let app_group = adw::PreferencesGroup::builder().title("App").build();
     app_group.add(&launch_at_login_row());
+    if let Some(row) = updates_row() {
+        app_group.add(&row);
+    }
     page.add(&app_group);
 
     // --- After Capture. spec/08 §0's matrix, with the one column this build has.
@@ -639,6 +642,50 @@ fn app_action_button(label: &str, action: &'static str) -> gtk::Button {
     let button = gtk::Button::builder().label(label).valign(gtk::Align::Center).build();
     button.connect_clicked(move |_| activate_app_action(action));
     button
+}
+
+/// D170: what the portal found, and the button that installs it. Only where the app can
+/// update itself, a Flatpak; a native build's updates are its package manager's, and the
+/// row is not there.
+fn updates_row() -> Option<adw::ActionRow> {
+    use crate::update::State;
+    fn show(row: &adw::ActionRow, button: &gtk::Button, spinner: &adw::Spinner, state: &State) {
+        let line = match state {
+            State::Current => format!("OctoSnap {}. {}", env!("CARGO_PKG_VERSION"), state.subtitle()),
+            _ => state.subtitle(),
+        };
+        row.set_subtitle(&line);
+        row.set_visible(*state != State::Unavailable);
+        button.set_visible(state.installable());
+        spinner.set_visible(matches!(state, State::Installing { .. }));
+    }
+
+    let state = crate::update::state();
+    if state == State::Unavailable {
+        return None;
+    }
+    let row = adw::ActionRow::builder().title("Updates").build();
+    let spinner = adw::Spinner::new();
+    let button = gtk::Button::builder()
+        .label("Update")
+        .valign(gtk::Align::Center)
+        .css_classes(["suggested-action"])
+        .build();
+    button.connect_clicked(|_| crate::update::install());
+    row.add_suffix(&spinner);
+    row.add_suffix(&button);
+    show(&row, &button, &spinner, &state);
+    info!(?state, "settings' updates row");
+    let weak = (row.downgrade(), button.downgrade(), spinner.downgrade());
+    crate::update::watch(move |state| {
+        let (Some(row), Some(button), Some(spinner)) = (weak.0.upgrade(), weak.1.upgrade(), weak.2.upgrade()) else {
+            return false;
+        };
+        show(&row, &button, &spinner, state);
+        info!(?state, "settings' updates row");
+        true
+    });
+    Some(row)
 }
 
 pub(crate) fn launch_at_login_row() -> adw::SwitchRow {

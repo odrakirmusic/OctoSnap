@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Something it could do
+description: A feature, or a change to how something behaves.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you would do with it
+      description: The task, as you would do it, rather than the button.
+    validations:
+      required: true
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: Elsewhere
+      description: Another tool that does it well, and how, if you know one.

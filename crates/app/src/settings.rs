@@ -97,6 +97,8 @@ const REQUIRED_KEYS: &[&str] = &[
     "stale-extension",
     // D160
     "extension-installed",
+    // D170
+    "update-offered",
 ];
 
 /// GNOME Shell's keybindings (`org.gnome.shell.keybindings`), which `spec/08` §3's
@@ -450,6 +452,22 @@ impl Settings {
             && let Err(e) = s.set_string("extension-installed", record)
         {
             warn!("could not remember the installed extension: {e}");
+        }
+    }
+
+    /// D170: the release in the repository the user was last told about, by its commit, so
+    /// that each release is told about once.
+    #[must_use]
+    pub fn update_offered(&self) -> String {
+        self.inner.as_ref().map(|s| s.string("update-offered").to_string()).unwrap_or_default()
+    }
+
+    pub fn set_update_offered(&self, commit: &str) {
+        if let Some(s) = &self.inner
+            && s.string("update-offered") != commit
+            && let Err(e) = s.set_string("update-offered", commit)
+        {
+            warn!("could not remember the update told about: {e}");
         }
     }
 

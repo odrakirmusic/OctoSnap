@@ -487,6 +487,10 @@ impl ShellBridge for NullBridge {
         Ok(())
     }
 
+    async fn set_update_offered(&self, _offered: bool) -> Result<(), BridgeError> {
+        self.guard()
+    }
+
     async fn show_recording_frame(&self, rect: Rect, visible: bool) -> Result<(), BridgeError> {
         self.guard()?;
         self.recording_frames.borrow_mut().push((rect, visible));

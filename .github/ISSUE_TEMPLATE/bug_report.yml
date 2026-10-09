@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Something does not work
+description: A capture, the editor, a recording, the extension, an update, anything else that misbehaves.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: OctoSnap's version
+      description: Settings → About.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it is installed
+      options:
+        - The Flatpak, from OctoSnap's repository
+        - The Flatpak, from a release's .flatpak file
+        - Built natively
+        - Another way
+    validations:
+      required: true
+  - type: input
+    id: gnome
+    attributes:
+      label: GNOME Shell's version
+      description: The output of `gnome-shell --version`.
+  - type: input
+    id: monitors
+    attributes:
+      label: Monitors and their scales
+      description: For example, a 2560×1600 laptop at 150 % and a 1920×1080 screen at 100 %.
+  - type: textarea
+    id: report
+    attributes:
+      label: The report
+      description: Settings → About → Troubleshooting → Save a report writes one file with the versions, the extension's state, the monitors and both halves' recent logs. Read it, then attach it here.

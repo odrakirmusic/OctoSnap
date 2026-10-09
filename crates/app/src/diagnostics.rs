@@ -99,6 +99,40 @@ pub fn end(dir: &Path) {
     }
 }
 
+/// Hands this run over to a new release starting in its place (D170): the marker goes, as
+/// at a clean exit, so that the new release's [`begin`] does not keep this run's log as a
+/// crash. Returns what the marker said, for [`take_back`]. This run must not [`end`] after
+/// it: the marker by then is the new release's.
+#[must_use]
+pub fn hand_over(dir: &Path) -> Option<String> {
+    let marker = fs::read_to_string(dir.join(MARKER)).ok();
+    end(dir);
+    marker
+}
+
+/// Takes this run back when no new release took its place: it is in progress again, with
+/// the marker [`hand_over`] returned. Unless a new release got as far as its own [`begin`]:
+/// that marker is the new release's, which ended without taking over, and stays. Returns
+/// whether the run is this one's again.
+pub fn take_back(dir: &Path, marker: &str) -> bool {
+    if marker.is_empty() {
+        return false;
+    }
+    match OpenOptions::new().write(true).create_new(true).open(dir.join(MARKER)) {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(marker.as_bytes()) {
+                warn!(dir = %dir.display(), "could not mark the run in progress again: {e}");
+            }
+            true
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(e) => {
+            warn!(dir = %dir.display(), "could not mark the run in progress again: {e}");
+            false
+        }
+    }
+}
+
 /// The crashed runs' logs in `dir`, oldest first.
 #[must_use]
 pub fn crashes(dir: &Path) -> Vec<PathBuf> {
@@ -520,6 +554,32 @@ mod tests {
         assert_eq!(read(&kept), "panicked: here\n");
         assert!(!dir.path().join(PREVIOUS).exists(), "a crash log is not also rotated");
         assert_eq!(read(&dir.path().join(MARKER)), "2026-09-25-100000\n");
+    }
+
+    #[test]
+    fn a_run_handed_to_a_new_release_is_not_a_crash() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        begin(dir.path(), "2026-10-08-090000").expect("the old release");
+        fs::write(dir.path().join(LOG), "the old release\n").expect("write");
+        let marker = hand_over(dir.path());
+        assert_eq!(marker.as_deref(), Some("2026-10-08-090000\n"));
+        // The new release starts while the old one still runs, as update-test.sh found.
+        let begun = begin(dir.path(), "2026-10-08-090500").expect("the new release");
+        assert_eq!(begun.crashed, None);
+        assert_eq!(read(&dir.path().join(PREVIOUS)), "the old release\n");
+        // Its marker is not the old run's to take back, whatever became of it.
+        assert!(!take_back(dir.path(), &marker.unwrap_or_default()));
+        assert_eq!(read(&dir.path().join(MARKER)), "2026-10-08-090500\n");
+    }
+
+    #[test]
+    fn a_run_no_release_took_over_is_in_progress_again() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        begin(dir.path(), "2026-10-08-090000").expect("begin");
+        let marker = hand_over(dir.path()).unwrap_or_default();
+        assert!(!dir.path().join(MARKER).exists());
+        assert!(take_back(dir.path(), &marker));
+        assert_eq!(read(&dir.path().join(MARKER)), "2026-10-08-090000\n");
     }
 
     #[test]

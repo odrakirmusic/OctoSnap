@@ -101,6 +101,9 @@ export class Indicator {
     #recordingLabel: string | null = null;
     /** And whether it was being saved, for the same rebuild. */
     #recordingSaving = false;
+    /** Update OctoSnap, and whether the app offers it (D170), which a rebuild keeps. */
+    #updateItem: PopupMenu.PopupMenuItem | null = null;
+    #updateOffered = false;
 
     constructor(settings: Settings, handlers: IndicatorHandlers) {
         this.#settings = settings;
@@ -291,6 +294,15 @@ export class Indicator {
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
+        // D170: there while the app says a newer release can be installed from it. No
+        // ellipsis: the app installs it, and asks nothing more, unless the portal asks
+        // once whether the app may update itself at all.
+        const updateItem = new PopupMenu.PopupMenuItem('Update OctoSnap');
+        updateItem.visible = this.#updateOffered;
+        updateItem.connect('activate', () => activateApp('update'));
+        menu.addMenuItem(updateItem);
+        this.#updateItem = updateItem;
+
         const settingsItem = new PopupMenu.PopupMenuItem('Settings…');
         settingsItem.connect('activate', () => {
             // Through the app, because the Preferences dialog is GTK and lives there. The
@@ -422,7 +434,18 @@ export class Indicator {
         this.#timer = null;
         this.#spinner = null;
         this.#stopItem = null;
+        this.#updateItem = null;
         info('panel indicator removed');
+    }
+
+    /**
+     * `SetUpdateOffered` (D170): the Update OctoSnap item shown or taken away. Kept for a
+     * rebuild, as the recording's label is.
+     */
+    setUpdateOffered(offered: boolean): void {
+        this.#updateOffered = offered;
+        if (this.#updateItem !== null) this.#updateItem.visible = offered;
+        info(`update ${offered ? 'offered' : 'not offered'} in the panel menu`);
     }
 
     /** The first binding for an action, as a person reads it, or `null` when unbound. */

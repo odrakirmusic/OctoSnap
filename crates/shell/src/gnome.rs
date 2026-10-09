@@ -335,6 +335,11 @@ impl ShellBridge for GnomeExtensionBridge {
         Ok(())
     }
 
+    async fn set_update_offered(&self, offered: bool) -> Result<(), BridgeError> {
+        self.call("SetUpdateOffered", Some(glib::Variant::from((offered,))), "()").await?;
+        Ok(())
+    }
+
     async fn show_recording_frame(&self, rect: Rect, visible: bool) -> Result<(), BridgeError> {
         let params = glib::Variant::tuple_from_iter([
             glib::Variant::from((rect.x, rect.y, rect.width, rect.height)),

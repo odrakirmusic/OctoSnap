@@ -37,6 +37,9 @@ OctoSnap's icon in the top bar opens a menu with every kind of capture: All-In-O
 Capture Area, Capture Previous Area, Capture Fullscreen, Capture Window, Self-Timer and
 Record GIF. After them come History…, Hide Desktop Icons (shown only when the desktop has
 icons), the Desktop Pets switch and Settings…. Each item shows its shortcut when it has one.
+When a newer release of the Flatpak is out, **Update OctoSnap** comes before Settings… and
+installs it, as Settings → General → Updates does. OctoSnap starts the new release once none
+of its windows is open, and the next logout finishes the extension.
 
 While something is under way, the item that ends it comes first. That is **Cancel
 Countdown** during a countdown, **Start Scrolling Capture** or **Finish Scrolling Capture**

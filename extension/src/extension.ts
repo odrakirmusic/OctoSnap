@@ -142,7 +142,7 @@ export default class OctoSnapExtension extends Extension {
         const recording = new RecordingCoordinator({ settings, desktopIcons, panel: indicator });
         this.#recording = recording;
 
-        this.#service = new ShellService(settings, desktopIcons, recording);
+        this.#service = new ShellService(settings, desktopIcons, recording, indicator);
         this.#service.export();
 
         this.#keybindings = new Keybindings(settings.raw);

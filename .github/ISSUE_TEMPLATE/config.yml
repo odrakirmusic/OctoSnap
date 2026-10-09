@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+blank_issues_enabled: true
+contact_links:
+  - name: A security problem
+    url: https://github.com/odrakirmusic/OctoSnap/security/advisories/new
+    about: Report it privately, not as an issue.

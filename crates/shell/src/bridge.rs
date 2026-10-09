@@ -293,6 +293,11 @@ pub trait ShellBridge {
         elapsed_ms: u32,
     ) -> Result<(), BridgeError>;
 
+    /// `spec/10` §3.1's `SetUpdateOffered` (D170): the top bar's Update OctoSnap item, there
+    /// while a newer release can be installed from the app. An extension from before D170
+    /// answers [`BridgeError::Unsupported`], and has no item.
+    async fn set_update_offered(&self, offered: bool) -> Result<(), BridgeError>;
+
     /// `spec/10` §3.1's `ShowRecordingFrame`: the red frame the extension draws *outside*
     /// `rect`, so the recorded pixels never carry it (`spec/06` §4.4). `visible = false`
     /// takes it away, which Stop and Trash both do.
