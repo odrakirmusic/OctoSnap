@@ -22,18 +22,20 @@
 //! with cards open -- is filed at launch rather than left in the cache for ever. That is
 //! also what turns the spool of a build from before this milestone into history.
 
+pub mod reader;
+mod search;
 pub mod strip;
 pub mod thumbnail;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use gtk::glib;
 use octosnap_core::CaptureResult;
-use octosnap_media::reel;
 use octosnap_core::history::{self as core, ENTRY_FILE, Entry, Retention, THUMB_FILE};
+use octosnap_media::reel;
 use tracing::{debug, info, warn};
 
 /// How long a spool file with no card has to be before the janitor treats it as
@@ -59,6 +61,9 @@ pub struct History {
     /// What [`Self::start_janitor`] was told answers the paths windows still hold, for a
     /// sweep between its hourly runs ([`Self::sweep_now`]).
     open: RefCell<Option<Open>>,
+    /// The texts read in the captures, by id, as `search.rs` has read them from their
+    /// files (`HIS-05`).
+    texts: RefCell<HashMap<String, Rc<str>>>,
 }
 
 /// Answers every path some window still holds.
@@ -124,6 +129,7 @@ impl History {
             keep_saved: Cell::new(keep_saved),
             listeners: RefCell::new(Vec::new()),
             open: RefCell::new(None),
+            texts: RefCell::new(HashMap::new()),
         })
     }
 
@@ -234,6 +240,8 @@ impl History {
             warn!(dir = %dir.display(), "could not create the history entry: {e}");
             return None;
         }
+        // A capture filed again is read again: its directory, text and all, was replaced.
+        self.texts.borrow_mut().remove(&id);
         let entry = Entry::filed(capture, &dir, now_us(), saved_to, project);
         // A recording is filed as its GIF once one has been written, and as its frames until
         // then (D113): a second's frames at full size are megabytes, and the history keeps
@@ -296,7 +304,8 @@ impl History {
             return None;
         }
         let back = |file: &Path| -> PathBuf {
-            file.file_name().map_or_else(|| self.spool.join(format!("{id}.png")), |name| self.spool.join(name))
+            file.file_name()
+                .map_or_else(|| self.spool.join(format!("{id}.png")), |name| self.spool.join(name))
         };
         let png = back(&entry.path);
         let restored = link_reel(&entry.path, &png).and_then(|reel| {
@@ -359,10 +368,11 @@ impl History {
 
     /// The retention janitor: removes what has been here longer than the setting allows.
     pub fn purge(&self, now_us: u64) -> usize {
-        let expired: Vec<String> = core::expired(&self.entries.borrow(), now_us, self.retention.get())
-            .into_iter()
-            .map(|e| e.id.clone())
-            .collect();
+        let expired: Vec<String> =
+            core::expired(&self.entries.borrow(), now_us, self.retention.get())
+                .into_iter()
+                .map(|e| e.id.clone())
+                .collect();
         let count = expired.len();
         for id in expired {
             self.remove(&id);
@@ -398,7 +408,9 @@ impl History {
             if !is_capture || open.contains(&path) || (is_reel && path.exists()) {
                 continue;
             }
-            let Some(id) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
+            let Some(id) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
             let twin = path.with_extension("json");
             if let Some(entry) = self.get(&id) {
                 // Filed while a window still held it; the window is gone. A GIF written
@@ -424,7 +436,9 @@ impl History {
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(u64::MAX, |d| now_us.saturating_sub(u64::try_from(d.as_micros()).unwrap_or(u64::MAX)));
+                .map_or(u64::MAX, |d| {
+                    now_us.saturating_sub(u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
+                });
             if !twin.is_file() {
                 if age >= DERIVED_KEPT_US {
                     let _ = std::fs::remove_file(&path);
@@ -482,6 +496,7 @@ impl History {
 
     fn forget(&self, id: &str) {
         self.entries.borrow_mut().retain(|e| e.id != id);
+        self.texts.borrow_mut().remove(id);
         self.changed();
     }
 }
@@ -638,7 +653,8 @@ mod tests {
     fn store(temp: &tempfile::TempDir) -> (Rc<History>, PathBuf) {
         let spool = temp.path().join("spool");
         std::fs::create_dir_all(&spool).expect("spool dir");
-        let history = History::open(temp.path().join("history"), spool.clone(), Retention::Week, true);
+        let history =
+            History::open(temp.path().join("history"), spool.clone(), Retention::Week, true);
         (history, spool)
     }
 
@@ -725,7 +741,8 @@ mod tests {
         history.file(&older, None, None, false).expect("filed");
         history.file(&newer, None, None, false).expect("filed");
         std::fs::create_dir_all(temp.path().join("history/01Z")).expect("dir");
-        std::fs::write(temp.path().join("history/01Z").join(ENTRY_FILE), b"{ not json").expect("bad record");
+        std::fs::write(temp.path().join("history/01Z").join(ENTRY_FILE), b"{ not json")
+            .expect("bad record");
         drop(history);
 
         let reopened = History::open(temp.path().join("history"), spool, Retention::Week, true);

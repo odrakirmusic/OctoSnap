@@ -158,7 +158,13 @@ impl Editor {
         if controls.is_empty() {
             // `spec/05` §2 gives Select an em dash. Saying so beats an empty strip that
             // looks like a widget that failed to build.
-            let hint = gtk::Label::new(Some("Click an object to edit it, drag to move"));
+            let hint = gtk::Label::new(Some(match tool {
+                // `ANN-31` (D183).
+                octosnap_scene::Tool::CutOut => {
+                    "Drag over the part to remove: down for a strip across, across for a strip down"
+                }
+                _ => "Click an object to edit it, drag to move",
+            }));
             hint.add_css_class("dim-label");
             hint.set_margin_start(4);
             row.append(&hint);
@@ -269,6 +275,16 @@ impl Editor {
                     |s| s.redact_intensity,
                     |s, v| s.redact_intensity = v,
                 ),
+                // `ANN-32` (D187).
+                Control::Magnification => self.number_menu(
+                    Control::Magnification,
+                    &settings,
+                    "Magnification",
+                    &octosnap_scene::magnifier::ZOOMS,
+                    |value| format!("{value}×"),
+                    |s| s.magnifier_zoom,
+                    |s, v| s.magnifier_zoom = v,
+                ),
                 // `spec/05` §4.11 swaps the *entire* toolbar for crop mode, so these three
                 // are built by `crop.rs` from this same table and never by this row --
                 // the row is not on screen while the crop tool is active. Reaching here
@@ -282,6 +298,10 @@ impl Editor {
                 }
             };
             row.append(&widget);
+        }
+        // `ANN-26` (D178): the tool's other way to cover things, beside how it covers them.
+        if tool == octosnap_scene::Tool::Pixelate {
+            row.append(&self.auto_redact_button());
         }
     }
 
@@ -361,6 +381,11 @@ impl Editor {
             let value = step(settings.spotlight_opacity);
             self.change(Control::SpotlightOpacity, |s| s.spotlight_opacity = value);
             tracing::debug!(value, "spotlight opacity stepped");
+        } else if has(Control::Magnification) {
+            // `ANN-32`: how much a lens enlarges, a step along the row's menu.
+            let value = octosnap_scene::magnifier::step(settings.magnifier_zoom, up);
+            self.change(Control::Magnification, |s| s.magnifier_zoom = value);
+            tracing::debug!(value, "magnification stepped");
         }
     }
 
@@ -441,7 +466,10 @@ impl Editor {
                     editor.arm_canvas_pipette(&picker);
                 }
                 Err(super::actions::PickFailure::Other(reason)) => {
-                    tracing::warn!(reason, "the shell could not pick; sampling the picture instead");
+                    tracing::warn!(
+                        reason,
+                        "the shell could not pick; sampling the picture instead"
+                    );
                     editor.arm_canvas_pipette(&picker);
                 }
             }
@@ -555,10 +583,8 @@ impl Editor {
     fn size_button(self: &Rc<Self>, settings: &ToolSettings) -> gtk::Widget {
         let level = settings.style.size;
         let face = Preview::new(Kind::Stroke(level));
-        let button = gtk::MenuButton::builder()
-            .tooltip_text("Stroke width (1-6)")
-            .child(&face)
-            .build();
+        let button =
+            gtk::MenuButton::builder().tooltip_text("Stroke width (1-6)").child(&face).build();
 
         let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
         column.set_margin_top(6);
@@ -688,10 +714,7 @@ impl Editor {
         set: fn(&mut ToolSettings, f64),
     ) -> gtk::Widget {
         let active = current(settings);
-        let button = gtk::MenuButton::builder()
-            .tooltip_text(tooltip)
-            .label(label(active))
-            .build();
+        let button = gtk::MenuButton::builder().tooltip_text(tooltip).label(label(active)).build();
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
         for value in values {

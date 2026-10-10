@@ -44,11 +44,13 @@ pub struct LogicalMonitor {
 pub async fn logical_monitors(
     connection: &gio::DBusConnection,
 ) -> Result<Vec<LogicalMonitor>, BridgeError> {
-    let reply_type = glib::VariantTy::new("(ua((ssss)a(siiddada{sv})a{sv})a(iiduba(ssss)a{sv})a{sv})")
-        .map_err(|e| BridgeError::MalformedReply {
-            method: "GetCurrentState",
-            detail: format!("invalid reply signature: {e}"),
-        })?;
+    let reply_type = glib::VariantTy::new(
+        "(ua((ssss)a(siiddada{sv})a{sv})a(iiduba(ssss)a{sv})a{sv})",
+    )
+    .map_err(|e| BridgeError::MalformedReply {
+        method: "GetCurrentState",
+        detail: format!("invalid reply signature: {e}"),
+    })?;
 
     let reply = connection
         .call_future(
@@ -60,7 +62,7 @@ pub async fn logical_monitors(
             Some(reply_type),
             gio::DBusCallFlags::NONE,
             2_000,
-            )
+        )
         .await
         .map_err(BridgeError::Dbus)?;
 

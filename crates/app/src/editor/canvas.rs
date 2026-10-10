@@ -89,6 +89,37 @@ const fn cacheable(geometry: &Geometry) -> bool {
 }
 
 /// A scene colour as a GDK one.
+/// `ANN-29`'s tail on a label (`octosnap_scene::callout`): a wedge in the plate's colour
+/// when there is a plate, drawn before it so the plate hides the base, and otherwise a line
+/// in the ink's colour from just off the glyphs, with a dot on the tip.
+fn draw_label_tail(
+    snapshot: &gtk::Snapshot,
+    body: Bounds,
+    tip: Point,
+    style: octosnap_scene::TextStyle,
+    font_size: f64,
+    plate: Option<Rgba>,
+    ink: Rgba,
+) {
+    use octosnap_scene::callout;
+    if let Some(plate) = plate {
+        let corner = font_size * style.plate_radius_em();
+        let half = callout::plate_half(body, font_size);
+        if let Some(wedge) = callout::plate_wedge(body, corner, half, tip) {
+            nodes::append_wedge(snapshot, wedge, &to_gdk(plate));
+        }
+        return;
+    }
+    let Some(line) = callout::line(body.inflated(font_size * 0.15), tip) else { return };
+    nodes::append_pointer_line(
+        snapshot,
+        line,
+        callout::line_width(font_size),
+        callout::dot_radius(font_size),
+        &to_gdk(ink),
+    );
+}
+
 fn to_gdk(color: Rgba) -> gtk::gdk::RGBA {
     #[allow(clippy::cast_possible_truncation)]
     gtk::gdk::RGBA::new(color.r as f32, color.g as f32, color.b as f32, color.a as f32)
@@ -101,6 +132,17 @@ fn to_gdk(color: Rgba) -> gtk::gdk::RGBA {
 /// and `AdwStyleManager` is already tracking the setting `spec/09` names.
 fn accent_colour() -> gtk::gdk::RGBA {
     adw::StyleManager::default().accent_color_rgba()
+}
+
+/// How `ANN-27`'s live text marks a word over the picture (D180).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextMark {
+    /// A word that a drag can select: faint, so the picture still reads.
+    Word,
+    /// A selected word, as selected text is anywhere else.
+    Selected,
+    /// A word that opens something: underlined, on top of its `Word` or `Selected`.
+    Link,
 }
 
 mod imp {
@@ -181,6 +223,16 @@ mod imp {
         pub selection: RefCell<Vec<ObjectId>>,
         /// `spec/05` §4.1's rubber band, in document coordinates.
         pub marquee: Cell<Option<Bounds>>,
+        /// `ANN-31`'s band while a Cut Out drag is under way, in document coordinates.
+        pub slice: Cell<Option<octosnap_scene::slice::Slice>>,
+        /// The base textures this editor had before a cut changed the file, by file, so an
+        /// undo is a swap and not a decode (`ANN-31`). The last few only: each is the whole
+        /// picture.
+        pub bases: RefCell<Vec<(String, gtk::gdk::Texture)>>,
+        /// `ANN-27`'s words while live text is on, in the stored picture's pixels: the
+        /// document's scale and orientation are applied when they are drawn, so a turn
+        /// while the mode is on turns them with the picture.
+        pub text_marks: RefCell<Vec<(Bounds, TextMark)>>,
         /// `spec/05` §4.14's drop zone under a file being dragged over the canvas, or
         /// `None` when nothing is. Chrome, not document: it never reaches the scene.
         pub drop_zone: Cell<Option<octosnap_scene::combine::Zone>>,
@@ -210,7 +262,8 @@ mod imp {
         /// coordinates and the transform is applied outside them, which is what makes the
         /// cache survive a pan and a zoom -- and is the same property that makes the
         /// export walk the same tree as the preview.
-        pub cache: RefCell<std::collections::HashMap<ObjectId, (Object, Option<gtk::gsk::RenderNode>)>>,
+        pub cache:
+            RefCell<std::collections::HashMap<ObjectId, (Object, Option<gtk::gsk::RenderNode>)>>,
         /// Cache hits and misses over the frames since the last reset.
         ///
         /// Reported beside the timing, because the timing alone cannot say *why*. A p95
@@ -302,10 +355,8 @@ mod imp {
         /// than the screen. `spec/05` §11 item 1 opens exactly that capture.
         fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
             let zoom = self.zoom.get();
-            let canvas = self.scene.borrow().as_ref().map_or(
-                Bounds::new(0.0, 0.0, 0.0, 0.0),
-                |s| s.canvas,
-            );
+            let canvas =
+                self.scene.borrow().as_ref().map_or(Bounds::new(0.0, 0.0, 0.0, 0.0), |s| s.canvas);
             // Plus the crop rect, which `spec/05` §4.11 allows to reach outside the
             // canvas -- the same union `snapshot` clips to.
             let canvas = self.crop.get().map_or(canvas, |rect| canvas.union(rect));
@@ -350,7 +401,6 @@ mod imp {
             // Outside the timing: it schedules, it does not render.
             self.obj().schedule_rasters();
         }
-
     }
 
     impl Canvas {
@@ -409,10 +459,7 @@ mod imp {
             // and the result is the same picture at a different size.
             snapshot.save();
             #[allow(clippy::cast_possible_truncation)]
-            snapshot.translate(&graphene::Point::new(
-                (-ox * zoom) as f32,
-                (-oy * zoom) as f32,
-            ));
+            snapshot.translate(&graphene::Point::new((-ox * zoom) as f32, (-oy * zoom) as f32));
             #[allow(clippy::cast_possible_truncation)]
             snapshot.scale(zoom as f32, zoom as f32);
 
@@ -446,8 +493,10 @@ mod imp {
             // a crop expands the canvas (D52) the editable area is *larger* than the
             // picture, which nothing else on screen would show.
             self.draw_canvas_edge(snapshot, visible);
+            self.draw_text_marks(snapshot);
             self.draw_selection(snapshot, &previewed);
             self.draw_marquee(snapshot);
+            self.draw_slice(snapshot);
             self.draw_drop_zone(snapshot);
             if let Some(rect) = crop {
                 self.draw_crop(snapshot, rect);
@@ -478,10 +527,8 @@ mod imp {
                 }
             };
             let (ox, oy) = self.origin.get();
-            let constrained = (
-                axis(ox, visible.x, visible.width, vw),
-                axis(oy, visible.y, visible.height, vh),
-            );
+            let constrained =
+                (axis(ox, visible.x, visible.width, vw), axis(oy, visible.y, visible.height, vh));
             if constrained != (ox, oy) {
                 self.origin.set(constrained);
                 widget.queue_draw();
@@ -525,11 +572,35 @@ mod imp {
         /// for `append_scene` to take a glyph callback so one walk covers both, and it
         /// belongs with the Text *tool*, where there will be text worth ordering.
         pub fn append_document(&self, snapshot: &gtk::Snapshot, scene: &Scene) {
+            self.append_document_part(snapshot, scene, nodes::Part::All);
+        }
+
+        /// [`Self::append_document`], for one part of it (`ANN-33`).
+        pub fn append_document_part(
+            &self,
+            snapshot: &gtk::Snapshot,
+            scene: &Scene,
+            part: nodes::Part,
+        ) {
+            self.append_document_with(snapshot, scene, part, nodes::Lens::Drawn);
+        }
+
+        /// [`Self::append_document_part`], its lenses taking their pixels from `lens`
+        /// (`ANN-32`).
+        pub fn append_document_with(
+            &self,
+            snapshot: &gtk::Snapshot,
+            scene: &Scene,
+            part: nodes::Part,
+            lens: nodes::Lens<'_>,
+        ) {
             nodes::append_scene(
                 snapshot,
                 scene,
                 self.base.borrow().as_ref(),
                 &|snapshot, object| self.draw_object(snapshot, object, scene),
+                part,
+                lens,
             );
         }
 
@@ -582,7 +653,11 @@ mod imp {
             // the GPU preview when it has none (`redact.rs`).
             let raster = if matches!(object.geometry, Geometry::Redact { .. }) {
                 self.rasters.texture_for(object).map(|(raster, current)| {
-                    if current { raster } else { crate::editor::redact::Raster { bounds: object.bounds(), ..raster } }
+                    if current {
+                        raster
+                    } else {
+                        crate::editor::redact::Raster { bounds: object.bounds(), ..raster }
+                    }
                 })
             } else {
                 None
@@ -659,7 +734,7 @@ mod imp {
         /// system says `38` and the Roman one says `XXXVIII`, and a size that suits the
         /// first spills out of the circle on the second.
         fn draw_counter_glyph(&self, snapshot: &gtk::Snapshot, object: &Object) {
-            let Geometry::Counter { center, number, style, radius } = &object.geometry else {
+            let Geometry::Counter { center, number, style, radius, .. } = &object.geometry else {
                 return;
             };
             let text = style.format(*number);
@@ -714,9 +789,7 @@ mod imp {
         fn report_allocation(&self, width: i32, height: i32) {
             let widget = self.obj();
             let Some(root) = widget.root() else { return };
-            let Some(origin) =
-                widget.compute_point(&root, &graphene::Point::new(0.0, 0.0))
-            else {
+            let Some(origin) = widget.compute_point(&root, &graphene::Point::new(0.0, 0.0)) else {
                 return;
             };
             #[allow(clippy::cast_possible_truncation)]
@@ -760,10 +833,7 @@ mod imp {
         /// map between them, and the chrome has to go through it or a selection outline
         /// would be drawn where the object used to be.
         pub fn place(&self) -> octosnap_scene::Placement {
-            self.scene
-                .borrow()
-                .as_ref()
-                .map_or(octosnap_scene::Placement::NONE, Scene::placement)
+            self.scene.borrow().as_ref().map_or(octosnap_scene::Placement::NONE, Scene::placement)
         }
 
         /// [`Self::widget_rect`] for a rect in the *picture's* space: an object's bounds.
@@ -793,7 +863,12 @@ mod imp {
             }
         }
 
-        fn draw_selection_chrome(&self, snapshot: &gtk::Snapshot, scene: &Scene, selection: &[ObjectId]) {
+        fn draw_selection_chrome(
+            &self,
+            snapshot: &gtk::Snapshot,
+            scene: &Scene,
+            selection: &[ObjectId],
+        ) {
             let accent = accent_colour();
             let white = gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 1.0);
             for id in selection.iter() {
@@ -825,6 +900,10 @@ mod imp {
                     // curve handle"), with a hairline back to the chord so it is visibly
                     // attached to the arrow it bends.
                     let curve = ends && index == 2;
+                    // `ANN-29`'s ninth handle is the tail's tip, filled for the same reason:
+                    // it moves a point, not the box.
+                    let tip = matches!(object.grips(), octosnap_scene::Grips::BoxAndTip)
+                        && index == Handle::ALL.len();
                     if curve {
                         let points = object.points();
                         if let (Some(a), Some(b)) = (points.first(), points.get(1)) {
@@ -841,7 +920,7 @@ mod imp {
                             snapshot.append_stroke(&builder.to_path(), &hair, &accent);
                         }
                     }
-                    let (fill, edge) = if curve { (accent, white) } else { (white, accent) };
+                    let (fill, edge) = if curve || tip { (accent, white) } else { (white, accent) };
                     snapshot.push_rounded_clip(&rounded);
                     snapshot.append_color(&fill, &rect);
                     snapshot.pop();
@@ -853,11 +932,7 @@ mod imp {
         /// `spec/05` §4.1's handles, in widget space and in the order
         /// [`super::Canvas::grips_of`] answers -- so what is drawn is what is clickable.
         fn handles_for(&self, object: &Object) -> Vec<(f64, f64)> {
-            self.obj()
-                .grips_of(object)
-                .into_iter()
-                .map(|point| self.picture_point(point))
-                .collect()
+            self.obj().grips_of(object).into_iter().map(|point| self.picture_point(point)).collect()
         }
 
         /// `spec/05` §4.1's rubber band: "Drag on empty space rubber-band selects".
@@ -875,6 +950,89 @@ mod imp {
             );
         }
 
+        /// `ANN-31`'s band: what letting go would cut out, over the whole picture, with its
+        /// two edges marked where the picture will close up.
+        fn draw_slice(&self, snapshot: &gtk::Snapshot) {
+            let Some(band) = self.slice.get() else { return };
+            let Some(base) = self.scene.borrow().as_ref().map(|scene| scene.base.clone()) else {
+                return;
+            };
+            let rect = self.picture_rect(band.rect(&base));
+            let accent = accent_colour();
+            let mut fill = accent;
+            fill.set_alpha(0.28);
+            snapshot.append_color(&fill, &rect);
+            let builder = gtk::gsk::PathBuilder::new();
+            let (x, y, w, h) = (rect.x(), rect.y(), rect.width(), rect.height());
+            match band.axis {
+                octosnap_scene::slice::Axis::Rows => {
+                    builder.move_to(x, y);
+                    builder.line_to(x + w, y);
+                    builder.move_to(x, y + h);
+                    builder.line_to(x + w, y + h);
+                }
+                octosnap_scene::slice::Axis::Columns => {
+                    builder.move_to(x, y);
+                    builder.line_to(x, y + h);
+                    builder.move_to(x + w, y);
+                    builder.line_to(x + w, y + h);
+                }
+            }
+            let edge = gtk::gsk::Stroke::new(2.0);
+            edge.set_dash(&[6.0, 4.0]);
+            snapshot.append_stroke(&builder.to_path(), &edge, &accent);
+        }
+
+        /// `ANN-27`'s live text: each word faintly, the selected ones as selected text is,
+        /// and a link underlined along the word's own baseline, which a turned document
+        /// has turned with it.
+        fn draw_text_marks(&self, snapshot: &gtk::Snapshot) {
+            let marks = self.text_marks.borrow();
+            if marks.is_empty() {
+                return;
+            }
+            let Some(per_unit) = self.obj().base_pixel_scale() else { return };
+            let Some((orientation, width, height)) = self
+                .scene
+                .borrow()
+                .as_ref()
+                .map(|scene| (scene.base.orientation, scene.base.width, scene.base.height))
+            else {
+                return;
+            };
+            let to_document = |x: f64, y: f64| {
+                orientation.place(Point::new(x / per_unit, y / per_unit), width, height)
+            };
+            let in_document = |b: Bounds| {
+                Bounds::from_corners(
+                    to_document(b.x, b.y),
+                    to_document(b.x + b.width, b.y + b.height),
+                )
+            };
+            // Two widget pixels, in the stored picture's.
+            let line = 2.0 / self.zoom.get() * per_unit;
+            let accent = accent_colour();
+            for &(bounds, mark) in marks.iter() {
+                let (alpha, bounds) = match mark {
+                    TextMark::Word => (0.12, bounds),
+                    TextMark::Selected => (0.38, bounds),
+                    TextMark::Link => {
+                        let under = Bounds::new(
+                            bounds.x,
+                            bounds.y + bounds.height - line.min(bounds.height),
+                            bounds.width,
+                            line.min(bounds.height),
+                        );
+                        (1.0, under)
+                    }
+                };
+                let mut fill = accent;
+                #[allow(clippy::cast_possible_truncation)]
+                fill.set_alpha(alpha as f32);
+                snapshot.append_color(&fill, &self.picture_rect(in_document(bounds)));
+            }
+        }
+
         /// `spec/05` §4.14's drop zones, while a file is over the canvas.
         ///
         /// The whole picture tinted for a drop *onto* it, and one edge band for a stitch.
@@ -884,7 +1042,12 @@ mod imp {
         /// the cursor.
         fn draw_drop_zone(&self, snapshot: &gtk::Snapshot) {
             let Some(zone) = self.drop_zone.get() else { return };
-            let Some(canvas) = self.scene.borrow().as_ref().map(|scene| scene.canvas) else {
+            let Some((canvas, room)) = self
+                .scene
+                .borrow()
+                .as_ref()
+                .map(|scene| (scene.canvas, octosnap_scene::combine::room(scene)))
+            else {
                 return;
             };
             let accent = accent_colour();
@@ -894,7 +1057,8 @@ mod imp {
             if zone.is_edge() {
                 snapshot.append_color(&fill, &self.widget_rect(zone.band(canvas)));
             } else {
-                snapshot.append_color(&fill, &whole);
+                // Where it lands: on a background the picture, not its margin (D191).
+                snapshot.append_color(&fill, &self.widget_rect(room));
             }
             snapshot.append_border(
                 &gtk::gsk::RoundedRect::from_rect(whole, 0.0),
@@ -1039,8 +1203,7 @@ mod imp {
                     bh as f32,
                 );
                 #[allow(clippy::cast_possible_truncation)]
-                let rounded =
-                    gtk::gsk::RoundedRect::from_rect(bar, (EDGE_BAR.1 / 2.0) as f32);
+                let rounded = gtk::gsk::RoundedRect::from_rect(bar, (EDGE_BAR.1 / 2.0) as f32);
                 snapshot.push_rounded_clip(&rounded);
                 snapshot.append_color(&white, &bar);
                 snapshot.pop();
@@ -1148,7 +1311,8 @@ mod imp {
         /// padding and radius in **ems**, so they scale with the glyphs and a 10 pt label
         /// and a 288 pt one are recognisably the same style.
         fn draw_text(&self, snapshot: &gtk::Snapshot, object: &Object) {
-            let Geometry::Text { pos, text, style, font_size, align, width } = &object.geometry
+            let Geometry::Text { pos, text, style, font_size, align, width, tail } =
+                &object.geometry
             else {
                 return;
             };
@@ -1168,6 +1332,19 @@ mod imp {
                 (None, object.style.color)
             };
 
+            // `ANN-29`'s tail, under everything else the label draws: the plate hides a
+            // wedge's base, and a plain label's line starts just off its glyphs.
+            if let Some(tip) = tail {
+                let pad = font_size * style.plate_padding_em();
+                let body = Bounds::new(
+                    pos.x - pad,
+                    pos.y - pad,
+                    f64::from(w) + 2.0 * pad,
+                    f64::from(h) + 2.0 * pad,
+                );
+                draw_label_tail(snapshot, body, *tip, *style, *font_size, plate, ink);
+            }
+
             snapshot.save();
             #[allow(clippy::cast_possible_truncation)]
             snapshot.translate(&graphene::Point::new(pos.x as f32, pos.y as f32));
@@ -1178,12 +1355,8 @@ mod imp {
                 #[allow(clippy::cast_possible_truncation)]
                 let radius = (font_size * style.plate_radius_em()) as f32;
                 #[allow(clippy::cast_precision_loss)]
-                let rect = graphene::Rect::new(
-                    -pad,
-                    -pad,
-                    w as f32 + 2.0 * pad,
-                    h as f32 + 2.0 * pad,
-                );
+                let rect =
+                    graphene::Rect::new(-pad, -pad, w as f32 + 2.0 * pad, h as f32 + 2.0 * pad);
                 let rounded = gtk::gsk::RoundedRect::from_rect(rect, radius);
                 snapshot.push_rounded_clip(&rounded);
                 snapshot.append_color(&to_gdk(plate), &rect);
@@ -1270,6 +1443,7 @@ impl Canvas {
         *imp.base.borrow_mut() = texture;
         *imp.base_pixels.borrow_mut() = None;
         *imp.base_rgba.borrow_mut() = None;
+        imp.bases.borrow_mut().clear();
         imp.cache.borrow_mut().clear();
         imp.rasters.clear();
         imp.rasters.refresh_keys(&scene);
@@ -1291,12 +1465,14 @@ impl Canvas {
     /// Every edit goes through here, and the zoom and origin are deliberately untouched:
     /// a canvas that jumped back to 100 % because a rectangle was drawn would be unusable.
     pub fn update_scene(&self, scene: Scene) {
-        let resized = self
-            .imp()
-            .scene
-            .borrow()
-            .as_ref()
-            .is_none_or(|old| old.canvas != scene.canvas);
+        let resized =
+            self.imp().scene.borrow().as_ref().is_none_or(|old| old.canvas != scene.canvas);
+        // A cut wrote a new base image, or an undo went back to the old one (`ANN-31`).
+        let swapped =
+            self.imp().scene.borrow().as_ref().is_some_and(|old| old.base.file != scene.base.file);
+        if swapped {
+            self.swap_base(&scene.base.file);
+        }
         // Every redaction's key against the document as it now is, so the next frame
         // knows which rasters still apply (`redact.rs`).
         self.imp().rasters.refresh_keys(&scene);
@@ -1309,6 +1485,59 @@ impl Canvas {
         if resized {
             self.queue_resize();
         } else {
+            self.queue_draw();
+        }
+    }
+
+    /// The texture for a base image a cut has just written, so the swap that follows
+    /// does not read the file back (`ANN-31`).
+    pub fn adopt_base(&self, file: &str, texture: &gtk::gdk::Texture) {
+        let mut bases = self.imp().bases.borrow_mut();
+        bases.retain(|(kept, _)| kept != file);
+        bases.push((file.to_owned(), texture.clone()));
+    }
+
+    /// The base image is a different file now: its texture, from the ones this editor has
+    /// had or else from the file, and every cache of the old one's pixels dropped.
+    fn swap_base(&self, file: &str) {
+        /// The textures kept besides the one shown: an undo and a redo away.
+        const KEPT: usize = 2;
+        let imp = self.imp();
+        let outgoing = imp.scene.borrow().as_ref().map(|scene| scene.base.file.clone());
+        if let (Some(outgoing), Some(texture)) = (outgoing, imp.base.borrow().clone()) {
+            self.adopt_base(&outgoing, &texture);
+        }
+        let known =
+            imp.bases.borrow().iter().find(|(kept, _)| kept == file).map(|(_, t)| t.clone());
+        let texture = known.or_else(|| {
+            gtk::gdk::Texture::from_filename(file)
+                .inspect_err(|e| tracing::warn!(file, "no base texture: {e}"))
+                .ok()
+        });
+        {
+            let mut bases = imp.bases.borrow_mut();
+            bases.retain(|(kept, _)| kept != file);
+            let excess = bases.len().saturating_sub(KEPT);
+            bases.drain(..excess);
+        }
+        if let Some(texture) = &texture {
+            tracing::debug!(
+                file,
+                width = texture.width(),
+                height = texture.height(),
+                "base swapped"
+            );
+        }
+        *imp.base.borrow_mut() = texture;
+        *imp.base_pixels.borrow_mut() = None;
+        *imp.base_rgba.borrow_mut() = None;
+        imp.cache.borrow_mut().clear();
+    }
+
+    /// `ANN-31`'s band, or `None` to take it away.
+    pub fn set_slice(&self, band: Option<octosnap_scene::slice::Slice>) {
+        if self.imp().slice.get() != band {
+            self.imp().slice.set(band);
             self.queue_draw();
         }
     }
@@ -1452,12 +1681,7 @@ impl Canvas {
     /// animations off `step` is called once, with `to`. The animation holds the canvas
     /// weakly, as every libadwaita animation holds its widget, so an editor closed
     /// mid-zoom goes with its canvas.
-    fn glide(
-        &self,
-        to: f64,
-        each_frame: impl Fn() + 'static,
-        step: impl Fn(&Self, f64) + 'static,
-    ) {
+    fn glide(&self, to: f64, each_frame: impl Fn() + 'static, step: impl Fn(&Self, f64) + 'static) {
         self.stop_glide();
         let imp = self.imp();
         let from = imp.zoom.get();
@@ -1649,6 +1873,13 @@ impl Canvas {
         let (ww, wh) =
             ((box_of.width * zoom).round() as i64, (box_of.height * zoom).round() as i64);
         tracing::debug!(grips = count, kind = ?object.kind(), wx, wy, ww, wh, "selection grips");
+        // Where `ANN-29`'s ninth handle is, for a harness that drags it.
+        if let Some(tip) = object.tail() {
+            let (tx, ty) = self.to_widget(tip);
+            #[allow(clippy::cast_possible_truncation)]
+            let (tx, ty) = (tx.round() as i64, ty.round() as i64);
+            tracing::debug!(tx, ty, "selection tip");
+        }
     }
 
     #[must_use]
@@ -1668,6 +1899,12 @@ impl Canvas {
 
     pub fn set_marquee(&self, marquee: Option<Bounds>) {
         self.imp().marquee.set(marquee);
+        self.queue_draw();
+    }
+
+    /// `ANN-27`'s words, in the stored picture's pixels; empty when live text is off.
+    pub fn set_text_marks(&self, marks: Vec<(Bounds, TextMark)>) {
+        *self.imp().text_marks.borrow_mut() = marks;
         self.queue_draw();
     }
 
@@ -1692,6 +1929,13 @@ impl Canvas {
     /// button in that window.
     #[must_use]
     pub fn render_texture(&self, scale: f64) -> Option<gtk::gdk::Texture> {
+        self.render_part(scale, nodes::Part::All)
+    }
+
+    /// [`Self::render_texture`], for one part of the document: `ANN-33`'s picture, which a
+    /// vector export flattens with its redactions under the marks.
+    #[must_use]
+    pub fn render_part(&self, scale: f64, part: nodes::Part) -> Option<gtk::gdk::Texture> {
         let scene = self.imp().scene.borrow().clone()?;
         // An export cannot wait for a worker: every redaction gets its exact raster now.
         self.ensure_rasters(&scene);
@@ -1709,7 +1953,7 @@ impl Canvas {
         snapshot.scale(scale as f32, scale as f32);
         #[allow(clippy::cast_possible_truncation)]
         snapshot.translate(&graphene::Point::new(-canvas.x as f32, -canvas.y as f32));
-        self.imp().append_document(&snapshot, &scene);
+        self.imp().append_document_part(&snapshot, &scene, part);
 
         // `None` for a document with nothing in it at all -- a scene whose texture failed
         // to load and which has no objects yet. Not an error; nothing to encode.
@@ -1721,6 +1965,26 @@ impl Canvas {
         #[allow(clippy::cast_precision_loss)]
         let bounds = graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
         Some(renderer.render_texture(&node, Some(&bounds)))
+    }
+
+    /// `ANN-33`'s marks: the annotations' nodes, in document units with the canvas's origin
+    /// at zero, for a vector surface to draw. `None` when there are none. A lens among them
+    /// takes its pixels from `picture`, the picture flattened at `scale` with its
+    /// redactions (`ANN-32`).
+    #[must_use]
+    pub fn marks_node(
+        &self,
+        picture: &gtk::gdk::Texture,
+        scale: f64,
+    ) -> Option<gtk::gsk::RenderNode> {
+        let scene = self.imp().scene.borrow().clone()?;
+        let canvas = scene.canvas;
+        let snapshot = gtk::Snapshot::new();
+        #[allow(clippy::cast_possible_truncation)]
+        snapshot.translate(&graphene::Point::new(-canvas.x as f32, -canvas.y as f32));
+        let lens = nodes::Lens::Flattened { picture, canvas, scale };
+        self.imp().append_document_with(&snapshot, &scene, nodes::Part::Marks, lens);
+        snapshot.to_node()
     }
 
     /// The document's size in pixels at `scale`, which is what an export will be.
@@ -1848,7 +2112,11 @@ impl Canvas {
         let count = sorted.len();
         #[allow(clippy::cast_precision_loss)]
         let mean = sorted.iter().sum::<f64>() / count as f64;
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let p95_at = ((count as f64) * 0.95).ceil() as usize;
         let p95 = sorted.get(p95_at.saturating_sub(1)).copied().unwrap_or(mean);
         let max = sorted.last().copied().unwrap_or(mean);
@@ -1928,19 +2196,14 @@ impl Canvas {
 
     #[must_use]
     pub fn measured_bounds(&self, object: &Object) -> Bounds {
-        let Geometry::Text { pos, text, style, font_size, align, width } = &object.geometry
+        let Geometry::Text { pos, text, style, font_size, align, width, .. } = &object.geometry
         else {
             return object.bounds();
         };
         let layout = self.imp().text_layout(text, *style, *font_size, *align, *width);
         let (w, h) = layout.pixel_size();
         let pad = if style.is_outlined() { 0.0 } else { style.plate_padding_em() * font_size };
-        Bounds::new(
-            pos.x - pad,
-            pos.y - pad,
-            f64::from(w) + pad * 2.0,
-            f64::from(h) + pad * 2.0,
-        )
+        Bounds::new(pos.x - pad, pos.y - pad, f64::from(w) + pad * 2.0, f64::from(h) + pad * 2.0)
     }
 
     /// Where `spec/05` §4.1's handles are, in document coordinates.
@@ -1952,12 +2215,15 @@ impl Canvas {
     pub fn grips_of(&self, object: &Object) -> Vec<Point> {
         match object.grips() {
             octosnap_scene::Grips::Ends(_) => object.points(),
-            octosnap_scene::Grips::Box => {
+            octosnap_scene::Grips::Box | octosnap_scene::Grips::BoxAndTip => {
                 let b = self.measured_bounds(object);
-                octosnap_scene::Handle::ALL
+                let mut grips: Vec<Point> = octosnap_scene::Handle::ALL
                     .into_iter()
                     .map(|handle| handle.position(b))
-                    .collect()
+                    .collect();
+                // `ANN-29`'s tip, or `ANN-32`'s spot, is the ninth, after the eight.
+                grips.extend(object.points());
+                grips
             }
             octosnap_scene::Grips::None => Vec::new(),
         }

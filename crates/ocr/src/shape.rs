@@ -117,6 +117,36 @@ pub fn shape(words: Vec<Word>) -> Shaped {
     Shaped { paragraphs: paragraphs(lines) }
 }
 
+/// The boxes in rows, each row read left to right, in the order their first boxes come
+/// top to bottom: [`rows`] with the boxes kept, for what has to know where each one is
+/// (`sensitive`, `live`).
+pub(crate) fn rows_of(words: &[Word]) -> Vec<Vec<&Word>> {
+    let mut sorted: Vec<&Word> =
+        words.iter().filter(|w| !w.bounds.is_empty() && !w.text.trim().is_empty()).collect();
+    sorted.sort_by_key(|w| (w.bounds.top(), w.bounds.left()));
+    let mut lines: Vec<(Bounds, Vec<&Word>)> = Vec::new();
+    for word in sorted {
+        let joins = lines.iter_mut().find(|(row, _)| {
+            let shorter = row.height.min(word.bounds.height);
+            f64::from(row.shared_rows(word.bounds)) > SHARE * f64::from(shorter)
+        });
+        match joins {
+            Some((row, members)) => {
+                *row = row.union(word.bounds);
+                members.push(word);
+            }
+            None => lines.push((word.bounds, vec![word])),
+        }
+    }
+    lines
+        .into_iter()
+        .map(|(_, mut members)| {
+            members.sort_by_key(|w| w.bounds.left());
+            members
+        })
+        .collect()
+}
+
 /// Boxes that share enough rows to be the same line of type, joined left to right.
 ///
 /// Always with a single space, even where the boxes nearly touch. A detector splits a line
@@ -179,7 +209,7 @@ fn rows(words: Vec<Word>) -> Vec<Line> {
 /// and a line with no descender all have honest heights that are not the page's. The lower
 /// median of the pitches, because the pitch of a paragraph break is always the longer one
 /// and a page of two paragraphs would otherwise take the break as its own ordinary pitch.
-fn paragraphs(lines: Vec<Line>) -> Vec<Paragraph> {
+pub(crate) fn paragraphs(lines: Vec<Line>) -> Vec<Paragraph> {
     if lines.is_empty() {
         return Vec::new();
     }
@@ -250,10 +280,7 @@ mod tests {
 
     /// One line of type per entry, laid out down the page at the tops given.
     fn page(lines: &[(i32, &str)]) -> Vec<Word> {
-        lines
-            .iter()
-            .map(|(top, text)| word(text, 10, *top, 8 * text.len() as i32, INK))
-            .collect()
+        lines.iter().map(|(top, text)| word(text, 10, *top, 8 * text.len() as i32, INK)).collect()
     }
 
     #[test]
@@ -270,10 +297,8 @@ mod tests {
     fn a_heading_whose_box_touches_the_line_under_it_is_still_two_lines() {
         // A 42 px heading whose box reaches two pixels into the 14 px line below it: they
         // share rows, but only two of the shorter one's fourteen.
-        let shaped = shape(vec![
-            word("Heading", 10, 100, 200, 42),
-            word("body text", 10, 140, 100, INK),
-        ]);
+        let shaped =
+            shape(vec![word("Heading", 10, 100, 200, 42), word("body text", 10, 140, 100, INK)]);
         assert_eq!(shaped.text(Breaks::Keep), "Heading\nbody text");
     }
 
@@ -435,9 +460,8 @@ mod tests {
         words.reverse();
         let shaped = shape(words);
 
-        let joined = |within: &str| {
-            page.iter().map(|p| p.join(within)).collect::<Vec<_>>().join("\n\n")
-        };
+        let joined =
+            |within: &str| page.iter().map(|p| p.join(within)).collect::<Vec<_>>().join("\n\n");
         assert_eq!(shaped.paragraphs.len(), page.len(), "{shaped:?}");
         assert_eq!(shaped.text(Breaks::Keep), joined("\n"));
         assert_eq!(shaped.text(Breaks::Join), joined(" "));

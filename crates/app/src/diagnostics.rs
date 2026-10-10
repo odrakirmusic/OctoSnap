@@ -299,7 +299,10 @@ pub async fn write_report(path: &Path) -> io::Result<()> {
     match &connection {
         Some(connection) => {
             out.push_str(&format!("GNOME Shell {}\n", shell_version(connection).await));
-            out.push_str(&format!("Extension: {}\n", crate::setup::status(connection).await.describe()));
+            out.push_str(&format!(
+                "Extension: {}\n",
+                crate::setup::status(connection).await.describe()
+            ));
         }
         None => out.push_str("No session bus connection.\n"),
     }
@@ -338,13 +341,17 @@ pub async fn write_report(path: &Path) -> io::Result<()> {
 
     let dir = directory();
     section(&mut out, "This run's log (the end of it)");
-    out.push_str(&tail(&dir.join(LOG), REPORT_TAIL).unwrap_or_else(|e| format!("Not readable: {e}\n")));
+    out.push_str(
+        &tail(&dir.join(LOG), REPORT_TAIL).unwrap_or_else(|e| format!("Not readable: {e}\n")),
+    );
 
     section(&mut out, "The last run that did not end cleanly");
     match crashes(&dir).last() {
         Some(crash) => {
             out.push_str(&format!("{}\n\n", crash.display()));
-            out.push_str(&tail(crash, REPORT_TAIL).unwrap_or_else(|e| format!("Not readable: {e}\n")));
+            out.push_str(
+                &tail(crash, REPORT_TAIL).unwrap_or_else(|e| format!("Not readable: {e}\n")),
+            );
         }
         None => out.push_str("None kept.\n"),
     }
@@ -598,10 +605,7 @@ mod tests {
             fs::write(dir.path().join(LOG), format!("run {hour}\n")).expect("write");
         }
         begin(dir.path(), "2026-09-25-060000").expect("begin");
-        let kept: Vec<String> = crashes(dir.path())
-            .iter()
-            .map(|path| read(path))
-            .collect();
+        let kept: Vec<String> = crashes(dir.path()).iter().map(|path| read(path)).collect();
         assert_eq!(kept, ["run 3\n", "run 4\n", "run 5\n"]);
     }
 

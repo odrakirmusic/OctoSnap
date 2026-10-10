@@ -26,8 +26,9 @@ Two things to know first:
 9. [The history](#the-history)
 10. [Desktop pets](#desktop-pets)
 11. [Without the mouse](#without-the-mouse)
-12. [Changing the shortcuts](#changing-the-shortcuts)
-13. [Every shortcut](#every-shortcut)
+12. [From a terminal](#from-a-terminal)
+13. [Changing the shortcuts](#changing-the-shortcuts)
+14. [Every shortcut](#every-shortcut)
 
 ## Starting a capture
 
@@ -81,6 +82,12 @@ System screenshot keys → **Use Them for OctoSnap** gives them to OctoSnap:
 These three keys then replace the Ctrl+Alt+Super keys of those three actions. **Give Them
 Back to GNOME** undoes both halves. GNOME's screen recorder key, Ctrl+Shift+Alt+R, stays
 GNOME's either way. The welcome window has the same button.
+
+### The app's icon
+
+Right-click OctoSnap's icon in the dash or the app grid for All-In-One, Capture Area,
+Capture Fullscreen, Capture Window and History. History opens the strip, and leaves it open
+when it is up already.
 
 ## Choosing what to capture
 
@@ -240,6 +247,10 @@ copied it: a picture, or an image file copied in Files, which keeps its name. A 
 in the GIF editor. Its shortcut has no key until you give it one in Settings, and
 `octosnap open-from-clipboard` does the same from a terminal.
 
+Files opens pictures in it too: OctoSnap is one of Open With's choices for PNG, JPEG, WebP
+and GIF files. Choose several and each opens in an editor of its own, a GIF in the GIF
+editor.
+
 ### Tools
 
 | Key | Tool |
@@ -253,12 +264,15 @@ in the GIF editor. Its shortcut has no key until you give it one in Settings, an
 | P | Pencil |
 | H | Highlighter |
 | S | Spotlight |
+| M | Magnifier |
 | C | Counter |
 | B | Pixelate |
 | X | Crop |
+| Shift+X | Cut Out |
 | G | Shows or hides the Background panel |
+| F9 | Shows or hides the Layers panel |
 | 1 to 6 | The size, for the tool and for what is selected |
-| [ and ] | Less or more of the intensity on the options row: how strongly Pixelate hides, or how dark Spotlight makes the rest |
+| [ and ] | Less or more of what the options row sets by degrees: how strongly Pixelate hides, how dark Spotlight makes the rest, or how much the Magnifier enlarges |
 
 ### Drawing
 
@@ -269,10 +283,41 @@ in the GIF editor. Its shortcut has no key until you give it one in Settings, an
 | Alt, while drawing those | Draws from the centre out |
 | Shift, with the pencil or the highlighter | Draws a straight line |
 | Ctrl, with the highlighter | Stops it keeping to the line of text |
+| The pencil held still for half a second, the button still down | Makes the stroke the line, rectangle or ellipse it was meant to be, with that tool's handles. Anything else stays a stroke |
 | A click, with Counter or Text | Places one |
+| A drag, with Counter | Places a badge with a pointer to where you let go |
+| A drag, with Magnifier | Puts the lens where you let go, joined to the spot you pressed on. A click puts it over the spot |
 
 A drag too short to be meant is dropped. The eyedropper on the options row picks a colour
 from anywhere on the screen, and Esc puts it away.
+
+With a pen, the pencil's line is as wide as you press, from a quarter of its width at the
+lightest touch to nearly twice it pressed hard. A mouse or a finger draws it one width.
+
+### Pointers and badges
+
+A badge or a label can point at something. Drag out of a badge as you place it, or
+right-click a badge or a label and choose Add Pointer, then drag the tip: it is the ninth
+handle. Remove Pointer takes it away.
+
+Badges keep counting. Delete one and the ones after it close the gap. A new number, given
+with a double-click or Edit Number in its menu, moves the badge in the count: give the 4
+of four badges a 2, and the old 2 and 3 become 3 and 4. The counter's starting number moves
+them all. Each is one step to undo.
+
+### The magnifier
+
+A magnifier is a lens showing a spot of the picture enlarged, joined to it by a line. Drag
+from the spot to where the lens should be, or click to put the lens over the spot and drag
+it off later. The options row sets how much it enlarges, 1.5 to 4 times. The lens shows the
+picture as it is, redactions and all, and none of the marks. Drag the lens to move it, and
+the spot's ring, or its handle, to choose what it shows.
+
+### Cut Out
+
+Shift+X, then drag down over the part of the picture to remove: the band across the picture
+goes, and what was below it moves up to close the gap. Drag across instead to remove a band
+down the picture. Marks on the band go with it. Ctrl+Z puts it all back.
 
 ### Text
 
@@ -281,6 +326,39 @@ Enter finishes, Shift+Enter starts a new line, and Esc finishes too, keeping the
 Double-click a piece of text to change it, and a counter to change its number. The
 options row's alignment menu lines a label's lines up on the left, in the centre or on the
 right.
+
+### Redact Sensitive Info
+
+**Redact Sensitive Info**, on the Pixelate tool's options row, or in the canvas menu with
+nothing selected, reads the picture and covers what should not be shared: e-mail
+addresses, phone numbers, IBANs and card numbers, IP addresses, keys and tokens, and
+passwords, in a link or after a label such as `Password:`. Each is covered in the Pixelate
+tool's style, all of them one step to undo, and they are left selected, so a wrong one is a
+Delete away. Names, postal addresses and faces are not among them: look over the rest
+yourself. A second press covers only what is not covered already.
+
+### Text in the picture
+
+**Select Text in the Picture**, the last button of the group at the top left, or
+Ctrl+Shift+T, reads the picture and lets you select its words:
+
+| Key or gesture | What it does |
+|---|---|
+| Drag across the words | Selects them, in reading order |
+| Ctrl+A | Selects every word |
+| Ctrl+C | Copies the words selected, or the picture when there are none |
+| A click on a link or an e-mail address | Opens it. The canvas menu has Open Link or Write an E-mail |
+| Esc | Lets go of the selection, and then of the words |
+
+Only the words a saved copy shows take part. A word under a redaction, a filled box, a
+pasted picture, a badge, a label with a box or a magnifier's lens, outside the crop or a
+background's frame, or in what a spotlight at its darkest makes black, is not marked,
+selected or copied, and a link under one does not open.
+
+Any tool, a crop, the button or Ctrl+Shift+T again puts the words away. Both of these read
+the picture on this computer, with the language pack [text
+recognition](#text-recognition) uses. Without one, their message has a Language Packs
+button, which opens Settings on the packs.
 
 ### Selecting and arranging
 
@@ -307,30 +385,46 @@ right.
 A picture you paste or drop onto the picture is picked up by its edge. Inside it, you draw
 as you do anywhere else.
 
+### Layers
+
+F9, or the Layers button at the bottom, opens a list of every mark, the one on top first.
+
+| Key or gesture | What it does |
+|---|---|
+| Click a row | Selects the mark. Ctrl+click adds one more, and Shift+click the rows between |
+| Drag a row onto another | Moves the mark to that place |
+| Alt+Up, Alt+Down | Moves the selected mark one place up or down |
+| The eye | Hides the mark, or shows it again. A hidden mark is kept, and is in no export |
+| The padlock | Locks the mark, or unlocks it. A locked mark cannot be selected, here or on the picture |
+
+A mark moves only among its own kind: badges are always over shapes, and shapes over
+spotlights and redactions. A redaction cannot be hidden, so what it covers never shows.
+
 Dropping an image from another app into the middle of the picture adds it as an object.
-Dropping it at one of the four edges places it beside the picture.
-
-### Background
-
-G opens the Background panel: a gradient, a wallpaper, a blur of the picture or a colour
-behind it, with padding, shadow and corners. Its Presets menu saves a set of these by name.
-Presets → Default Preset chooses one for every new screenshot. Its Add to New Screenshots
-item, like Settings → Annotate → Add the default background, turns that off and on again.
-Shift as you confirm a capture leaves it off that one.
+Dropping it at one of the four edges places it beside the picture. On a background, the
+background grows around both pictures.
 
 ### Crop
 
 Press X, then drag the handles, move the rectangle, or drag a new one. Enter or the Crop
 button applies it, and Esc, Cancel or another tool leaves it. The crop's own toolbar can
-keep the proportions and snap to the picture's edges and to objects.
+keep the proportions and snap to the picture's edges and to objects. A crop dragged past
+the picture's edge makes room there, in the colour of the picture's border.
 
 ### Background
 
 Press G for the Background panel, on the left: a gradient, a wallpaper, the picture
 blurred or a plain colour behind the picture, with a margin, round corners and a shadow.
 The background is always at the back. What you draw shows over it, on the margin as well
-as on the picture. None, at the top of the panel, takes the background away again, margin,
-corners and shadow too, and gives the picture back its own size.
+as on the picture. After a crop, the background goes around the crop, and around the room
+a crop past the picture made too, with whatever you put there. None, at the top of the
+panel, takes the background away again, margin, corners and shadow too, and gives the
+picture back its own size.
+
+The Presets menu saves a set of these by name. Presets → Default Preset chooses one for
+every new screenshot. Its Add to New Screenshots item, like Settings → Annotate → Add the
+default background, turns that off and on again. Shift as you confirm a capture leaves it
+off that one.
 
 ### Looking around
 
@@ -342,6 +436,8 @@ corners and shadow too, and gives the picture back its own size.
 | Ctrl+scroll | Zooms in or out at the pointer |
 | Scroll, Shift+scroll | Moves up and down, or sideways |
 | Middle-drag, or Space held while dragging | Moves the view |
+| Two fingers pinched, on a touchscreen or a touchpad | Zoom in or out between them |
+| Two fingers moved together, on a touchscreen | Moves the view. A second finger stops what the first had started |
 | F11 | Fullscreen |
 
 ### Finishing
@@ -349,7 +445,7 @@ corners and shadow too, and gives the picture back its own size.
 | Key or button | What it does |
 |---|---|
 | Ctrl+S, Save | Saves it. The editor stays open |
-| Ctrl+Shift+S, Save as… | Asks where to save it. A project (`.octosnap`) keeps the marks editable |
+| Ctrl+Shift+S, Save as… | Asks where to save it. A project (`.octosnap`) keeps the marks editable. An SVG or a PDF keeps them sharp at any size, over the picture, with the redactions part of the picture |
 | Copy | Copies the picture. Its menu has Copy Text |
 | Drag me | Drag the picture into another app |
 | Ctrl+Shift+P, Pin | Pins it to the screen and closes the editor |
@@ -489,16 +585,30 @@ strip of what you have captured, with the newest selected.
 | Enter, or Restore | Brings the selected captures back as cards |
 | Double-click | Opens it in the editor |
 | Ctrl+C | Copies it, when one is selected |
-| Delete, Backspace | Deletes the selected captures from the history, without asking. A file you saved elsewhere stays |
+| Typing, or Ctrl+F | Searches, by what the captures say (below) |
+| Delete | Deletes the selected captures from the history, without asking. A file you saved elsewhere stays |
 | Right-click | The menu: Restore, Annotate, Pin to the Screen, Copy, Save As… and Delete from History |
 | The wheel | Scrolls the strip |
-| Esc, or the shortcut again | Closes it |
+| Esc | Ends the search, and then closes the strip |
+| The shortcut again | Closes it |
 
 The chips at the top show only screenshots, videos, GIFs or projects. A capture is a
 project when the editor closed on what its project file holds, and opening it from here
 opens the project, its marks still editable. The strip's menu has Select All and Clear
 History…, which asks first. Settings → Advanced → Capture history chooses how
 long closed captures are kept, and whether saved ones stay in the history as well.
+
+A search finds a capture by what it says, by its app and by its window's title: every word
+you type has to be in one of them, whatever the case. The newest match is selected, so
+Enter brings it back. OctoSnap reads each capture on this computer to know what it says, with
+the language pack text recognition uses: a new one within seconds, and older ones while the
+computer is idle and not saving power. Recordings and GIFs are not read. Settings → Advanced
+→ Capture history → Find captures by their text turns the reading off, and deletes what it
+read.
+
+The Activities overview's search finds captures the same way. Choosing one brings it back
+as a card, and choosing OctoSnap itself there opens the strip on the same search. GNOME's
+Settings → Search chooses whether OctoSnap's results are shown there.
 
 ## Desktop pets
 
@@ -563,6 +673,29 @@ Every capture can be taken from the keyboard:
 With nothing selected, the first arrow or Tab in All-In-One starts from the middle of the
 screen. The top-bar menu, which GNOME's Ctrl+Alt+Tab reaches, has every capture too.
 
+## From a terminal
+
+`octosnap` drives the app from a terminal or a script. In the Flatpak it is `flatpak run
+io.github.odrakirmusic.OctoSnap`, followed by the same words. `octosnap --help` lists the
+commands, and built natively each has a man page (`man octosnap-capture`) and completions
+for bash, zsh and fish.
+
+| Command | What it does |
+|---|---|
+| `octosnap capture` | Capture Area. `--mode` chooses another kind of capture, `--rect X,Y,W,H` takes that area without the overlay, and `--action` what happens to it |
+| `octosnap capture -o shot.png` | Writes the capture to `shot.png`, and does nothing else with it. `-o -` writes it to standard output, for a pipe |
+| `octosnap annotate FILE` | Opens a picture or a project in the editor. `pin FILE` pins it, and `add-overlay FILE` makes it a card. `-` for the file reads a picture from standard input |
+| `octosnap text FILE` | Reads the text in a picture, and copies it |
+| `octosnap record` | Records a GIF |
+
+The Flatpak writes only into Pictures and Videos, so there `-o -` and the shell's `>` put
+the picture anywhere else: `flatpak run io.github.odrakirmusic.OctoSnap capture -o - >
+shot.png`.
+
+Settings → Advanced → Allow the command line and octosnap:// links, when it is off, makes
+`octosnap capture` and the links refuse. No menu has Quit: `gapplication action
+io.github.odrakirmusic.OctoSnap quit` stops the app.
+
 ## Changing the shortcuts
 
 In Settings → Shortcuts, click an action's key, and press the new one:
@@ -579,7 +712,9 @@ A change works at once, with nothing to restart.
 
 ## Every shortcut
 
-In the groups Settings shows them in.
+Ctrl+? in any of OctoSnap's windows lists every key it answers, with a search field, as do
+Keyboard Shortcuts in the editor's canvas menu and the button on Settings → Shortcuts. The
+shortcuts that work anywhere are these, in the groups Settings shows them in.
 
 | Settings group | Action | Key |
 |---|---|---|

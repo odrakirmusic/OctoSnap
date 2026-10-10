@@ -246,19 +246,14 @@ impl Editor {
         // they are about to type -- "you click; it's not shown where".
         let shown = if text.is_empty() { "M" } else { text.as_str() };
         let pad = editing.style.plate_padding_em() * editing.font_size;
-        let caret_room = if text.is_empty() {
-            editing.font_size * 1.5
-        } else {
-            editing.font_size * 0.6
-        };
+        let caret_room =
+            if text.is_empty() { editing.font_size * 1.5 } else { editing.font_size * 0.6 };
         let natural = self
             .canvas
             .layout_for(shown, editing.style, editing.font_size, editing.align, None)
             .pixel_size();
-        let canvas_right = self
-            .canvas
-            .scene()
-            .map_or(f64::INFINITY, |scene| scene.canvas.x + scene.canvas.width);
+        let canvas_right =
+            self.canvas.scene().map_or(f64::INFINITY, |scene| scene.canvas.x + scene.canvas.width);
         let room = (canvas_right - editing.pos.x - pad).max(editing.font_size * 3.0);
         let wrap = match editing.width {
             Some(width) => Some(width),
@@ -271,7 +266,8 @@ impl Editor {
         } else {
             gtk::WrapMode::None
         });
-        let layout = self.canvas.layout_for(shown, editing.style, editing.font_size, editing.align, wrap);
+        let layout =
+            self.canvas.layout_for(shown, editing.style, editing.font_size, editing.align, wrap);
         let (w, h) = layout.pixel_size();
         let width = wrap.unwrap_or(f64::from(w) + caret_room);
         #[allow(clippy::cast_possible_truncation)]
@@ -397,6 +393,7 @@ impl Editor {
                         font_size: editing.font_size,
                         align: editing.align,
                         width: editing.effective_width,
+                        tail: None,
                     },
                 )))
             }
@@ -511,4 +508,3 @@ fn to_gdk(color: octosnap_scene::Rgba) -> gtk::gdk::RGBA {
 fn now_seconds() -> u64 {
     glib::real_time().unsigned_abs() / 1_000_000
 }
-

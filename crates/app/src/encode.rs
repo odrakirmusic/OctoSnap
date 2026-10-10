@@ -63,7 +63,9 @@ pub fn peek(path: &Path) -> (Option<ImageFormat>, Option<(u32, u32)>) {
     let format = ImageFormat::sniff(head);
     let size = (format == Some(ImageFormat::Png) && head.len() == 24 && head[12..16] == *b"IHDR")
         .then(|| {
-            let be = |at: usize| u32::from_be_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]]);
+            let be = |at: usize| {
+                u32::from_be_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]])
+            };
             (be(16), be(20))
         });
     (format, size)
@@ -83,7 +85,8 @@ pub fn transcode(
     quality: u8,
     replace: bool,
 ) -> Result<(), EncodeError> {
-    let (rgba, width, height) = crate::history::thumbnail::decode_png(source).map_err(EncodeError::Decode)?;
+    let (rgba, width, height) =
+        crate::history::thumbnail::decode_png(source).map_err(EncodeError::Decode)?;
     let (Ok(w), Ok(h)) = (u32::try_from(width), u32::try_from(height)) else {
         return Err(EncodeError::Decode(format!("{width} x {height} is too large")));
     };
@@ -125,10 +128,13 @@ pub fn encode(
             // below it, where the user has asked for a small file over a sharp one.
             let mut encoder = jpeg_encoder::Encoder::new(out, quality.clamp(1, 100));
             encoder.set_optimized_huffman_tables(true);
-            encoder.encode(&rgb, w, h, jpeg_encoder::ColorType::Rgb).map_err(|e| failed(e.to_string()))
+            encoder
+                .encode(&rgb, w, h, jpeg_encoder::ColorType::Rgb)
+                .map_err(|e| failed(e.to_string()))
         }
         ImageFormat::Webp => {
-            if width == 0 || height == 0 || width > format.max_side() || height > format.max_side() {
+            if width == 0 || height == 0 || width > format.max_side() || height > format.max_side()
+            {
                 return Err(failed(format!("{width} x {height} is past WebP's 16384 a side")));
             }
             // Always with its alpha: an opaque screenshot written without it measured the
@@ -147,7 +153,8 @@ pub fn flatten(rgba: &[u8], matte: [u8; 3]) -> Vec<u8> {
     for &[r, g, b, a] in rgba.as_chunks::<4>().0 {
         let alpha = u32::from(a);
         for (channel, behind) in [r, g, b].iter().zip(matte) {
-            let mixed = (u32::from(*channel) * alpha + u32::from(behind) * (255 - alpha) + 127) / 255;
+            let mixed =
+                (u32::from(*channel) * alpha + u32::from(behind) * (255 - alpha) + 127) / 255;
             rgb.push(u8::try_from(mixed).unwrap_or(u8::MAX));
         }
     }
@@ -175,11 +182,21 @@ fn write_atomically(
     write: impl FnOnce(&mut dyn Write) -> Result<(), EncodeError>,
 ) -> Result<(), EncodeError> {
     let target = if replace { part_beside(destination) } else { destination.to_path_buf() };
-    let file = File::options().write(true).create_new(!replace).create(true).truncate(true).open(&target)?;
+    let file = File::options()
+        .write(true)
+        .create_new(!replace)
+        .create(true)
+        .truncate(true)
+        .open(&target)?;
     let mut out = BufWriter::new(file);
-    let written = write(&mut out)
-        .and_then(|()| out.flush().map_err(EncodeError::from))
-        .and_then(|()| if replace { std::fs::rename(&target, destination).map_err(EncodeError::from) } else { Ok(()) });
+    let written =
+        write(&mut out).and_then(|()| out.flush().map_err(EncodeError::from)).and_then(|()| {
+            if replace {
+                std::fs::rename(&target, destination).map_err(EncodeError::from)
+            } else {
+                Ok(())
+            }
+        });
     if written.is_err() {
         // Best effort: the write's own error is the one worth reporting.
         let _ = std::fs::remove_file(&target);
@@ -190,7 +207,8 @@ fn write_atomically(
 /// `.<name>.part` in the destination's folder: hidden, and on the same filesystem, so the
 /// rename that finishes the write is atomic.
 fn part_beside(destination: &Path) -> PathBuf {
-    let name = destination.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name =
+        destination.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     destination.with_file_name(format!(".{name}.part"))
 }
 
@@ -277,7 +295,8 @@ pub(crate) mod tests {
             let rgba = picture(33, 17, alpha);
             let mut bytes = Vec::new();
             encode(&rgba, 33, 17, ImageFormat::Webp, 0, &mut bytes).expect("encode");
-            let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(&bytes)).expect("a WebP");
+            let mut decoder =
+                image_webp::WebPDecoder::new(std::io::Cursor::new(&bytes)).expect("a WebP");
             assert_eq!(decoder.dimensions(), (33, 17));
             assert!(decoder.has_alpha());
             let mut back = vec![0; decoder.output_buffer_size().expect("size")];
@@ -338,7 +357,10 @@ pub(crate) mod tests {
         let source = dir.path().join("not-a.png");
         std::fs::write(&source, b"\x89PNG\r\n\x1a\n fake").expect("write");
         let fresh = dir.path().join("Shot.webp");
-        assert!(matches!(transcode(&source, &fresh, ImageFormat::Webp, 90, false), Err(EncodeError::Decode(_))));
+        assert!(matches!(
+            transcode(&source, &fresh, ImageFormat::Webp, 90, false),
+            Err(EncodeError::Decode(_))
+        ));
         assert!(!fresh.exists());
 
         let kept = dir.path().join("Kept.jpg");
@@ -350,7 +372,8 @@ pub(crate) mod tests {
         });
         assert!(refused.is_err());
         assert_eq!(std::fs::read(&kept).expect("read"), b"the old file");
-        let left: Vec<_> = std::fs::read_dir(dir.path()).expect("list").flatten().map(|e| e.file_name()).collect();
+        let left: Vec<_> =
+            std::fs::read_dir(dir.path()).expect("list").flatten().map(|e| e.file_name()).collect();
         assert_eq!(left.len(), 2, "{left:?}");
     }
 }

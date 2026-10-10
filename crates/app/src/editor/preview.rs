@@ -160,11 +160,7 @@ mod imp {
                 }
                 Kind::Stroke(level) => {
                     // §2: "the active one filled in the accent colour".
-                    let color = if self.active.get() {
-                        accent
-                    } else {
-                        widget.color()
-                    };
+                    let color = if self.active.get() { accent } else { widget.color() };
                     #[allow(clippy::cast_possible_truncation)]
                     let width = stroke_width(level) as f32;
                     let inset = width / 2.0 + 2.0;
@@ -195,7 +191,12 @@ mod imp {
                 #[allow(clippy::cast_precision_loss)]
                 snapshot.append_color(
                     &dark,
-                    &graphene::Rect::new(col as f32 * CHECKER, row as f32 * CHECKER, CHECKER, CHECKER),
+                    &graphene::Rect::new(
+                        col as f32 * CHECKER,
+                        row as f32 * CHECKER,
+                        CHECKER,
+                        CHECKER,
+                    ),
                 );
             }
         }

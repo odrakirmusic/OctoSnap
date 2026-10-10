@@ -17,20 +17,24 @@
 //! - [`Shaped::text`] is the two shortcuts of `spec/07` §2.1, keep or join.
 //! - [`links`] finds the URLs and e-mail addresses in the text that comes out.
 //! - [`qr`] reads the QR codes that `spec/07` §2.1 says are copied *instead* of text.
+//! - [`sensitive`] finds what is not for sharing, and where it is (`ANN-26`).
+//! - [`live`] is the text as words to select, copy and follow (`ANN-27`).
 
 pub mod engine;
+pub mod image;
 pub mod links;
+pub mod live;
 pub mod packs;
 pub mod qr;
-pub mod image;
 pub mod rapid;
+pub mod sensitive;
 pub mod shape;
 
 pub use engine::{Engine, Pack, Read, Reader, Script};
-pub use rapid::Rapid;
+pub use image::Gray;
 pub use links::{Link, LinkKind, links};
 pub use qr::{Code, codes};
-pub use image::Gray;
+pub use rapid::Rapid;
 pub use shape::{Breaks, Line, Paragraph, Shaped, shape};
 
 /// What can go wrong between a capture and its text.

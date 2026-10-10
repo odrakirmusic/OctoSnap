@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use octosnap_scene::crop::{Aspect, Crop, Drag, FillKind, Targets};
-use octosnap_scene::{Bounds, Command, Geometry, Grip, Object, Point, Style, handle};
+use octosnap_scene::{Bounds, Command, Grip, Point, handle};
 
 use octosnap_scene::tool::Control;
 
@@ -47,12 +47,14 @@ pub struct CropState {
     /// What the controls were set to last time, so re-entering crop mode does not throw
     /// away the aspect the user chose (`Crop::again`).
     pub memory: Cell<Option<Crop>>,
-    /// The gesture in flight and the document point the press landed on.
+    /// The gesture in flight, the document point the press landed on, and the rect as
+    /// the press found it.
     ///
     /// The press point is kept because `GtkGestureDrag` reports *offsets*, and a crop
     /// drag is absolute -- the same reason `Gesture::Moving` keeps the objects as they
-    /// were rather than accumulating deltas.
-    pub drag: Cell<Option<(Drag, Point)>>,
+    /// were rather than accumulating deltas. The rect is what a drag given up puts back
+    /// (`ANN-34`'s pinch).
+    pub drag: Cell<Option<(Drag, Point, Bounds)>>,
     /// The stack whose pages are the two toolbars, and the crop page's own widgets.
     pub stack: RefCell<Option<gtk::Stack>>,
     pub bar: RefCell<Option<adw::WrapBox>>,
@@ -83,12 +85,14 @@ impl Editor {
         // what is left of that group here is the background -- which §1 also settles: "No
         // side panel is present by default. The background tool is a toolbar button that
         // opens its panel on demand."
-        // One linked group for both, as §1 has it, rather than two groups of one.
+        // One linked group, as §1 has it, rather than groups of one. `ANN-27`'s Select
+        // Text joins it: it acts on the picture, as the other two do (D180).
         let canvas_actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         canvas_actions.add_css_class("linked");
         canvas_actions.set_valign(gtk::Align::Center);
         canvas_actions.append(&self.build_background_button());
         canvas_actions.append(&self.build_add_image_button());
+        canvas_actions.append(&self.live_text_button());
         edit.append(&canvas_actions);
         edit.append(&self.build_tool_strip());
         edit.append(&self.build_options_row());
@@ -143,8 +147,12 @@ impl Editor {
         // `Picker` is a Rust struct beside one, so a rebuild that kept them would leave a
         // session that dragged a hundred crops holding a hundred pickers.
         self.pickers.borrow_mut().clear();
-        let crop = self.crop.active.get().unwrap_or_else(|| Crop::new(Bounds::new(0.0, 0.0, 0.0, 0.0), true));
-        let original = self.base_bounds();
+        let crop = self
+            .crop
+            .active
+            .get()
+            .unwrap_or_else(|| Crop::new(Bounds::new(0.0, 0.0, 0.0, 0.0), true));
+        let original = self.original();
 
         // §2's three crop controls, built from the same `Control` table every other row is
         // built from -- so the row that is wrong is wrong in the crate with the test.
@@ -179,7 +187,7 @@ impl Editor {
             let editor = Rc::downgrade(self);
             swap.connect_clicked(move |_| {
                 let Some(editor) = editor.upgrade() else { return };
-                let original = editor.base_bounds();
+                let original = editor.original();
                 editor.edit_crop(|crop| crop.swap_orientation(original));
             });
         }
@@ -191,8 +199,10 @@ impl Editor {
             let editor = Rc::downgrade(self);
             let other = h_field.downgrade();
             w_field.connect_value_changed(move |field| {
-                let (Some(editor), Some(other)) = (editor.upgrade(), other.upgrade()) else { return };
-                let original = editor.base_bounds();
+                let (Some(editor), Some(other)) = (editor.upgrade(), other.upgrade()) else {
+                    return;
+                };
+                let original = editor.original();
                 let numbers = (field.value(), other.value());
                 editor.edit_crop(|crop| crop.set_custom(numbers, original));
             });
@@ -201,8 +211,10 @@ impl Editor {
             let editor = Rc::downgrade(self);
             let other = w_field.downgrade();
             h_field.connect_value_changed(move |field| {
-                let (Some(editor), Some(other)) = (editor.upgrade(), other.upgrade()) else { return };
-                let original = editor.base_bounds();
+                let (Some(editor), Some(other)) = (editor.upgrade(), other.upgrade()) else {
+                    return;
+                };
+                let original = editor.original();
                 let numbers = (other.value(), field.value());
                 editor.edit_crop(|crop| crop.set_custom(numbers, original));
             });
@@ -242,8 +254,8 @@ impl Editor {
             let editor = Rc::downgrade(self);
             reset.connect_clicked(move |_| {
                 let Some(editor) = editor.upgrade() else { return };
-                let original = editor.base_bounds();
-                editor.edit_crop(|crop| crop.reset(original));
+                let picture = editor.picture();
+                editor.edit_crop(|crop| crop.reset(picture));
             });
         }
         bar.append(&reset);
@@ -319,7 +331,11 @@ impl Editor {
 
     /// One of `spec/05` §2's three crop controls.
     fn crop_control(self: &Rc<Self>, control: Control) -> gtk::Widget {
-        let crop = self.crop.active.get().unwrap_or_else(|| Crop::new(Bounds::new(0.0, 0.0, 0.0, 0.0), true));
+        let crop = self
+            .crop
+            .active
+            .get()
+            .unwrap_or_else(|| Crop::new(Bounds::new(0.0, 0.0, 0.0, 0.0), true));
         match control {
             Control::CropAspect => {
                 let button = gtk::MenuButton::builder()
@@ -347,7 +363,7 @@ impl Editor {
                     let Some(editor) = editor.upgrade() else { return };
                     let index = usize::try_from(row.index()).unwrap_or(0);
                     let Some(aspect) = Aspect::ALL.get(index).copied() else { return };
-                    let original = editor.base_bounds();
+                    let original = editor.original();
                     editor.edit_crop(|crop| crop.set_aspect(aspect, original));
                     if let Some(popover) = list.ancestor(gtk::Popover::static_type()) {
                         popover.downcast_ref::<gtk::Popover>().map(gtk::Popover::popdown);
@@ -459,7 +475,8 @@ impl Editor {
                     let editor = Rc::downgrade(self);
                     let weak = Rc::downgrade(&picker);
                     picker.connect_pick(move || {
-                        let (Some(editor), Some(picker)) = (editor.upgrade(), weak.upgrade()) else {
+                        let (Some(editor), Some(picker)) = (editor.upgrade(), weak.upgrade())
+                        else {
                             return;
                         };
                         editor.begin_picking(&picker);
@@ -478,17 +495,23 @@ impl Editor {
         }
     }
 
-    /// The base image's rect, which is what [`Aspect::Original`] and the expansion test
-    /// are both relative to.
-    /// The picture's rect, where §4.11's crop measures it: in canvas coordinates.
+    /// The capture as taken, whose proportions are [`Aspect::Original`]'s: the base image's
+    /// rect, as the drag's own ratio has it (`crop_motion`).
+    fn original(&self) -> Bounds {
+        self.canvas.scene().map_or(Bounds::new(0.0, 0.0, 0.0, 0.0), |scene| scene.base.bounds())
+    }
+
+    /// The picture where the canvas shows it, which §4.11's crop rect, the canvas's, is
+    /// measured against: what Reset goes back to and what a crop expands past
+    /// (`Scene::picture_in_canvas`, D190).
     ///
-    /// Not `scene.base.bounds()` any more, because `spec/05` §4.13's background moves the
-    /// picture inside a larger canvas -- so the Original aspect preset and "does this
-    /// crop expand past the picture" both have to ask where the picture actually is.
-    fn base_bounds(&self) -> Bounds {
-        self.canvas.scene().map_or(Bounds::new(0.0, 0.0, 0.0, 0.0), |scene| {
-            scene.placement().apply_bounds(scene.picture_rect())
-        })
+    /// It was the rect a background would lay out, which is the canvas with no background:
+    /// after a crop Reset went back to that crop, and the preview filled what the picture
+    /// still had behind it, while Enter, asking the base image's rect, did not.
+    fn picture(&self) -> Bounds {
+        self.canvas
+            .scene()
+            .map_or(Bounds::new(0.0, 0.0, 0.0, 0.0), |scene| scene.picture_in_canvas())
     }
 
     /// Whether crop mode is open.
@@ -517,11 +540,7 @@ impl Editor {
         // it on a menu button that then eats Enter and the arrow keys. The crop frame is
         // what the keyboard is for in this mode.
         self.canvas.grab_focus();
-        tracing::debug!(
-            aspect = crop.aspect.label(),
-            snap = crop.snap,
-            "crop mode entered"
-        );
+        tracing::debug!(aspect = crop.aspect.label(), snap = crop.snap, "crop mode entered");
     }
 
     /// `spec/05` §4.11: "Esc cancels". Leaves the document exactly as it was.
@@ -581,42 +600,9 @@ impl Editor {
 
         // `spec/05` §11 item 7: "Crop beyond the image expands the canvas with the
         // detected colour."
-        if octosnap_scene::crop::expands(after, scene.base.bounds())
-            && let Some(fill) = crop.expand.resolve(self.canvas.border_color())
-        {
-            let existing =
-                scene.objects().iter().find(|o| matches!(o.geometry, Geometry::Background { .. }));
-            let plain = octosnap_scene::BackgroundParams::plain(fill);
-            match existing {
-                // One background, recoloured. A second would draw over the first and
-                // §4.13 describes the background as a property of the document.
-                //
-                // Only one this crop could have made, though. §4.13's tool puts a
-                // gradient or a wallpaper in the same slot, and one of those already
-                // covers whatever the crop expanded into -- repainting it with the median
-                // of the border pixels would throw away the background the user chose to
-                // fill an area that is not empty.
-                Some(was) if is_plain(was) && was.style.color != fill => {
-                    let mut now = was.clone();
-                    now.style.color = fill;
-                    now.geometry = Geometry::Background { params: plain, source: None };
-                    commands.push(Command::Change {
-                        id: was.id,
-                        before: Box::new(was.clone()),
-                        after: Box::new(now),
-                    });
-                }
-                Some(_) => {}
-                None => {
-                    let lowest = scene.objects().iter().map(|o| o.z).min().unwrap_or(0);
-                    commands.push(Command::Add(Object::new(
-                        lowest.saturating_sub(1),
-                        now_seconds(),
-                        Style::new(fill, 1, false),
-                        Geometry::Background { params: plain, source: None },
-                    )));
-                }
-            }
+        let fill = crop.expand.resolve(self.canvas.border_color());
+        if let Some(edit) = octosnap_scene::crop::fill(&scene, after, fill, now_seconds()) {
+            commands.push(edit);
         }
 
         let grew = commands.len();
@@ -642,7 +628,7 @@ impl Editor {
             y = after.y,
             width = after.width,
             height = after.height,
-            expanded = octosnap_scene::crop::expands(after, scene.base.bounds()),
+            expanded = octosnap_scene::crop::expands(after, scene.picture_in_canvas()),
             edits = grew,
             "crop applied"
         );
@@ -675,9 +661,11 @@ impl Editor {
     /// expansion preview are three views of one rect and they cannot be allowed to drift.
     fn refresh_crop(self: &Rc<Self>) {
         let Some(crop) = self.crop.active.get() else { return };
+        let Some(scene) = self.canvas.scene() else { return };
         let rect = crop.rect.normalised();
         self.canvas.set_crop(Some(rect));
-        let fill = if octosnap_scene::crop::expands(rect, self.base_bounds()) {
+        // What Enter would fill, asked as Enter asks it (`crop::fill`).
+        let fill = if octosnap_scene::crop::fills(&scene, rect) {
             crop.expand.resolve(self.canvas.border_color())
         } else {
             None
@@ -712,7 +700,7 @@ impl Editor {
             y,
             width = w,
             height = h,
-            expands = octosnap_scene::crop::expands(rect, self.base_bounds()),
+            expands = octosnap_scene::crop::expands(rect, scene.picture_in_canvas()),
             fill = fill.map_or_else(|| "none".to_owned(), |c| c.to_hex()),
             wx,
             wy,
@@ -735,13 +723,13 @@ impl Editor {
             // been dragged into a corner is escaped without a Reset.
             Grip::Outside => Drag::New { from: at },
         };
-        self.crop.drag.set(Some((drag, at)));
+        self.crop.drag.set(Some((drag, at, crop.rect)));
         true
     }
 
     /// A motion in crop mode, in **widget**-space offsets from the press.
     pub(super) fn crop_motion(self: &Rc<Self>, dx: f64, dy: f64) {
-        let Some((drag, press)) = self.crop.drag.get() else { return };
+        let Some((drag, press, _)) = self.crop.drag.get() else { return };
         let Some(mut crop) = self.crop.active.get() else { return };
         let Some(scene) = self.canvas.scene() else { return };
         let zoom = self.canvas.zoom();
@@ -762,6 +750,17 @@ impl Editor {
         // and the rect being another, and the lock's sensitivity follows the aspect, so
         // the bar is rebuilt once per gesture rather than once per motion event.
         self.rebuild_crop_bar();
+    }
+
+    /// A crop drag given up, as when a pinch takes the fingers (`ANN-34`): the frame goes
+    /// back to where the press found it.
+    pub(super) fn crop_cancel_drag(self: &Rc<Self>) {
+        let Some((_, _, was)) = self.crop.drag.take() else { return };
+        if let Some(mut crop) = self.crop.active.get() {
+            crop.rect = was;
+            self.crop.active.set(Some(crop));
+            self.refresh_crop();
+        }
     }
 
     /// The resize cursor over a handle, so the frame says what it will do.
@@ -803,14 +802,6 @@ fn wrapping_row() -> adw::WrapBox {
 /// re-renders its text from its value whenever the value is set or the adjustment
 /// changes, so a `set_text("")` came straight back as the adjustment's lower bound and
 /// the field read `1`. `output` is the hook that decides what the number *looks* like.
-/// Whether a background object is one the crop's own expansion could have made.
-fn is_plain(object: &Object) -> bool {
-    match &object.geometry {
-        Geometry::Background { params, .. } => params.is_plain(),
-        _ => false,
-    }
-}
-
 fn ratio_field(value: Option<f64>, sensitive: bool) -> gtk::SpinButton {
     let field = gtk::SpinButton::with_range(1.0, 9999.0, 1.0);
     field.set_digits(0);

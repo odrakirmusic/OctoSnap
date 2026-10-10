@@ -7,18 +7,20 @@
 //! `io.github.odrakirmusic.OctoSnap`, answers `Ping`, and shows the PNG it is handed by
 //! `HandleCapture`. No overlay, no editor, no recorder -- those are the later milestones.
 
-mod editor;
 mod actions;
 mod background;
 mod bundled;
 mod capture_window;
 mod diagnostics;
+mod editor;
 mod encode;
+mod first_frame;
 mod flow;
 mod gif_editor;
 mod handshake;
 mod history;
 mod import;
+mod launcher;
 mod notify;
 mod ocr;
 mod pets;
@@ -28,10 +30,12 @@ mod qao;
 mod recording;
 mod remote_settings;
 mod scrolling;
+mod search_provider;
 mod service;
 mod session;
 mod settings;
 mod setup;
+mod shortcuts_dialog;
 mod update;
 
 use std::cell::RefCell;
@@ -192,7 +196,8 @@ fn main() -> glib::ExitCode {
     if settings::sandboxed() {
         flags |= gio::ApplicationFlags::ALLOW_REPLACEMENT;
     }
-    let app = adw::Application::builder().application_id(APP_BUS_NAME).flags(flags).build();
+    // An `AdwApplication` that exports `SYS-13`'s search provider with its name (D181).
+    let app: adw::Application = search_provider::Application::new(APP_BUS_NAME, flags).upcast();
     // GApplication quits when its name is taken. Said in the log, since the run's end
     // otherwise looks like any other.
     app.connect_name_lost(|_| {
@@ -273,7 +278,9 @@ fn main() -> glib::ExitCode {
             {
                 // `ACT-01`'s `pin`: the plan pins where it was taken, with no card behind it.
                 let pins = Rc::clone(&pinned);
-                built.set_pinner(Box::new(move |capture, saved_to| pins.pin_as_captured(capture, saved_to)));
+                built.set_pinner(Box::new(move |capture, saved_to| {
+                    pins.pin_as_captured(capture, saved_to)
+                }));
             }
             overlay.set_pins(pinned);
             {
@@ -343,6 +350,20 @@ fn main() -> glib::ExitCode {
                 open.extend(crate::recording::render::rendering());
                 open
             });
+            // `HIS-05` (D181): the captures read for search, and what was read deleted when
+            // Settings turns that off.
+            history::reader::start(&store, config.clone());
+            {
+                let store = Rc::clone(&store);
+                let config = config.clone();
+                let was = std::cell::Cell::new(config.history_read_text());
+                config.clone().connect_changed(move || {
+                    let now = config.history_read_text();
+                    if was.replace(now) && !now {
+                        store.forget_texts();
+                    }
+                });
+            }
             HISTORY.with(|h| *h.borrow_mut() = Some(store));
             QAO.with(|q| *q.borrow_mut() = Some(overlay));
 
@@ -440,6 +461,7 @@ fn place_reading_pill(flow: SharedFlow, pill: Rc<ocr::pill::Pill>, rect: Option<
                 ocr::pill::on_a_monitor(monitor.work_area, size)
             }
         };
+        pill.first_frame().await;
         match flow.bridge().place_window(&path, "reader", &Placement::At { x, y }, 0).await {
             Ok(landed) => debug!(?landed, "the reading indicator is on screen"),
             Err(e) => warn!("could not place the reading indicator: {e}"),
@@ -480,7 +502,11 @@ fn register_icons() {
         .map(|tool| tool.icon())
         .chain(octosnap_scene::ArrowStyle::ALL.iter().map(|style| style.icon()))
         .chain(octosnap_scene::RedactStyle::ALL.iter().map(|style| style.icon()))
-        .chain(octosnap_core::ScrollDirection::ALL.iter().map(|&way| scrolling::controls::icon_for(way)))
+        .chain(
+            octosnap_core::ScrollDirection::ALL
+                .iter()
+                .map(|&way| scrolling::controls::icon_for(way)),
+        )
         .collect();
     let missing: Vec<&str> = names.iter().copied().filter(|name| !theme.has_icon(name)).collect();
     if missing.is_empty() {

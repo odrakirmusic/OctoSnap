@@ -74,10 +74,7 @@ mod tests {
 
     #[test]
     fn stop_only_stops_a_recording() {
-        assert_eq!(
-            Phase::Recording.after(Command::Stop),
-            Some(Phase::Processing)
-        );
+        assert_eq!(Phase::Recording.after(Command::Stop), Some(Phase::Processing));
         assert_eq!(Phase::Idle.after(Command::Stop), None);
         assert_eq!(Phase::Countdown.after(Command::Stop), None);
         assert_eq!(Phase::Processing.after(Command::Stop), None);
@@ -93,12 +90,7 @@ mod tests {
 
     #[test]
     fn wire_names_round_trip() {
-        for phase in [
-            Phase::Idle,
-            Phase::Countdown,
-            Phase::Recording,
-            Phase::Processing,
-        ] {
+        for phase in [Phase::Idle, Phase::Countdown, Phase::Recording, Phase::Processing] {
             assert_eq!(Phase::from_wire(phase.as_wire()), Some(phase));
         }
         assert_eq!(Phase::from_wire("paused"), None);

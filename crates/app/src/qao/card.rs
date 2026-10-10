@@ -16,12 +16,12 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use adw::prelude::*;
 use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
-use adw::prelude::*;
 use octosnap_core::qao::{
-    self, AutoClose, CardId, CardKind, CloseTimer, Controls, EditAction, Edge, Holds,
+    self, AutoClose, CardId, CardKind, CloseTimer, Controls, Edge, EditAction, Holds,
     PrimaryAction, Size,
 };
 use octosnap_core::{CaptureResult, Rect};
@@ -306,10 +306,7 @@ impl Card {
         // content without acknowledging configuration". Measured: with the transform
         // removed the warning disappears entirely, so the transform is the cause and the
         // size request is the fix. `docs/decisions.md` D33.
-        stage.set_size_request(
-            card_size.width + 2 * band,
-            card_size.height + 2 * band,
-        );
+        stage.set_size_request(card_size.width + 2 * band, card_size.height + 2 * band);
 
         window.set_child(Some(&stage));
 
@@ -625,7 +622,8 @@ impl Card {
                 let Some(widget) = find_named(&card.body, name) else { continue };
                 let Some(bounds) = widget.compute_bounds(&stage) else { continue };
                 let rect = enclosing_rect(bounds);
-                let reading = format!("{name} {},{} {}x{}", rect.x, rect.y, rect.width, rect.height);
+                let reading =
+                    format!("{name} {},{} {}x{}", rect.x, rect.y, rect.width, rect.height);
                 if !qao::reachable(card.card_size, rect) {
                     dead.push(reading.clone());
                 }
@@ -1174,7 +1172,7 @@ impl Card {
         crate::history::thumbnail::texture_of(&self.capture.path)
     }
 
-    /// `spec/04` §3's keyboard vocabulary, scoped to this window.
+    /// `spec/04` §3's keyboard vocabulary ([`bindings`]), scoped to this window.
     ///
     /// Scoped, not global: these are the shortcuts that work *because* the pointer is
     /// over the card and the extension has lent it the keyboard. The global equivalents
@@ -1183,32 +1181,7 @@ impl Card {
         let controller = gtk::ShortcutController::new();
         controller.set_scope(gtk::ShortcutScope::Local);
 
-        // No Ctrl+U: `spec/04` §3's Upload waits for a sharing provider (`spec/11` M8),
-        // and a key that only says so is the control `spec/13` #19 rules out (D133).
-        let bindings: [(&str, CardAction); 8] = [
-            ("<Control>c", |c| c.ask(|host, id| host.copy(id))),
-            // `spec/04` §3: Copy closes the card "unless Alt is held". The host reads Alt
-            // when it copies, as it does for the pill; this is the chord that reaches it
-            // from the keyboard (D137).
-            ("<Control><Alt>c", |c| c.ask(|host, id| host.copy(id))),
-            ("<Control>s", |c| c.ask(|host, id| host.save(id))),
-            ("<Control>e", |c| c.ask(|host, id| host.annotate(id))),
-            ("<Control>w", |c| c.ask(|host, id| host.close(id, CloseReason::UserClosed))),
-            ("Escape", |c| c.ask(|host, id| host.close(id, CloseReason::UserClosed))),
-            ("Delete", |c| c.ask(|host, id| host.trash(id))),
-            // `spec/04` §3: "Space | Quick preview: open the file in the system image
-            // viewer (Loupe) or a lightweight in-app previewer". For a GIF that previewer
-            // is its editor, which opens playing; a still goes to the image viewer (D137).
-            ("space", |c| {
-                if c.controls.kind == CardKind::Gif {
-                    c.ask(|host, id| host.annotate(id));
-                } else {
-                    c.ask(|host, id| host.preview(id));
-                }
-            }),
-        ];
-
-        for (accel, action) in bindings {
+        for (accel, _, action) in bindings() {
             // A card without an edit corner does not answer its shortcut either.
             if accel == "<Control>e" && !self.controls.has_edit() {
                 continue;
@@ -1412,6 +1385,41 @@ fn enclosing_rect(bounds: gtk::graphene::Rect) -> Rect {
     Rect::new(left as i32, top as i32, (right - left) as i32, (bottom - top) as i32)
 }
 
+/// `spec/04` §3's keys on a card, what they do in the shortcuts dialog's words (`SYS-12`,
+/// D179), and what they run.
+///
+/// No Ctrl+U: `spec/04` §3's Upload waits for a sharing provider (`spec/11` M8), and a key
+/// that only says so is the control `spec/13` #19 rules out (D133).
+fn bindings() -> [(&'static str, &'static str, CardAction); 8] {
+    [
+        ("<Control>c", "Copy", |c| c.ask(|host, id| host.copy(id))),
+        // `spec/04` §3: Copy closes the card "unless Alt is held". The host reads Alt when
+        // it copies, as it does for the pill; this is the chord that reaches it from the
+        // keyboard (D137).
+        ("<Control><Alt>c", "Copy and Keep the Card", |c| c.ask(|host, id| host.copy(id))),
+        ("<Control>s", "Save", |c| c.ask(|host, id| host.save(id))),
+        ("<Control>e", "Annotate", |c| c.ask(|host, id| host.annotate(id))),
+        ("<Control>w", "Close", |c| c.ask(|host, id| host.close(id, CloseReason::UserClosed))),
+        ("Escape", "Close", |c| c.ask(|host, id| host.close(id, CloseReason::UserClosed))),
+        ("Delete", "Delete", |c| c.ask(|host, id| host.trash(id))),
+        // `spec/04` §3: "Space | Quick preview: open the file in the system image viewer
+        // (Loupe) or a lightweight in-app previewer". For a GIF that previewer is its
+        // editor, which opens playing; a still goes to the image viewer (D137).
+        ("space", "Preview", |c| {
+            if c.controls.kind == CardKind::Gif {
+                c.ask(|host, id| host.annotate(id));
+            } else {
+                c.ask(|host, id| host.preview(id));
+            }
+        }),
+    ]
+}
+
+/// The cards' keys for the shortcuts dialog (`SYS-12`, D179), from the list they bind.
+pub(crate) fn shortcut_rows() -> Vec<(String, String)> {
+    bindings().into_iter().map(|(accel, title, _)| (accel.to_owned(), title.to_owned())).collect()
+}
+
 /// Finds a named descendant. Used to wire buttons after the tree is built, which keeps
 /// the layout function free of every callback the card needs.
 fn find_named(root: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
@@ -1599,7 +1607,12 @@ fn build_scrim(controls: Controls, size: Size) -> gtk::Box {
         let top = gtk::CenterBox::new();
         top.set_start_widget(Some(&corner("close", "window-close-symbolic", "Close", true)));
         if controls.has_pin() {
-            top.set_end_widget(Some(&corner("pin", "view-pin-symbolic", "Pin to the Screen", false)));
+            top.set_end_widget(Some(&corner(
+                "pin",
+                "view-pin-symbolic",
+                "Pin to the Screen",
+                false,
+            )));
         }
 
         // The bottom-right corner is `spec/04` §1's Upload, and empty until there is
@@ -1748,11 +1761,7 @@ mod tests {
                 Tier::Pills => 2 * SCRIM_PAD + 2 * PILL_H + PILL_GAP,
                 Tier::Bare => 0,
             };
-            assert!(
-                size.height >= needed,
-                "step {step} -> {size:?} cannot hold {:?}",
-                tier(size)
-            );
+            assert!(size.height >= needed, "step {step} -> {size:?} cannot hold {:?}", tier(size));
         }
     }
 

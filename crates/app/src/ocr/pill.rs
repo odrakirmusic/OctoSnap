@@ -23,6 +23,8 @@ use std::rc::Rc;
 use adw::prelude::*;
 use octosnap_core::Rect;
 
+use crate::first_frame::FirstFrame;
+
 /// `spec/07` §2.1's voice, in the present tense: the notification that follows says
 /// "Text copied".
 const SAYS: &str = "Reading text\u{2026}";
@@ -31,6 +33,7 @@ const SAYS: &str = "Reading text\u{2026}";
 #[derive(Debug)]
 pub struct Pill {
     window: gtk::ApplicationWindow,
+    first_frame: FirstFrame,
 }
 
 impl Pill {
@@ -72,8 +75,15 @@ impl Pill {
         // Mapped, not presented, like the recorder's pill: the extension gives it a place
         // and it never takes focus from what the user is reading.
         window.set_visible(true);
+        let first_frame = FirstFrame::of(&window);
 
-        Rc::new(Self { window })
+        Rc::new(Self { window, first_frame })
+    }
+
+    /// Resolves once the pill has painted its first frame, when the extension can find it
+    /// to place (D176).
+    pub fn first_frame(&self) -> FirstFrame {
+        self.first_frame.clone()
     }
 
     /// The GTK object path the extension addresses this window by (`docs/spikes/01-02`).

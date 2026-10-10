@@ -17,10 +17,13 @@
 //! fill is a background object (`spec/05` §5.3 group 0, below the base image), which
 //! keeps it undoable and inside `objects.json` rather than in a side channel.
 
+use crate::background::BackgroundParams;
+use crate::command::Command;
 use crate::geometry::{Bounds, Point};
 use crate::handle::{self, Handle};
+use crate::object::{Geometry, Object, ObjectKind};
 use crate::scene::Scene;
-use crate::style::Rgba;
+use crate::style::{Rgba, Style};
 
 /// How close an edge has to come to a target before it snaps, in image units.
 ///
@@ -105,9 +108,9 @@ impl Aspect {
     #[must_use]
     pub fn preset_for(numbers: (f64, f64)) -> Option<Self> {
         let wanted = numbers.0 / numbers.1;
-        Self::ALL.into_iter().find(|aspect| {
-            aspect.numbers().is_some_and(|(w, h)| (w / h - wanted).abs() < 1e-6)
-        })
+        Self::ALL
+            .into_iter()
+            .find(|aspect| aspect.numbers().is_some_and(|(w, h)| (w / h - wanted).abs() < 1e-6))
     }
 }
 
@@ -231,7 +234,11 @@ impl Crop {
     pub fn ratio(&self, original: Bounds) -> Option<f64> {
         let ratio = match self.aspect {
             Aspect::Freeform => {
-                if self.locked { self.rect.width / self.rect.height } else { return None }
+                if self.locked {
+                    self.rect.width / self.rect.height
+                } else {
+                    return None;
+                }
             }
             Aspect::Original => original.width / original.height,
             Aspect::Custom => self.custom.0 / self.custom.1,
@@ -385,21 +392,26 @@ pub struct Targets {
 }
 
 impl Targets {
-    /// The image's edges, the canvas's, and every object's bounds.
+    /// The picture's edges, the canvas's, and every shown object's bounds, all in the
+    /// canvas's coordinates, which are the crop rect's.
     ///
-    /// The canvas as well as the base image, because after one crop they differ and both
-    /// are meaningful: the image's edge is where the picture stops and the canvas's is
-    /// where the export does.
+    /// The canvas as well as the picture, because after one crop they differ and both are
+    /// meaningful: the picture's edge is where it stops and the canvas's is where the export
+    /// does. Both where the canvas shows them: on a background the picture is in its frame
+    /// ([`Scene::picture_in_canvas`]) and a mark where the placement draws it, a margin away
+    /// from their own coordinates, and offered there they snapped the crop to edges nothing
+    /// showed (D190). A hidden mark is not drawn (`ANN-30`), so it has no edge to line up with.
     #[must_use]
     pub fn of(scene: &Scene) -> Self {
+        let place = scene.placement();
         let mut targets = Self::default();
-        for rect in [scene.base.bounds(), scene.canvas] {
+        for rect in [scene.picture_in_canvas(), scene.canvas] {
             targets.push(rect);
         }
-        for object in scene.objects() {
+        for object in scene.render_list() {
             let bounds = object.bounds();
             if !bounds.is_empty() {
-                targets.push(bounds);
+                targets.push(place.apply_bounds(bounds));
             }
         }
         targets.x.sort_by(f64::total_cmp);
@@ -442,10 +454,7 @@ pub fn snapped(value: f64, targets: &[f64]) -> f64 {
 #[must_use]
 pub fn snap_translation(rect: Bounds, targets: &Targets) -> (f64, f64) {
     let r = rect.normalised();
-    (
-        best_nudge(&[r.x, r.x + r.width], &targets.x),
-        best_nudge(&[r.y, r.y + r.height], &targets.y),
-    )
+    (best_nudge(&[r.x, r.x + r.width], &targets.x), best_nudge(&[r.y, r.y + r.height], &targets.y))
 }
 
 fn best_nudge(edges: &[f64], targets: &[f64]) -> f64 {
@@ -471,6 +480,56 @@ pub fn expands(rect: Bounds, base: Bounds) -> bool {
         || r.y + r.height > b.y + b.height + EPSILON
 }
 
+/// Whether an applied crop of `rect` fills what it adds (`spec/05` §11 item 7): it reaches
+/// past the picture ([`Scene::picture_in_canvas`]), and no background but the crop's own fill
+/// is there already. One the panel laid out paints the whole canvas, whatever a crop adds to
+/// it. What the crop rect previews and what Enter applies both ask this.
+#[must_use]
+pub fn fills(scene: &Scene, rect: Bounds) -> bool {
+    expands(rect, scene.picture_in_canvas())
+        && scene.objects().iter().all(|o| o.kind() != ObjectKind::Background || o.is_crop_fill())
+}
+
+/// What an applied crop of `rect` does to the fill behind the picture, when it [`fills`]
+/// and there is a colour to fill with: the crop's own fill, added or recoloured. `created`
+/// is a new fill's `spec/05` §5.1 time.
+#[must_use]
+pub fn fill(scene: &Scene, rect: Bounds, color: Option<Rgba>, created: u64) -> Option<Command> {
+    if !fills(scene, rect) {
+        return None;
+    }
+    let fill = color?;
+    let existing = scene.objects().iter().find(|o| o.is_crop_fill());
+    let geometry =
+        Geometry::Background { params: BackgroundParams::plain(fill), source: None, fill: None };
+    match existing {
+        // One fill, recoloured. A second would draw over the first and §4.13 describes the
+        // background as a property of the document.
+        //
+        // Only the crop's own. §4.13's panel puts a gradient, a wallpaper or a plain colour in
+        // the same slot, laid out around the picture, and it already covers whatever the
+        // crop expanded into: repainting it with the median of the border pixels threw away
+        // the background the user chose, and for a plain colour over a crop it threw away
+        // the rect it laid out too, and the picture went back to the capture's corner (D190).
+        Some(was) if was.style.color != fill => {
+            let mut now = was.clone();
+            now.style.color = fill;
+            now.geometry = geometry;
+            Some(Command::Change {
+                id: was.id,
+                before: Box::new(was.clone()),
+                after: Box::new(now),
+            })
+        }
+        Some(_) => None,
+        None => {
+            let lowest = scene.objects().iter().map(|o| o.z).min().unwrap_or(0);
+            let style = Style::new(fill, 1, false);
+            Some(Command::Add(Object::new(lowest.saturating_sub(1), created, style, geometry)))
+        }
+    }
+}
+
 /// `spec/05` §4.11's "detected background colour (median of the border pixels)".
 ///
 /// Per channel, and the median rather than the mean for the reason §4.11 implies by
@@ -491,21 +550,14 @@ pub fn median_color(samples: &[Rgba]) -> Option<Rgba> {
         values.sort_by(f64::total_cmp);
         values.get(values.len() / 2).copied().unwrap_or(0.0)
     };
-    Some(Rgba::new(
-        channel(|c| c.r),
-        channel(|c| c.g),
-        channel(|c| c.b),
-        channel(|c| c.a),
-    ))
+    Some(Rgba::new(channel(|c| c.r), channel(|c| c.g), channel(|c| c.b), channel(|c| c.a)))
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::object::{Geometry, Object};
     use crate::scene::Base;
-    use crate::style::Style;
 
     fn base() -> Bounds {
         Bounds::new(0.0, 0.0, 1600.0, 900.0)
@@ -645,7 +697,10 @@ mod tests {
         c.snap = false;
         let targets = Targets { x: vec![0.0], y: vec![0.0] };
         let dragged = c.drag_to(
-            &Drag::Resize { handle: Handle::TopLeft, start: Bounds::new(100.0, 100.0, 400.0, 200.0) },
+            &Drag::Resize {
+                handle: Handle::TopLeft,
+                start: Bounds::new(100.0, 100.0, 400.0, 200.0),
+            },
             Point::new(3.0, 3.0),
             &targets,
             base(),
@@ -701,6 +756,131 @@ mod tests {
         }
         // Sorted and deduplicated, because two objects sharing an edge is normal.
         assert!(targets.x.windows(2).all(|w| w[0] < w[1]), "{:?}", targets.x);
+    }
+
+    /// A capture 400 by 300 with a background laid out around `source` at a margin of
+    /// `padding`.
+    fn on_a_background(source: Bounds, padding: f64) -> Scene {
+        let params = BackgroundParams { padding, ..BackgroundParams::default() };
+        crate::scene::laid_out(400.0, 300.0, source, params)
+    }
+
+    fn mark(bounds: Bounds) -> Object {
+        Object::new(1, 0, Style::default(), Geometry::Rect { bounds, radius: 0.0, filled: false })
+    }
+
+    fn offers(targets: &[f64], value: f64) -> bool {
+        targets.iter().any(|t| (t - value).abs() < 1e-9)
+    }
+
+    /// D190: the crop rect is the canvas's, and on a background the picture and the marks are
+    /// a margin away from where their own coordinates put them. They snap where they show.
+    #[test]
+    fn on_a_background_the_picture_and_the_marks_snap_where_the_canvas_shows_them() {
+        // A margin of 100: the canvas is 600 by 500, the picture in it at (100, 100).
+        let mut scene = on_a_background(Bounds::new(0.0, 0.0, 400.0, 300.0), 100.0);
+        scene.add(mark(Bounds::new(50.0, 60.0, 100.0, 40.0)));
+        let own = scene.objects().iter().map(Object::bounds).find(|b| !b.is_empty()).unwrap();
+        let drawn = scene.placement().apply_bounds(own);
+        let targets = Targets::of(&scene);
+        for x in [0.0, 100.0, 500.0, 600.0, drawn.x, drawn.x + drawn.width] {
+            assert!(offers(&targets.x, x), "{x} missing from {:?}", targets.x);
+        }
+        for y in [0.0, 100.0, 400.0, 500.0, drawn.y, drawn.y + drawn.height] {
+            assert!(offers(&targets.y, y), "{y} missing from {:?}", targets.y);
+        }
+        // Not where the picture's and the mark's own coordinates are, a margin off.
+        for x in [400.0, own.x, own.x + own.width] {
+            assert!(!offers(&targets.x, x), "{x} offered in {:?}", targets.x);
+        }
+        // A crop's right edge dragged to 3 short of the picture's snaps to it, and dragged to
+        // 3 short of 400, where nothing shows an edge, stays where it is put.
+        let crop = Crop::new(scene.canvas, true);
+        let right = |x: f64| {
+            let drag = Drag::Resize { handle: Handle::Right, start: crop.rect };
+            let dragged = crop.drag_to(&drag, Point::new(x, 250.0), &targets, scene.base.bounds());
+            dragged.x + dragged.width
+        };
+        assert!((right(497.0) - 500.0).abs() < 1e-9, "{}", right(497.0));
+        assert!((right(397.0) - 397.0).abs() < 1e-9, "{}", right(397.0));
+    }
+
+    /// D190: over a crop, the picture shows in its frame and the capture beyond it does not,
+    /// so the frame's edges snap and the capture's do not, wherever the placement puts them.
+    #[test]
+    fn over_a_crop_the_picture_snaps_to_its_frame() {
+        // Cropped to (100, 50, 200, 150), then a margin of 20: the canvas is 240 by 190, the
+        // frame at (20, 20), and the capture's own edges at -80 and 320 across.
+        let scene = on_a_background(Bounds::new(100.0, 50.0, 200.0, 150.0), 20.0);
+        let targets = Targets::of(&scene);
+        assert_eq!(targets.x, vec![0.0, 20.0, 220.0, 240.0]);
+        assert_eq!(targets.y, vec![0.0, 20.0, 170.0, 190.0]);
+    }
+
+    /// `ANN-30`: a hidden mark is not drawn, and its edges are not there to line up with.
+    #[test]
+    fn a_hidden_mark_offers_no_edges() {
+        let mut scene = Scene::new(Base::new("base.png", 400.0, 300.0, 1.0));
+        let mut hidden = mark(Bounds::new(50.0, 60.0, 100.0, 40.0));
+        hidden.hidden = true;
+        let edge = hidden.bounds().x;
+        scene.add(hidden);
+        assert!(!offers(&Targets::of(&scene).x, edge), "{:?}", Targets::of(&scene).x);
+    }
+
+    /// `spec/05` §11 item 7: a crop past the image adds the fill, and a second recolours it.
+    #[test]
+    fn a_crop_past_the_image_adds_its_fill_and_then_recolours_it() {
+        let (teal, grey) = (Rgba::new(0.0, 0.5, 0.5, 1.0), Rgba::new(0.5, 0.5, 0.5, 1.0));
+        let mut scene = Scene::new(Base::new("base.png", 400.0, 300.0, 1.0));
+        let wider = Bounds::new(-20.0, 0.0, 420.0, 300.0);
+        assert!(fill(&scene, Bounds::new(10.0, 10.0, 100.0, 100.0), Some(teal), 0).is_none());
+        assert!(fill(&scene, wider, None, 0).is_none(), "transparent adds nothing");
+        let Some(Command::Add(added)) = fill(&scene, wider, Some(teal), 0) else {
+            panic!("no fill was added")
+        };
+        assert_eq!(added.style.color, teal);
+        scene.add(added);
+        let Some(Command::Change { after, .. }) = fill(&scene, wider, Some(grey), 0) else {
+            panic!("the fill was not recoloured")
+        };
+        assert_eq!(after.style.color, grey);
+        assert!(fill(&scene, wider, Some(teal), 0).is_none(), "the same colour is no edit");
+    }
+
+    /// D190: a background the panel laid out covers what a crop adds to the canvas, and is the
+    /// user's. A plain colour with no margin was taken for the crop's own fill and replaced
+    /// by one with no source, which moved the picture from the crop's corner to the capture's.
+    #[test]
+    fn a_crop_past_the_canvas_leaves_the_panel_s_background_alone() {
+        use crate::background::Background;
+        let (teal, grey) = (Rgba::new(0.0, 0.5, 0.5, 1.0), Rgba::new(0.5, 0.5, 0.5, 1.0));
+        // A plain colour with no margin over a crop: the canvas is the crop, 200 by 150.
+        let source = Bounds::new(100.0, 50.0, 200.0, 150.0);
+        let color = Background::Color { color: teal };
+        let params = BackgroundParams { background: color, padding: 0.0, ..Default::default() };
+        let scene = crate::scene::laid_out(400.0, 300.0, source, params);
+        // A crop 20 past the canvas's left edge.
+        assert!(fill(&scene, Bounds::new(-20.0, 0.0, 220.0, 150.0), Some(grey), 0).is_none());
+        // A gradient's margin is no more the crop's to fill.
+        let gradient = on_a_background(Bounds::new(0.0, 0.0, 400.0, 300.0), 100.0);
+        let past = Bounds::new(-20.0, 0.0, 640.0, 500.0);
+        assert!(fill(&gradient, past, Some(grey), 0).is_none());
+    }
+
+    /// D190: after a crop the rest of the capture is still there, so a crop past the first
+    /// but inside the capture fills nothing, and one past the capture does. The preview asked
+    /// the canvas and showed a fill where Enter, asking the capture, applied the capture.
+    #[test]
+    fn after_a_crop_the_capture_beyond_it_is_not_filled() {
+        let mut scene = Scene::new(Base::new("base.png", 400.0, 300.0, 1.0));
+        scene.canvas = Bounds::new(100.0, 50.0, 200.0, 150.0);
+        let grey = Rgba::new(0.5, 0.5, 0.5, 1.0);
+        let past_the_crop = Bounds::new(50.0, 50.0, 250.0, 150.0);
+        assert!(expands(past_the_crop, scene.canvas), "it reaches past the first crop");
+        assert!(!fills(&scene, past_the_crop));
+        assert!(fill(&scene, past_the_crop, Some(grey), 0).is_none());
+        assert!(fills(&scene, Bounds::new(-20.0, 50.0, 320.0, 150.0)));
     }
 
     #[test]

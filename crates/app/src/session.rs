@@ -55,7 +55,9 @@ thread_local! {
 #[must_use]
 pub fn waiting() -> Option<String> {
     PLACE.with(|place| match place.borrow().as_ref() {
-        Some(Place::Asking(update) | Place::Client { update, .. }) => update.as_ref().map(|(v, _)| v.clone()),
+        Some(Place::Asking(update) | Place::Client { update, .. }) => {
+            update.as_ref().map(|(v, _)| v.clone())
+        }
         None => None,
     })
 }
@@ -67,7 +69,11 @@ pub fn waiting() -> Option<String> {
 /// # Errors
 /// No session manager took the registration: a nested shell has none, and a sandbox can
 /// have been refused the name. The session's end would then pass unseen.
-pub async fn write_at_end(connection: &gio::DBusConnection, version: &str, write: Write) -> Result<(), String> {
+pub async fn write_at_end(
+    connection: &gio::DBusConnection,
+    version: &str,
+    write: Write,
+) -> Result<(), String> {
     let update = (version.to_owned(), Rc::new(write));
     let ask = PLACE.with(|place| {
         let mut place = place.borrow_mut();
@@ -96,7 +102,11 @@ pub async fn write_at_end(connection: &gio::DBusConnection, version: &str, write
                 };
                 *place = Some(Place::Client { update, _signals: signals });
             });
-            info!(version, client = path, "registered with the session manager: the update is written when the session ends");
+            info!(
+                version,
+                client = path,
+                "registered with the session manager: the update is written when the session ends"
+            );
             Ok(())
         }
         Err(why) => {
@@ -108,7 +118,9 @@ pub async fn write_at_end(connection: &gio::DBusConnection, version: &str, write
 
 /// `RegisterClient`, and the subscription to what the session manager then says to the
 /// client it made.
-async fn register(connection: &gio::DBusConnection) -> Result<(String, gio::SignalSubscription), String> {
+async fn register(
+    connection: &gio::DBusConnection,
+) -> Result<(String, gio::SignalSubscription), String> {
     let reply = connection
         .call_future(
             Some(NAME),

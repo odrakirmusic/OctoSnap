@@ -15,7 +15,7 @@ use crate::background::BackgroundParams;
 use crate::geometry::{Bounds, Point, Segment};
 use crate::handle::Handle;
 use crate::style::{
-    ArrowHead, ArrowStyle, CounterStyle, RedactStyle, SpotlightShape, Style, TextStyle,
+    ArrowHead, ArrowStyle, CounterStyle, RedactStyle, Rgba, SpotlightShape, Style, TextStyle,
 };
 
 /// `spec/05` §5.1's `"id": "01J…"`: a ULID, so ids sort by creation and never collide
@@ -72,6 +72,8 @@ pub enum ObjectKind {
     Path,
     Spotlight,
     Counter,
+    /// `ANN-32`'s lens (`crate::magnifier`).
+    Magnifier,
     Redact,
     Image,
     Background,
@@ -129,6 +131,10 @@ pub enum Geometry {
         /// a wrapped block (`spec/05` §4.5's "drag handles").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         width: Option<f64>,
+        /// `ANN-29`'s pointer: where the tail's tip is, when the label has one
+        /// (`crate::callout`). Absent on every label from before there were tails.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail: Option<Point>,
     },
     Path {
         points: Vec<Point>,
@@ -147,6 +153,11 @@ pub enum Geometry {
         /// `3 × size` as it always was.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         band: Option<f64>,
+        /// `ANN-34`'s pen: the pressure at each point, 0 to 1, when a pen drew the stroke
+        /// (`crate::pressure`). Absent on a mouse's or a finger's stroke and on every one
+        /// from before, whose `objects.json` is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pressure: Option<Vec<f32>>,
     },
     Spotlight {
         shape: SpotlightShape,
@@ -160,6 +171,20 @@ pub enum Geometry {
         style: CounterStyle,
         /// The badge's radius, from `spec/05` §2's counter settings menu.
         radius: f64,
+        /// `ANN-29`'s pointer: where the tail's tip is, when the badge has one
+        /// (`crate::callout`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail: Option<Point>,
+    },
+    /// `ANN-32`'s magnifier (`crate::magnifier`): a lens of `radius` about `center` showing
+    /// the picture about `source`, `zoom` times larger.
+    Magnifier {
+        center: Point,
+        radius: f64,
+        /// The middle of the spot the lens enlarges: on the picture, where a move of the
+        /// lens leaves it.
+        source: Point,
+        zoom: f64,
     },
     Redact {
         bounds: Bounds,
@@ -187,6 +212,13 @@ pub enum Geometry {
         /// which is also what every project written before the tool existed means.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<Bounds>,
+        /// The crop's own fill (`spec/05` §11 item 7), kept when the panel laid this
+        /// background out in its slot: the picture's under the base image, over `source`
+        /// and inside the frame, so the area a crop past the image added shows as the crop
+        /// left it, and None gives the fill back (D192). Absent on every other background,
+        /// and in every project written before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fill: Option<Rgba>,
     },
     Crop {
         canvas_rect: Bounds,
@@ -209,8 +241,39 @@ pub enum Grips {
     /// The two ends of a line, plus a curve handle when there is one. The points are
     /// [`Object::points`], in that order.
     Ends(usize),
+    /// The eight, and a ninth on the tip of a callout's tail (`ANN-29`) or on a
+    /// magnifier's spot (`ANN-32`), which is [`Object::points`]' one point.
+    BoxAndTip,
     /// Nothing to drag. The background and the crop *are* the canvas.
     None,
+}
+
+/// What a mark paints over so that none of the picture shows through it (D188), from
+/// [`Object::paints_over`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Cover {
+    /// A redaction, a filled rectangle, a pasted image or a label's plate.
+    Rect(Bounds),
+    /// A badge, or a magnifier's lens.
+    Disc { center: Point, radius: f64 },
+}
+
+impl Cover {
+    /// Whether the cover reaches into `area`. Touching its edge is not reaching in.
+    #[must_use]
+    pub fn overlaps(self, area: Bounds) -> bool {
+        match self {
+            Self::Rect(bounds) => bounds.overlaps(area),
+            Self::Disc { center, radius } => {
+                // The nearest point of the area to the middle; `max`/`min` rather than
+                // `clamp`, which panics on a NaN a hand-edited project could hold.
+                let a = area.normalised();
+                let dx = center.x - center.x.max(a.x).min(a.x + a.width);
+                let dy = center.y - center.y.max(a.y).min(a.y + a.height);
+                dx * dx + dy * dy < radius * radius
+            }
+        }
+    }
 }
 
 /// `spec/05` §4.5's text alignment.
@@ -262,6 +325,12 @@ pub struct Object {
     pub style: Style,
     #[serde(default)]
     pub locked: bool,
+    /// `ANN-30`'s eye: a hidden mark is in the document and the layers panel, and nowhere
+    /// else -- not drawn, not exported, not under the pointer. Written only when true, so a
+    /// document with nothing hidden is the `objects.json` it always was. A redaction is
+    /// drawn whatever this says ([`Object::shown`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     /// Flattened, and adjacently tagged, so this contributes `type` and `geometry` --
     /// two keys, at the top level, exactly as §5.1 writes them. Neither collides with a
     /// common field, which is the whole reason the tagging is adjacent.
@@ -273,7 +342,51 @@ impl Object {
     /// A new object at `z`, stamped now.
     #[must_use]
     pub fn new(z: i32, created: u64, style: Style, geometry: Geometry) -> Self {
-        Self { id: ObjectId::new(), z, created, style, locked: false, geometry }
+        Self { id: ObjectId::new(), z, created, style, locked: false, hidden: false, geometry }
+    }
+
+    /// Whether the mark is drawn: not hidden (`ANN-30`), or a redaction, which is always in
+    /// the picture -- hidden, it would be the capture's secret showing (`layers::hideable`).
+    #[must_use]
+    pub fn shown(&self) -> bool {
+        !self.hidden || self.kind() == ObjectKind::Redact
+    }
+
+    /// What of the picture this mark paints over so that none of it shows (D188): a
+    /// redaction's rectangle, a filled rectangle's, a pasted image's, a label's plate, a
+    /// badge's disc, or a magnifier's lens with its ring. `measured` is the mark's bounds
+    /// as drawn, asked only of a label with a plate, whose size only the app can measure
+    /// ([`Self::bounds`] estimates it). `None` for a mark the picture still reads through,
+    /// and for one that is hidden, which is not drawn.
+    #[must_use]
+    pub fn paints_over(&self, measured: impl FnOnce() -> Bounds) -> Option<Cover> {
+        if !self.shown() {
+            return None;
+        }
+        match self.geometry {
+            Geometry::Redact { bounds, .. }
+            | Geometry::Image { bounds, .. }
+            | Geometry::Rect { bounds, filled: true, .. } => Some(Cover::Rect(bounds.normalised())),
+            Geometry::Text { style, .. } if style.has_plate() => {
+                Some(Cover::Rect(measured().normalised()))
+            }
+            // Always filled (`append_counter`), and a disc, not the square around it.
+            Geometry::Counter { center, radius, .. } => Some(Cover::Disc { center, radius }),
+            // The lens shows another part of the picture, and its ring is drawn on its edge.
+            Geometry::Magnifier { center, radius, .. } => {
+                Some(Cover::Disc { center, radius: radius + self.style.stroke_width() / 2.0 })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this is the fill a crop beyond the image leaves (`spec/05` §11 item 7, D52): a
+    /// plain colour with no source of its own. §4.13's panel stores the rect it lays out in
+    /// every background it makes, so this is the one background that lays out nothing: the
+    /// picture's coordinates stay the canvas's, and the area the crop added is the picture's.
+    #[must_use]
+    pub fn is_crop_fill(&self) -> bool {
+        matches!(&self.geometry, Geometry::Background { params, source: None, .. } if params.is_plain())
     }
 
     #[must_use]
@@ -287,6 +400,7 @@ impl Object {
             Geometry::Path { .. } => ObjectKind::Path,
             Geometry::Spotlight { .. } => ObjectKind::Spotlight,
             Geometry::Counter { .. } => ObjectKind::Counter,
+            Geometry::Magnifier { .. } => ObjectKind::Magnifier,
             Geometry::Redact { .. } => ObjectKind::Redact,
             Geometry::Image { .. } => ObjectKind::Image,
             Geometry::Background { .. } => ObjectKind::Background,
@@ -312,11 +426,13 @@ impl Object {
                 // The box around the *curve*, not around the control point: the control
                 // point is selection chrome and a quadratic never reaches it (D57).
                 let shaft = match ctrl {
-                    Some(c) => crate::geometry::quad_flatten(*start, *c, *end, crate::geometry::CURVE_LEGS)
-                        .into_iter()
-                        .fold(Bounds::new(start.x, start.y, 0.0, 0.0), |b, p| {
-                            b.union(Bounds::new(p.x, p.y, 0.0, 0.0))
-                        }),
+                    Some(c) => {
+                        crate::geometry::quad_flatten(*start, *c, *end, crate::geometry::CURVE_LEGS)
+                            .into_iter()
+                            .fold(Bounds::new(start.x, start.y, 0.0, 0.0), |b, p| {
+                                b.union(Bounds::new(p.x, p.y, 0.0, 0.0))
+                            })
+                    }
                     None => Segment::new(*start, *end).bounds(),
                 };
                 // The head reaches further than the shaft, and by exactly what the
@@ -334,7 +450,8 @@ impl Object {
                 let w = width.unwrap_or_else(|| {
                     // 0.6 em per character is the usual rule of thumb for a proportional
                     // face; the app measures for real.
-                    let longest = text.lines().map(str::chars).map(Iterator::count).max().unwrap_or(0);
+                    let longest =
+                        text.lines().map(str::chars).map(Iterator::count).max().unwrap_or(0);
                     longest as f64 * font_size * 0.6
                 });
                 Bounds::new(pos.x, pos.y, w, lines * font_size * 1.2)
@@ -343,7 +460,7 @@ impl Object {
             // empty rect by half a stroke invents a 1 px box at the image's origin, which
             // a marquee dragged over the top-left corner would then select. `None` folds
             // to empty; only a path that has points gets the stroke added.
-            Geometry::Path { points, highlighter, band, .. } => points
+            Geometry::Path { points, highlighter, band, pressure, .. } => points
                 .iter()
                 .copied()
                 .fold(None::<Bounds>, |acc, p| {
@@ -359,7 +476,7 @@ impl Object {
                     let half = if *highlighter {
                         crate::tool::highlighter_width(stroke, *band) / 2.0
                     } else {
-                        stroke / 2.0
+                        pressed_half(stroke, pressure.as_deref())
                     };
                     b.inflated(half)
                 }),
@@ -369,6 +486,10 @@ impl Object {
             | Geometry::Crop { canvas_rect: bounds } => *bounds,
             Geometry::Counter { center, radius, .. } => {
                 Bounds::new(center.x - radius, center.y - radius, radius * 2.0, radius * 2.0)
+            }
+            // The lens and its ring. The spot is a handle, as a callout's tip is.
+            Geometry::Magnifier { center, radius, .. } => {
+                crate::magnifier::lens(*center, *radius).inflated(stroke / 2.0)
             }
             // The background is the canvas, so it has no bounds of its own; the scene's
             // canvas rect is the answer and only the scene knows it.
@@ -405,9 +526,21 @@ impl Object {
             | Geometry::Redact { bounds, .. }
             | Geometry::Image { bounds, .. }
             | Geometry::Crop { canvas_rect: bounds } => shift_bounds(bounds),
-            Geometry::Text { pos, .. } => shift(pos),
+            Geometry::Text { pos, tail, .. } => {
+                shift(pos);
+                if let Some(tip) = tail {
+                    shift(tip);
+                }
+            }
             Geometry::Path { points, .. } => points.iter_mut().for_each(shift),
-            Geometry::Counter { center, .. } => shift(center),
+            Geometry::Counter { center, tail, .. } => {
+                shift(center);
+                if let Some(tip) = tail {
+                    shift(tip);
+                }
+            }
+            // The lens moves and the spot stays on what it enlarges (`crate::magnifier`).
+            Geometry::Magnifier { center, .. } => shift(center),
             // Nothing to move: the background *is* the canvas.
             Geometry::Background { .. } => {}
         }
@@ -421,12 +554,37 @@ impl Object {
             Geometry::Arrow { ctrl, .. } => Grips::Ends(if ctrl.is_some() { 3 } else { 2 }),
             Geometry::Line { .. } => Grips::Ends(2),
             Geometry::Background { .. } | Geometry::Crop { .. } => Grips::None,
+            Geometry::Counter { tail: Some(_), .. }
+            | Geometry::Text { tail: Some(_), .. }
+            | Geometry::Magnifier { .. } => Grips::BoxAndTip,
             _ => Grips::Box,
         }
     }
 
+    /// `ANN-29`'s tail tip, on the two kinds that can have one.
+    #[must_use]
+    pub const fn tail(&self) -> Option<Point> {
+        match &self.geometry {
+            Geometry::Counter { tail, .. } | Geometry::Text { tail, .. } => *tail,
+            _ => None,
+        }
+    }
+
+    /// Gives a counter or a text a tail, moves it or takes it away. Answers whether the
+    /// object is one that can have a tail.
+    pub fn set_tail(&mut self, tip: Option<Point>) -> bool {
+        match &mut self.geometry {
+            Geometry::Counter { tail, .. } | Geometry::Text { tail, .. } => {
+                *tail = tip;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The draggable points of a [`Grips::Ends`] object, in the order its handles are
-    /// drawn: start, end, and the curve control if there is one.
+    /// drawn: start, end, and the curve control if there is one. A [`Grips::BoxAndTip`]
+    /// object's is its tail's tip.
     ///
     /// Empty for everything else, so a caller that asks the wrong question gets nothing
     /// to drag rather than a point that means something different.
@@ -438,6 +596,10 @@ impl Object {
                 None => vec![*start, *end],
             },
             Geometry::Line { start, end } => vec![*start, *end],
+            Geometry::Counter { tail: Some(tip), .. } | Geometry::Text { tail: Some(tip), .. } => {
+                vec![*tip]
+            }
+            Geometry::Magnifier { source, .. } => vec![*source],
             _ => Vec::new(),
         }
     }
@@ -471,6 +633,16 @@ impl Object {
                 }
                 _ => false,
             },
+            Geometry::Counter { tail: Some(tip), .. } | Geometry::Text { tail: Some(tip), .. }
+                if index == 0 =>
+            {
+                *tip = to;
+                true
+            }
+            Geometry::Magnifier { source, .. } if index == 0 => {
+                *source = to;
+                true
+            }
             _ => false,
         }
     }
@@ -511,11 +683,17 @@ impl Object {
                 *radius = (to.width.min(to.height) / 2.0).max(1.0);
                 *center = to.center();
             }
-            Geometry::Path { points, highlighter, .. } => {
+            // A lens is a circle too, inside its ring.
+            Geometry::Magnifier { center, radius, .. } => {
+                *radius =
+                    ((to.width.min(to.height) - stroke) / 2.0).max(crate::magnifier::LEAST_RADIUS);
+                *center = to.center();
+            }
+            Geometry::Path { points, highlighter, pressure, .. } => {
                 let half = if *highlighter {
                     stroke * crate::tool::HIGHLIGHTER_WIDTH_FACTOR / 2.0
                 } else {
-                    stroke / 2.0
+                    pressed_half(stroke, pressure.as_deref())
                 };
                 // Both boxes without the stroke, so the mapping is between the points
                 // themselves and a one-point stroke does not collapse.
@@ -566,6 +744,11 @@ impl Object {
             | Geometry::Crop { .. } => {}
         }
     }
+}
+
+/// Half a pencil stroke's width: its widest, for one a pen pressed (`ANN-34`).
+fn pressed_half(stroke: f64, pressure: Option<&[f32]>) -> f64 {
+    pressure.map_or(stroke, |pressure| crate::pressure::widest(stroke, pressure)) / 2.0
 }
 
 #[cfg(test)]
@@ -625,9 +808,43 @@ mod resize_tests {
             "the curve handle is the third",
         );
         assert_eq!(
-            object(Geometry::Background { params: BackgroundParams::default(), source: None }).grips(),
+            object(Geometry::Background {
+                params: BackgroundParams::default(),
+                source: None,
+                fill: None
+            })
+            .grips(),
             Grips::None,
         );
+    }
+
+    /// `ANN-32`: the handles are on the lens and the spot is the ninth; a move takes the
+    /// lens and leaves the spot on what it enlarges; a resize keeps a circle.
+    #[test]
+    fn a_magnifier_moves_its_lens_and_keeps_its_spot() {
+        let mut lens = object(Geometry::Magnifier {
+            center: Point::new(300.0, 200.0),
+            radius: 64.0,
+            source: Point::new(100.0, 100.0),
+            zoom: 2.0,
+        });
+        let stroke = lens.style.stroke_width();
+        let b = lens.bounds();
+        assert!(close(b, Bounds::new(236.0, 136.0, 128.0, 128.0).inflated(stroke / 2.0)), "{b:?}");
+        assert_eq!(lens.grips(), Grips::BoxAndTip);
+        assert_eq!(lens.points(), vec![Point::new(100.0, 100.0)]);
+        lens.translate(10.0, -20.0);
+        let Geometry::Magnifier { center, source, .. } = lens.geometry else { panic!() };
+        assert_eq!(center, Point::new(310.0, 180.0));
+        assert_eq!(source, Point::new(100.0, 100.0), "the spot stays");
+        assert!(lens.move_point(0, Point::new(50.0, 60.0)));
+        assert_eq!(lens.points(), vec![Point::new(50.0, 60.0)]);
+        assert!(!lens.move_point(1, Point::new(0.0, 0.0)));
+        let from = lens.bounds();
+        lens.resize(from, Bounds::new(0.0, 0.0, 200.0, 120.0), Handle::BottomRight);
+        let Geometry::Magnifier { center, radius, .. } = lens.geometry else { panic!() };
+        assert!((radius - (120.0 - stroke) / 2.0).abs() < 1e-9, "the smaller side: {radius}");
+        assert_eq!(center, Point::new(100.0, 60.0));
     }
 
     /// The invariant every box kind has to keep: after a resize, the box the handles are
@@ -642,11 +859,7 @@ mod resize_tests {
             Geometry::Rect { bounds: before, filled: false, radius: 0.0 },
             Geometry::Rect { bounds: before, filled: true, radius: 8.0 },
             Geometry::Ellipse { bounds: before },
-            Geometry::Spotlight {
-                shape: SpotlightShape::Rectangle,
-                bounds: before,
-                opacity: 0.5,
-            },
+            Geometry::Spotlight { shape: SpotlightShape::Rectangle, bounds: before, opacity: 0.5 },
             Geometry::Redact {
                 bounds: before,
                 style: RedactStyle::Pixelate,
@@ -678,6 +891,7 @@ mod resize_tests {
             smoothing: false,
             highlighter: false,
             band: None,
+            pressure: None,
         });
         let from = o.bounds();
         let after = Bounds::new(200.0, 200.0, from.width * 2.0, from.height * 2.0);
@@ -707,6 +921,7 @@ mod resize_tests {
             font_size: 24.0,
             align: TextAlign::Start,
             width,
+            tail: None,
         };
 
         let mut corner = object(text(None));
@@ -732,6 +947,7 @@ mod resize_tests {
             number: 1,
             style: CounterStyle::Arabic,
             radius: 10.0,
+            tail: None,
         });
         let from = o.bounds();
         o.resize(from, Bounds::new(0.0, 0.0, 100.0, 40.0), Handle::BottomRight);
@@ -750,6 +966,7 @@ mod resize_tests {
             font_size: 20.0,
             align: TextAlign::Start,
             width: None,
+            tail: None,
         });
         // The plate is the glyphs plus 0.4 em (8 units) on every side: pretend the glyph
         // box measured 40 x 24, so the plate is 56 x 40 at (92, 92).
@@ -767,6 +984,7 @@ mod resize_tests {
             font_size: 20.0,
             align: TextAlign::Start,
             width: None,
+            tail: None,
         });
         o.resize(plate, Bounds::new(92.0, 92.0, 116.0, 40.0), Handle::Right);
         let Geometry::Text { pos, width, .. } = o.geometry else { panic!("text") };
@@ -794,10 +1012,8 @@ mod resize_tests {
         assert_eq!(o.points()[2], Point::new(60.0, 10.0));
         assert!(!o.move_point(3, Point::new(0.0, 0.0)), "there is no fourth point");
 
-        let mut line = object(Geometry::Line {
-            start: Point::new(0.0, 0.0),
-            end: Point::new(10.0, 0.0),
-        });
+        let mut line =
+            object(Geometry::Line { start: Point::new(0.0, 0.0), end: Point::new(10.0, 0.0) });
         assert!(line.move_point(1, Point::new(10.0, 40.0)));
         assert_eq!(line.points(), vec![Point::new(0.0, 0.0), Point::new(10.0, 40.0)]);
         assert!(!line.move_point(2, Point::new(0.0, 0.0)));
@@ -812,9 +1028,14 @@ mod resize_tests {
             smoothing: false,
             highlighter: false,
             band: None,
+            pressure: None,
         });
         let untouched = o.clone();
-        o.resize(Bounds::new(0.0, 0.0, 100.0, 0.0), Bounds::new(0.0, 0.0, 200.0, 50.0), Handle::BottomRight);
+        o.resize(
+            Bounds::new(0.0, 0.0, 100.0, 0.0),
+            Bounds::new(0.0, 0.0, 200.0, 50.0),
+            Handle::BottomRight,
+        );
         assert_eq!(o.geometry, untouched.geometry);
         // And an empty target is survivable: the points collapse, they do not become NaN.
         let from = untouched.bounds();
@@ -848,14 +1069,38 @@ mod tests {
         // The point of the test is that the match is exhaustive and not shifted by one:
         // an arm returning its neighbour's kind would break the options row silently.
         let cases = [
-            (Geometry::Line { start: Point::new(0.0, 0.0), end: Point::new(1.0, 1.0) },
-             ObjectKind::Line),
+            (
+                Geometry::Line { start: Point::new(0.0, 0.0), end: Point::new(1.0, 1.0) },
+                ObjectKind::Line,
+            ),
             (Geometry::Ellipse { bounds: Bounds::new(0.0, 0.0, 1.0, 1.0) }, ObjectKind::Ellipse),
-            (Geometry::Counter { center: Point::new(0.0, 0.0), number: 1,
-                                 style: CounterStyle::Arabic, radius: 12.0 },
-             ObjectKind::Counter),
-            (Geometry::Background { params: BackgroundParams::default(), source: None },
-             ObjectKind::Background),
+            (
+                Geometry::Counter {
+                    center: Point::new(0.0, 0.0),
+                    number: 1,
+                    style: CounterStyle::Arabic,
+                    radius: 12.0,
+                    tail: None,
+                },
+                ObjectKind::Counter,
+            ),
+            (
+                Geometry::Magnifier {
+                    center: Point::new(0.0, 0.0),
+                    radius: 10.0,
+                    source: Point::new(5.0, 5.0),
+                    zoom: 2.0,
+                },
+                ObjectKind::Magnifier,
+            ),
+            (
+                Geometry::Background {
+                    params: BackgroundParams::default(),
+                    source: None,
+                    fill: None,
+                },
+                ObjectKind::Background,
+            ),
         ];
         for (geometry, kind) in cases {
             assert_eq!(Object::new(0, 0, style(3), geometry).kind(), kind);
@@ -883,6 +1128,7 @@ mod tests {
                 smoothing: true,
                 highlighter: false,
                 band: None,
+                pressure: None,
             },
         );
         let b = path.bounds();
@@ -898,7 +1144,13 @@ mod tests {
             0,
             0,
             style(1),
-            Geometry::Path { points: vec![], smoothing: false, highlighter: false, band: None },
+            Geometry::Path {
+                points: vec![],
+                smoothing: false,
+                highlighter: false,
+                band: None,
+                pressure: None,
+            },
         );
         assert!(empty.bounds().is_empty());
     }
@@ -938,6 +1190,7 @@ mod tests {
                 smoothing: false,
                 highlighter: true,
                 band: None,
+                pressure: None,
             },
         );
         path.translate(-5.0, 5.0);
@@ -955,6 +1208,7 @@ mod tests {
             created: 1_725_360_000,
             style: Style::new(Rgba::new(1.0, 0.23, 0.19, 1.0), 3, true),
             locked: false,
+            hidden: false,
             geometry: Geometry::Arrow {
                 start: Point::new(1.0, 2.0),
                 end: Point::new(3.0, 4.0),
@@ -998,6 +1252,7 @@ mod highlighter_bounds_tests {
                 smoothing: false,
                 highlighter,
                 band: None,
+                pressure: None,
             },
         )
     }

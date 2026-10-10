@@ -30,8 +30,7 @@ use tracing::{info, warn};
 use super::window::Editor;
 
 /// The picture formats the chooser offers and a drop accepts.
-const MIME_TYPES: [&str; 5] =
-    ["image/png", "image/jpeg", "image/webp", "image/avif", "image/gif"];
+const MIME_TYPES: [&str; 5] = ["image/png", "image/jpeg", "image/webp", "image/avif", "image/gif"];
 
 impl Editor {
     /// §2's "Add image | — | file chooser or drop", beside the background button.
@@ -74,10 +73,8 @@ impl Editor {
             // The middle of the picture, because a chooser has no pointer to have let go
             // at -- and the object arrives selected with handles on it, so moving it is
             // the next thing the user can do without looking for a menu.
-            let centre = editor
-                .canvas
-                .scene()
-                .map_or(Point::new(0.0, 0.0), |scene| scene.canvas.center());
+            let centre =
+                editor.canvas.scene().map_or(Point::new(0.0, 0.0), |scene| scene.canvas.center());
             editor.insert_image(&path, Zone::Inside, centre);
         });
     }
@@ -141,10 +138,7 @@ impl Editor {
             "bottom" => Zone::Bottom,
             _ => Zone::Inside,
         };
-        let at = self
-            .canvas
-            .scene()
-            .map_or(Point::new(0.0, 0.0), |scene| scene.canvas.center());
+        let at = self.canvas.scene().map_or(Point::new(0.0, 0.0), |scene| scene.canvas.center());
         self.insert_image(path, zone, at);
     }
 
@@ -174,7 +168,7 @@ impl Editor {
     /// Into the spool beside the capture, which is the app's own cache and is already what
     /// the janitor sweeps -- `spec/10` §3's "images cross the boundary as files" applies
     /// inside the app too, and an image object holds a path and not a texture.
-    fn picture_file(&self, texture: &gdk::Texture, how: &str) -> Option<PathBuf> {
+    pub(super) fn picture_file(&self, texture: &gdk::Texture, how: &str) -> Option<PathBuf> {
         let stem = self.capture.path.file_stem()?.to_string_lossy().into_owned();
         let stamp = glib::real_time();
         let path = self.capture.path.with_file_name(format!("{stem}-{how}-{stamp}.png"));
@@ -232,10 +226,8 @@ impl Editor {
                 editor.toast("The pasted picture could not be written out", None);
                 return;
             };
-            let at = editor
-                .canvas
-                .scene()
-                .map_or(Point::new(0.0, 0.0), |scene| scene.canvas.center());
+            let at =
+                editor.canvas.scene().map_or(Point::new(0.0, 0.0), |scene| scene.canvas.center());
             editor.insert_image(&path, Zone::Inside, at);
         });
     }
@@ -254,7 +246,7 @@ impl Editor {
             }
         };
         let (width, height) = (f64::from(texture.width()), f64::from(texture.height()));
-        let Some(placed) = combine::place(scene.canvas, zone, at, width, height) else {
+        let Some(insertion) = combine::insert(&scene, zone, at, width, height) else {
             return false;
         };
 
@@ -264,18 +256,13 @@ impl Editor {
             // No stroke and no shadow: an inserted picture is not a drawn shape, and a
             // shadow under one would be §4.13's job and not this object's.
             Style::new(octosnap_scene::Rgba::new(0.0, 0.0, 0.0, 0.0), 1, false),
-            Geometry::Image {
-                bounds: placed.image,
-                file: path.to_string_lossy().into_owned(),
-            },
+            Geometry::Image { bounds: insertion.image, file: path.to_string_lossy().into_owned() },
         );
         let id = object.id;
-        // One step, both halves. A stitch that undid to "the canvas is still wide but the
+        // One step, every part. A stitch that undid to "the canvas is still wide but the
         // picture is gone" would be worse than no undo at all.
         let mut commands = vec![Command::Add(object)];
-        if placed.canvas != scene.canvas {
-            commands.push(Command::CanvasChange { before: scene.canvas, after: placed.canvas });
-        }
+        commands.extend(insertion.edits);
         if !self.history.borrow_mut().apply(&mut scene, Command::Batch(commands)) {
             return false;
         }
@@ -287,7 +274,7 @@ impl Editor {
         info!(
             path = %path.display(),
             zone = ?zone,
-            bounds = ?Bounds::normalised(placed.image),
+            bounds = ?Bounds::normalised(insertion.image),
             "added an image"
         );
         true

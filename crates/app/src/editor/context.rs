@@ -22,7 +22,8 @@ use tracing::info;
 
 use super::window::Editor;
 
-/// One entry: its label, its action in the `canvas` group, and the shortcut shown beside it.
+/// One entry: its label, its action in the `canvas` group (or, with a dot, the action as
+/// named), and the shortcut shown beside it.
 type Entry = (&'static str, &'static str, Option<&'static str>);
 
 impl Editor {
@@ -62,42 +63,88 @@ impl Editor {
         }
         let Some(scene) = self.canvas.scene() else { return };
         let at = self.canvas.to_document(x, y);
+        // `ANN-27`'s live text has the picture's words under the pointer, not objects.
+        let live = self.live_text_on();
         // The locked object the pointer is on, when it is the visible thing there.
         let mut locked = None;
-        if pick {
+        if pick && !live {
             match self.object_at_any(&scene, at) {
                 Some(id) if scene.get(id).is_some_and(|o| o.locked) => {
                     locked = Some(id);
                     self.canvas.set_selection(Vec::new());
                 }
-                Some(id) if !self.canvas.selection().contains(&id) => self.canvas.set_selection(vec![id]),
+                Some(id) if !self.canvas.selection().contains(&id) => {
+                    self.canvas.set_selection(vec![id])
+                }
                 Some(_) => {}
                 None => self.canvas.set_selection(Vec::new()),
             }
         }
         let selection = self.canvas.selection();
 
-        let sections: Vec<Vec<Entry>> = if locked.is_some() {
+        let sections: Vec<Vec<Entry>> = if live {
+            let mut sections = Vec::new();
+            let link = if pick { self.live_link_at(at) } else { None };
+            if let Some(link) = link {
+                let open =
+                    if link.starts_with("mailto:") { "Write an E-mail" } else { "Open Link" };
+                sections.push(vec![(open, "open-link", None)]);
+            }
+            // With no words selected, Ctrl+C copies the picture, as it does without the mode.
+            let copy = if self.live_has_selection() { "Copy Text" } else { "Copy Image" };
+            sections.push(vec![
+                (copy, "copy", Some("<Control>c")),
+                ("Select All Text", "select-all", Some("<Control>a")),
+            ]);
+            // The switch, shown checked: choosing it turns the mode off (D180).
+            sections.push(vec![(
+                "Select Text in the Picture",
+                "win.live-text",
+                Some("<Control><Shift>t"),
+            )]);
+            sections
+        } else if locked.is_some() {
             vec![vec![("Unlock", "unlock", None)]]
         } else if selection.is_empty() {
             let mut sections = vec![
-                vec![("Paste", "paste", Some("<Control>v")), ("Select All", "select-all", Some("<Control>a"))],
+                vec![
+                    ("Paste", "paste", Some("<Control>v")),
+                    ("Select All", "select-all", Some("<Control>a")),
+                ],
                 vec![("Copy Image", "copy", Some("<Control>c"))],
+                // The whole picture's, so with nothing selected (`ANN-26`, D178), and the
+                // picture's words, to select and copy (`ANN-27`, D180).
+                vec![
+                    ("Redact Sensitive Info", "win.auto-redact", None),
+                    ("Select Text in the Picture", "win.live-text", Some("<Control><Shift>t")),
+                ],
+                // Where the keys are listed, and the key to them (`SYS-12`, D179).
+                vec![("Keyboard Shortcuts", "app.shortcuts", Some(crate::shortcuts_dialog::ACCEL))],
             ];
             if !self.locked_objects().is_empty() {
                 sections.push(vec![("Unlock All", "unlock-all", None)]);
             }
             sections
         } else {
-            // One text object or one counter: its words or its number, in place.
+            // One text object or one counter: its words or its number, in place, and its
+            // pointer (`ANN-29`, D182).
             let one = match selection.as_slice() {
-                [id] => scene.get(*id).map(octosnap_scene::Object::kind),
+                [id] => scene.get(*id),
                 _ => None,
             };
+            let pointer = if one.and_then(octosnap_scene::Object::tail).is_some() {
+                "Remove Pointer"
+            } else {
+                "Add Pointer"
+            };
             let mut sections = Vec::new();
-            match one {
-                Some(ObjectKind::Text) => sections.push(vec![("Edit Text", "edit", None)]),
-                Some(ObjectKind::Counter) => sections.push(vec![("Edit Number", "edit", None)]),
+            match one.map(octosnap_scene::Object::kind) {
+                Some(ObjectKind::Text) => {
+                    sections.push(vec![("Edit Text", "edit", None), (pointer, "pointer", None)])
+                }
+                Some(ObjectKind::Counter) => {
+                    sections.push(vec![("Edit Number", "edit", None), (pointer, "pointer", None)])
+                }
                 _ => {}
             }
             sections.push(vec![
@@ -119,7 +166,12 @@ impl Editor {
         for section in &sections {
             let part = gio::Menu::new();
             for (label, action, accel) in section {
-                let item = gio::MenuItem::new(Some(label), Some(&format!("canvas.{action}")));
+                let action = if action.contains('.') {
+                    (*action).to_owned()
+                } else {
+                    format!("canvas.{action}")
+                };
+                let item = gio::MenuItem::new(Some(label), Some(&action));
                 if let Some(accel) = accel {
                     item.set_attribute_value("accel", Some(&accel.to_variant()));
                 }
@@ -129,9 +181,12 @@ impl Editor {
         }
 
         type Run = Box<dyn Fn(&Rc<Editor>)>;
-        let runs: [(&str, Run); 12] = [
+        let runs: [(&str, Run); 14] = [
             ("lock", Box::new(Editor::lock_selection)),
-            ("unlock", Box::new(move |e: &Rc<Editor>| e.unlock(&locked.into_iter().collect::<Vec<_>>()))),
+            (
+                "unlock",
+                Box::new(move |e: &Rc<Editor>| e.unlock(&locked.into_iter().collect::<Vec<_>>())),
+            ),
             ("unlock-all", Box::new(Editor::unlock_all)),
             ("paste", Box::new(Editor::paste_shortcut)),
             ("select-all", Box::new(Editor::select_all)),
@@ -141,6 +196,8 @@ impl Editor {
             ("forward", Box::new(|e: &Rc<Editor>| e.reorder_selection(true))),
             ("backward", Box::new(|e: &Rc<Editor>| e.reorder_selection(false))),
             ("delete", Box::new(Editor::delete_selection)),
+            ("pointer", Box::new(Editor::toggle_pointer)),
+            ("open-link", Box::new(move |e: &Rc<Editor>| e.live_open_link_at(at))),
             (
                 "edit",
                 Box::new(move |e: &Rc<Editor>| {
@@ -163,7 +220,8 @@ impl Editor {
 
         // Parented to the canvas's parent, an `Overlay`, as the counter's popover is: the
         // canvas sizes its own children and would have to present each popover by hand.
-        let host: gtk::Widget = self.canvas.parent().unwrap_or_else(|| self.canvas.clone().upcast());
+        let host: gtk::Widget =
+            self.canvas.parent().unwrap_or_else(|| self.canvas.clone().upcast());
         host.insert_action_group("canvas", Some(&group));
         let (hx, hy) = self
             .canvas

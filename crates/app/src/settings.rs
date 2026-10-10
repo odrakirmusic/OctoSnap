@@ -74,6 +74,7 @@ const REQUIRED_KEYS: &[&str] = &[
     "qao-shortcuts",
     "history-retention-days",
     "history-keep-saved",
+    "history-read-text",
     "ann-export-scale",
     "debug",
     "pin-rounded-corners",
@@ -385,6 +386,12 @@ impl Settings {
         self.inner.as_ref().is_none_or(|s| s.boolean("history-keep-saved"))
     }
 
+    /// `HIS-05` (D181): whether the history's captures are read, for search.
+    #[must_use]
+    pub fn history_read_text(&self) -> bool {
+        self.inner.as_ref().is_none_or(|s| s.boolean("history-read-text"))
+    }
+
     /// `spec/08` §9's debug logging.
     #[must_use]
     pub fn debug(&self) -> bool {
@@ -483,7 +490,11 @@ impl Settings {
     }
 
     /// Like [`Settings::connect_changed`], for a change to one of `keys` only.
-    pub fn connect_keys_changed<F: Fn() + 'static>(&self, keys: &'static [&'static str], on_change: F) {
+    pub fn connect_keys_changed<F: Fn() + 'static>(
+        &self,
+        keys: &'static [&'static str],
+        on_change: F,
+    ) {
         if let Some(s) = &self.inner {
             s.connect_changed(None, move |_, key| {
                 if keys.contains(&key) {
@@ -561,7 +572,8 @@ pub fn pin_look() -> PinLook {
     let Some(settings) = open_settings() else { return PinLook::default() };
     let has = |key: &str| settings.settings_schema().is_some_and(|s| s.has_key(key));
     let default = PinLook::default();
-    let read = |key: &str, otherwise: bool| if has(key) { settings.boolean(key) } else { otherwise };
+    let read =
+        |key: &str, otherwise: bool| if has(key) { settings.boolean(key) } else { otherwise };
     PinLook {
         rounded: read("pin-rounded-corners", default.rounded),
         bordered: read("pin-border", default.bordered),
@@ -628,7 +640,10 @@ pub fn ui_sounds() -> bool {
 /// The log filter the process started with, kept so `spec/08` §9's debug switch can
 /// change it while the service runs.
 struct LogControl {
-    handle: tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>,
+    handle: tracing_subscriber::reload::Handle<
+        tracing_subscriber::EnvFilter,
+        tracing_subscriber::Registry,
+    >,
     /// `RUST_LOG` was set: the environment asked for a level and the setting yields to it.
     from_environment: bool,
 }
@@ -637,14 +652,18 @@ static LOG_CONTROL: std::sync::OnceLock<LogControl> = std::sync::OnceLock::new()
 
 /// Installed once by `main`, before anything reads the setting.
 pub fn install_log_control(
-    handle: tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>,
+    handle: tracing_subscriber::reload::Handle<
+        tracing_subscriber::EnvFilter,
+        tracing_subscriber::Registry,
+    >,
     from_environment: bool,
 ) {
     let _ = LOG_CONTROL.set(LogControl { handle, from_environment });
 }
 
 /// The filter debug logging turns on: this project's crates at `debug`, the rest at `info`.
-pub const DEBUG_FILTER: &str = "octosnap_app=debug,octosnap_shell=debug,octosnap_scene=debug,octosnap_core=debug,info";
+pub const DEBUG_FILTER: &str =
+    "octosnap_app=debug,octosnap_shell=debug,octosnap_scene=debug,octosnap_core=debug,info";
 
 /// Applies `spec/08` §9's debug switch to the running process.
 pub fn apply_debug_logging(on: bool) {
@@ -690,8 +709,7 @@ pub fn background_presets() -> Vec<octosnap_scene::Preset> {
 
 pub fn set_background_presets(presets: &[octosnap_scene::Preset]) {
     let Some(settings) = open_settings() else { return };
-    let written: Vec<String> =
-        presets.iter().filter_map(octosnap_scene::Preset::to_json).collect();
+    let written: Vec<String> = presets.iter().filter_map(octosnap_scene::Preset::to_json).collect();
     let borrowed: Vec<&str> = written.iter().map(String::as_str).collect();
     if let Err(e) = settings.set_strv("ann-background-presets", borrowed) {
         warn!("could not save ann-background-presets: {e}");

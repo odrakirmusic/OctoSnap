@@ -26,8 +26,9 @@ pub const LEGACY_EXTENSION: &str = "pengushot";
 /// before the rename, [`LEGACY_EXTENSION`]. Either case, the way a file manager matches.
 #[must_use]
 pub fn is_project(path: &std::path::Path) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION) || e.eq_ignore_ascii_case(LEGACY_EXTENSION))
+    path.extension().is_some_and(|e| {
+        e.eq_ignore_ascii_case(EXTENSION) || e.eq_ignore_ascii_case(LEGACY_EXTENSION)
+    })
 }
 
 #[cfg(test)]

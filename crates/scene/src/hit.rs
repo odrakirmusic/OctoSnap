@@ -11,6 +11,7 @@
 use crate::geometry::{Bounds, CURVE_LEGS, Point, Segment, quad_flatten};
 use crate::object::{Geometry, Object, ObjectId, ObjectKind};
 use crate::scene::Scene;
+use crate::{callout, pressure};
 
 /// How far from a stroke still counts as on it, in image pixels.
 ///
@@ -84,7 +85,14 @@ fn topmost_where(
         scene.get(*id).is_some_and(|o| {
             (locked_too || !o.locked)
                 && match measure(o) {
-                    Some(bounds) => bounds.normalised().contains(point),
+                    // A measured label's tail leaves from its measured box (`ANN-29`).
+                    Some(bounds) => {
+                        bounds.normalised().contains(point)
+                            || o.tail().is_some_and(|tip| {
+                                let reach = o.style.stroke_width() / 2.0 + tolerance;
+                                callout::hits(bounds, tip, point, reach)
+                            })
+                    }
                     None => hits_within(o, point, tolerance),
                 }
         })
@@ -125,7 +133,8 @@ pub fn hits_within(object: &Object, point: Point, tolerance: f64) -> bool {
         // on its wing is a click on the arrow: the reach is widened to most of that, so
         // the heavy head a level-6 arrow carries is as clickable as it looks.
         Geometry::Arrow { start, end, ctrl, .. } => {
-            let reach = reach.max(crate::style::arrowhead_reach(object.style.stroke_width()) * 0.75);
+            let reach =
+                reach.max(crate::style::arrowhead_reach(object.style.stroke_width()) * 0.75);
             match ctrl {
                 Some(c) => quad_flatten(*start, *c, *end, CURVE_LEGS)
                     .windows(2)
@@ -149,7 +158,10 @@ pub fn hits_within(object: &Object, point: Point, tolerance: f64) -> bool {
         }
         // Text, redactions and spotlights are solid: every one of them is something the
         // user drew *over* the image, so its whole area belongs to it.
-        Geometry::Text { .. } => object.bounds().contains(point),
+        Geometry::Text { tail, .. } => {
+            let body = object.bounds();
+            body.contains(point) || tail.is_some_and(|tip| callout::hits(body, tip, point, reach))
+        }
         Geometry::Redact { bounds, .. } => bounds.contains(point),
         // An inserted picture is not: it is a second screenshot, and what the user does
         // inside it is annotate it, as they do the first. Solid, a press there moved the
@@ -162,12 +174,37 @@ pub fn hits_within(object: &Object, point: Point, tolerance: f64) -> bool {
             crate::style::SpotlightShape::Ellipse => bounds.ellipse_contains(point),
             _ => bounds.contains(point),
         },
-        Geometry::Path { points, .. } => points
+        // A pen's stroke is as wide as it was pressed, leg by leg (`ANN-34`).
+        Geometry::Path { points, pressure: Some(pressure), highlighter: false, .. }
+            if pressure.len() == points.len() =>
+        {
+            let stroke = object.style.stroke_width();
+            let reach_at =
+                |i: usize| reach - stroke / 2.0 + pressure::width_at(stroke, pressure[i]) / 2.0;
+            points.windows(2).enumerate().any(|(i, leg)| {
+                Segment::new(leg[0], leg[1]).distance_to(point) <= reach_at(i).max(reach_at(i + 1))
+            }) || points.len() == 1 && points[0].distance_to(point) <= reach_at(0)
+        }
+        Geometry::Path { points, .. } => {
+            points
             .windows(2)
             .any(|leg| Segment::new(leg[0], leg[1]).distance_to(point) <= reach)
             // A single-point path is a dot the pencil put down without moving.
-            || points.len() == 1 && points[0].distance_to(point) <= reach,
-        Geometry::Counter { center, radius, .. } => center.distance_to(point) <= radius + reach,
+            || points.len() == 1 && points[0].distance_to(point) <= reach
+        }
+        // A badge's tail is a wedge, widest at the badge: a third of the radius either
+        // side of its line is on it.
+        Geometry::Counter { center, radius, tail, .. } => {
+            center.distance_to(point) <= radius + reach
+                || tail.is_some_and(|tip| {
+                    callout::hits(object.bounds(), tip, point, reach.max(radius / 3.0))
+                })
+        }
+        // `ANN-32`: the lens, the spot's ring and the line between them. Inside the spot is
+        // the picture, showing through a ring (`crate::magnifier`).
+        Geometry::Magnifier { center, radius, source, zoom } => {
+            crate::magnifier::hits(*center, *radius, *source, *zoom, point, reach)
+        }
         // Neither is a thing on the canvas: the background is the canvas and a crop is a
         // transform of it. Both are edited through their own mode, never by being clicked.
         Geometry::Background { .. } | Geometry::Crop { .. } => false,
@@ -201,7 +238,7 @@ pub fn within(scene: &Scene, marquee: Bounds) -> Vec<ObjectId> {
             scene.get(*id).is_some_and(|o| {
                 !o.locked
                     && !matches!(o.kind(), ObjectKind::Background | ObjectKind::Crop)
-                    && touches(region, o.bounds().normalised())
+                    && touches(region, extent(o))
             })
         })
         .collect()
@@ -216,6 +253,13 @@ fn touches(region: Bounds, bounds: Bounds) -> bool {
         && bounds.x <= region.x + region.width
         && region.y <= bounds.y + bounds.height
         && bounds.y <= region.y + region.height
+}
+
+/// What a band has to touch to select an object: its bounds, out to its tail's tip
+/// (`ANN-29`), so a band swept over the pointer alone selects the callout.
+fn extent(object: &Object) -> Bounds {
+    let bounds = object.bounds().normalised();
+    object.tail().map_or(bounds, |tip| bounds.union(Bounds::new(tip.x, tip.y, 0.0, 0.0)))
 }
 
 #[cfg(test)]
@@ -240,10 +284,10 @@ mod tests {
 
     #[test]
     fn a_thin_line_is_still_clickable() {
-        let line = object(0, Geometry::Line {
-            start: Point::new(0.0, 100.0),
-            end: Point::new(200.0, 100.0),
-        });
+        let line = object(
+            0,
+            Geometry::Line { start: Point::new(0.0, 100.0), end: Point::new(200.0, 100.0) },
+        );
         // Level 1 is a one-pixel stroke: without the tolerance this would need the exact
         // pixel.
         assert!(hits(&line, Point::new(100.0, 102.0)));
@@ -256,10 +300,10 @@ mod tests {
     /// at 40 % -- `TOLERANCE` is the default, not the rule.
     #[test]
     fn the_tolerance_is_the_callers_to_widen() {
-        let line = object(0, Geometry::Line {
-            start: Point::new(0.0, 100.0),
-            end: Point::new(200.0, 100.0),
-        });
+        let line = object(
+            0,
+            Geometry::Line { start: Point::new(0.0, 100.0), end: Point::new(200.0, 100.0) },
+        );
         let far = Point::new(100.0, 100.0 + TOLERANCE + 5.0);
         assert!(!hits(&line, far));
         assert!(hits_within(&line, far, TOLERANCE + 6.0));
@@ -271,14 +315,18 @@ mod tests {
 
     #[test]
     fn a_heavier_stroke_is_easier_to_hit() {
-        let thin = Object::new(0, 0, style(1), Geometry::Line {
-            start: Point::new(0.0, 0.0),
-            end: Point::new(100.0, 0.0),
-        });
-        let thick = Object::new(0, 0, style(6), Geometry::Line {
-            start: Point::new(0.0, 0.0),
-            end: Point::new(100.0, 0.0),
-        });
+        let thin = Object::new(
+            0,
+            0,
+            style(1),
+            Geometry::Line { start: Point::new(0.0, 0.0), end: Point::new(100.0, 0.0) },
+        );
+        let thick = Object::new(
+            0,
+            0,
+            style(6),
+            Geometry::Line { start: Point::new(0.0, 0.0), end: Point::new(100.0, 0.0) },
+        );
         let at = Point::new(50.0, 9.0);
         assert!(!hits(&thin, at));
         assert!(hits(&thick, at), "a 13 px stroke reaches 6.5 px plus the tolerance");
@@ -304,10 +352,13 @@ mod tests {
     /// is somewhere to draw. Only its frame takes the click.
     #[test]
     fn an_inserted_image_is_hit_on_its_frame_and_not_in_its_middle() {
-        let picture = object(0, Geometry::Image {
-            bounds: Bounds::new(100.0, 100.0, 400.0, 300.0),
-            file: "assets/a.png".to_owned(),
-        });
+        let picture = object(
+            0,
+            Geometry::Image {
+                bounds: Bounds::new(100.0, 100.0, 400.0, 300.0),
+                file: "assets/a.png".to_owned(),
+            },
+        );
         assert!(!hits(&picture, Point::new(300.0, 250.0)), "the middle is the picture's content");
         assert!(!hits(&picture, Point::new(120.0, 250.0)), "and so is just inside the frame");
         assert!(hits(&picture, Point::new(100.0, 250.0)), "the left edge");
@@ -315,10 +366,13 @@ mod tests {
         assert!(hits(&picture, Point::new(500.0, 100.0)), "a corner");
         assert!(!hits(&picture, Point::new(700.0, 250.0)), "far outside");
         // A frame drawn backwards is the same frame.
-        let backwards = object(0, Geometry::Image {
-            bounds: Bounds::new(500.0, 400.0, -400.0, -300.0),
-            file: "assets/a.png".to_owned(),
-        });
+        let backwards = object(
+            0,
+            Geometry::Image {
+                bounds: Bounds::new(500.0, 400.0, -400.0, -300.0),
+                file: "assets/a.png".to_owned(),
+            },
+        );
         assert!(hits(&backwards, Point::new(100.0, 250.0)));
         assert!(!hits(&backwards, Point::new(300.0, 250.0)));
     }
@@ -328,15 +382,18 @@ mod tests {
     #[test]
     fn what_is_drawn_inside_an_inserted_image_is_reachable_through_it() {
         let mut s = scene();
-        let arrow = object(0, Geometry::Line {
-            start: Point::new(200.0, 250.0),
-            end: Point::new(400.0, 250.0),
-        });
+        let arrow = object(
+            0,
+            Geometry::Line { start: Point::new(200.0, 250.0), end: Point::new(400.0, 250.0) },
+        );
         let arrow_id = arrow.id;
-        let picture = object(5, Geometry::Image {
-            bounds: Bounds::new(100.0, 100.0, 400.0, 300.0),
-            file: "assets/a.png".to_owned(),
-        });
+        let picture = object(
+            5,
+            Geometry::Image {
+                bounds: Bounds::new(100.0, 100.0, 400.0, 300.0),
+                file: "assets/a.png".to_owned(),
+            },
+        );
         let picture_id = picture.id;
         s.add(arrow);
         s.add(picture);
@@ -355,12 +412,20 @@ mod tests {
 
     #[test]
     fn a_pencil_stroke_is_hit_along_any_of_its_legs() {
-        let path = object(0, Geometry::Path {
-            points: vec![Point::new(0.0, 0.0), Point::new(100.0, 0.0), Point::new(100.0, 100.0)],
-            smoothing: true,
-            highlighter: false,
-            band: None,
-        });
+        let path = object(
+            0,
+            Geometry::Path {
+                points: vec![
+                    Point::new(0.0, 0.0),
+                    Point::new(100.0, 0.0),
+                    Point::new(100.0, 100.0),
+                ],
+                smoothing: true,
+                highlighter: false,
+                band: None,
+                pressure: None,
+            },
+        );
         assert!(hits(&path, Point::new(50.0, 1.0)), "the first leg");
         assert!(hits(&path, Point::new(99.0, 50.0)), "the second");
         assert!(!hits(&path, Point::new(50.0, 50.0)), "the space the corner encloses");
@@ -370,27 +435,71 @@ mod tests {
     /// selectable.
     #[test]
     fn a_single_point_stroke_is_a_dot_that_can_be_hit() {
-        let dot = object(0, Geometry::Path {
-            points: vec![Point::new(40.0, 40.0)],
-            smoothing: false,
-            highlighter: false,
-            band: None,
-        });
+        let dot = object(
+            0,
+            Geometry::Path {
+                points: vec![Point::new(40.0, 40.0)],
+                smoothing: false,
+                highlighter: false,
+                band: None,
+                pressure: None,
+            },
+        );
         assert!(hits(&dot, Point::new(41.0, 41.0)));
         assert!(!hits(&dot, Point::new(80.0, 80.0)));
     }
 
     #[test]
     fn a_counter_is_a_disc() {
-        let c = object(0, Geometry::Counter {
-            center: Point::new(100.0, 100.0),
-            number: 3,
-            style: CounterStyle::Arabic,
-            radius: 12.0,
-        });
+        let c = object(
+            0,
+            Geometry::Counter {
+                center: Point::new(100.0, 100.0),
+                number: 3,
+                style: CounterStyle::Arabic,
+                radius: 12.0,
+                tail: None,
+            },
+        );
         assert!(hits(&c, Point::new(100.0, 100.0)));
         assert!(hits(&c, Point::new(110.0, 100.0)));
         assert!(!hits(&c, Point::new(140.0, 100.0)));
+    }
+
+    /// `ANN-29`: a callout is hit on its tail as well as its body, and a band that sweeps
+    /// over the tail alone selects it.
+    #[test]
+    fn a_callout_is_hit_on_its_tail() {
+        let badge = object(
+            0,
+            Geometry::Counter {
+                center: Point::new(100.0, 100.0),
+                number: 1,
+                style: CounterStyle::Arabic,
+                radius: 12.0,
+                tail: Some(Point::new(100.0, 300.0)),
+            },
+        );
+        assert!(hits(&badge, Point::new(103.0, 250.0)), "on the tail");
+        assert!(!hits(&badge, Point::new(100.0, 320.0)), "past the tip");
+        assert!(!hits(&badge, Point::new(160.0, 250.0)), "beside it");
+        let label = object(
+            1,
+            Geometry::Text {
+                pos: Point::new(300.0, 100.0),
+                text: "Here".into(),
+                style: crate::style::TextStyle::Standard,
+                font_size: 20.0,
+                align: crate::object::TextAlign::Start,
+                width: None,
+                tail: Some(Point::new(320.0, 300.0)),
+            },
+        );
+        assert!(hits(&label, Point::new(318.0, 260.0)), "on the label's tail");
+        let mut s = scene();
+        let id = badge.id;
+        s.add(badge);
+        assert_eq!(within(&s, Bounds::new(90.0, 280.0, 20.0, 30.0)), vec![id]);
     }
 
     /// Topmost is by *render order*: a counter drawn first is still what the click gets,
@@ -398,17 +507,24 @@ mod tests {
     #[test]
     fn the_click_goes_to_what_is_visible_not_to_the_highest_z() {
         let mut s = scene();
-        let counter = object(0, Geometry::Counter {
-            center: Point::new(100.0, 100.0),
-            number: 1,
-            style: CounterStyle::Arabic,
-            radius: 20.0,
-        });
-        let rect = object(99, Geometry::Rect {
-            bounds: Bounds::new(50.0, 50.0, 100.0, 100.0),
-            filled: true,
-            radius: 0.0,
-        });
+        let counter = object(
+            0,
+            Geometry::Counter {
+                center: Point::new(100.0, 100.0),
+                number: 1,
+                style: CounterStyle::Arabic,
+                radius: 20.0,
+                tail: None,
+            },
+        );
+        let rect = object(
+            99,
+            Geometry::Rect {
+                bounds: Bounds::new(50.0, 50.0, 100.0, 100.0),
+                filled: true,
+                radius: 0.0,
+            },
+        );
         let counter_id = counter.id;
         s.add(counter);
         s.add(rect);
@@ -418,17 +534,23 @@ mod tests {
     #[test]
     fn a_locked_object_is_not_what_the_pointer_is_reaching_for() {
         let mut s = scene();
-        let mut locked = object(10, Geometry::Rect {
-            bounds: Bounds::new(0.0, 0.0, 500.0, 500.0),
-            filled: true,
-            radius: 0.0,
-        });
+        let mut locked = object(
+            10,
+            Geometry::Rect {
+                bounds: Bounds::new(0.0, 0.0, 500.0, 500.0),
+                filled: true,
+                radius: 0.0,
+            },
+        );
         locked.locked = true;
-        let under = object(0, Geometry::Rect {
-            bounds: Bounds::new(0.0, 0.0, 500.0, 500.0),
-            filled: true,
-            radius: 0.0,
-        });
+        let under = object(
+            0,
+            Geometry::Rect {
+                bounds: Bounds::new(0.0, 0.0, 500.0, 500.0),
+                filled: true,
+                radius: 0.0,
+            },
+        );
         let under_id = under.id;
         s.add(under);
         s.add(locked);
@@ -440,19 +562,26 @@ mod tests {
     #[test]
     fn a_right_click_reaches_a_locked_object_and_a_left_click_does_not() {
         let mut s = scene();
-        let mut locked = object(0, Geometry::Rect {
-            bounds: Bounds::new(0.0, 0.0, 500.0, 500.0),
-            filled: true,
-            radius: 0.0,
-        });
+        let mut locked = object(
+            0,
+            Geometry::Rect {
+                bounds: Bounds::new(0.0, 0.0, 500.0, 500.0),
+                filled: true,
+                radius: 0.0,
+            },
+        );
         locked.locked = true;
         let locked_id = locked.id;
-        let above = object(1, Geometry::Counter {
-            center: Point::new(100.0, 100.0),
-            number: 1,
-            style: CounterStyle::Arabic,
-            radius: 12.0,
-        });
+        let above = object(
+            1,
+            Geometry::Counter {
+                center: Point::new(100.0, 100.0),
+                number: 1,
+                style: CounterStyle::Arabic,
+                radius: 12.0,
+                tail: None,
+            },
+        );
         let above_id = above.id;
         s.add(locked);
         s.add(above);
@@ -467,10 +596,10 @@ mod tests {
     #[test]
     fn nothing_under_the_pointer_is_none() {
         let mut s = scene();
-        s.add(object(0, Geometry::Line {
-            start: Point::new(0.0, 0.0),
-            end: Point::new(10.0, 0.0),
-        }));
+        s.add(object(
+            0,
+            Geometry::Line { start: Point::new(0.0, 0.0), end: Point::new(10.0, 0.0) },
+        ));
         assert_eq!(topmost(&s, Point::new(900.0, 900.0)), None);
     }
 
@@ -479,7 +608,10 @@ mod tests {
     #[test]
     fn the_background_and_the_crop_take_no_clicks() {
         let mut s = scene();
-        s.add(object(0, Geometry::Background { params: BackgroundParams::default(), source: None }));
+        s.add(object(
+            0,
+            Geometry::Background { params: BackgroundParams::default(), source: None, fill: None },
+        ));
         s.add(object(1, Geometry::Crop { canvas_rect: Bounds::new(0.0, 0.0, 500.0, 500.0) }));
         assert_eq!(topmost(&s, Point::new(100.0, 100.0)), None);
         assert!(within(&s, Bounds::new(-10.0, -10.0, 2000.0, 2000.0)).is_empty());
@@ -509,11 +641,14 @@ mod tests {
     fn a_marquee_takes_what_it_touches() {
         let mut s = scene();
         let inside = object(0, Geometry::Ellipse { bounds: Bounds::new(100.0, 100.0, 50.0, 50.0) });
-        let straddling = object(1, Geometry::Rect {
-            bounds: Bounds::new(250.0, 100.0, 200.0, 50.0),
-            filled: false,
-            radius: 0.0,
-        });
+        let straddling = object(
+            1,
+            Geometry::Rect {
+                bounds: Bounds::new(250.0, 100.0, 200.0, 50.0),
+                filled: false,
+                radius: 0.0,
+            },
+        );
         let (inside_id, straddling_id) = (inside.id, straddling.id);
         s.add(inside);
         s.add(straddling);
@@ -530,10 +665,10 @@ mod tests {
     #[test]
     fn a_band_that_grazes_an_edge_has_touched_it() {
         let mut s = scene();
-        let line = object(0, Geometry::Line {
-            start: Point::new(100.0, 100.0),
-            end: Point::new(300.0, 100.0),
-        });
+        let line = object(
+            0,
+            Geometry::Line { start: Point::new(100.0, 100.0), end: Point::new(300.0, 100.0) },
+        );
         let id = line.id;
         s.add(line);
         assert_eq!(within(&s, Bounds::new(0.0, 0.0, 100.0, 100.0)), vec![id], "edge to edge");
@@ -544,13 +679,16 @@ mod tests {
     /// control point, which is chrome.
     #[test]
     fn an_arrows_curve_is_hit_along_the_curve_itself_and_not_at_its_control_point() {
-        let curved = object(0, Geometry::Arrow {
-            start: Point::new(0.0, 0.0),
-            end: Point::new(200.0, 0.0),
-            ctrl: Some(Point::new(100.0, 100.0)),
-            style: crate::style::ArrowStyle::Curved,
-            head: crate::style::ArrowHead::default(),
-        });
+        let curved = object(
+            0,
+            Geometry::Arrow {
+                start: Point::new(0.0, 0.0),
+                end: Point::new(200.0, 0.0),
+                ctrl: Some(Point::new(100.0, 100.0)),
+                style: crate::style::ArrowStyle::Curved,
+                head: crate::style::ArrowHead::default(),
+            },
+        );
         // The bend: half-way between the chord and the control point.
         assert!(hits(&curved, Point::new(100.0, 50.0)), "the visible middle of the arc");
         assert!(hits(&curved, Point::new(50.0, 37.5)), "a quarter of the way along");
@@ -564,21 +702,26 @@ mod tests {
     #[test]
     fn a_measured_object_is_hit_by_its_measured_box() {
         let mut scene = scene();
-        let label = object(0, Geometry::Text {
-            pos: Point::new(100.0, 100.0),
-            text: "ok".to_owned(),
-            style: crate::style::TextStyle::Standard,
-            font_size: 20.0,
-            align: crate::object::TextAlign::Start,
-            width: None,
-        });
+        let label = object(
+            0,
+            Geometry::Text {
+                pos: Point::new(100.0, 100.0),
+                text: "ok".to_owned(),
+                style: crate::style::TextStyle::Standard,
+                font_size: 20.0,
+                align: crate::object::TextAlign::Start,
+                width: None,
+                tail: None,
+            },
+        );
         let id = label.id;
         scene.add(label);
         // The estimate is about 24 x 24; a real layout says the label is far wider.
         let far = Point::new(180.0, 110.0);
         assert_eq!(topmost_within(&scene, far, TOLERANCE), None);
         let measured = topmost_measured(&scene, far, TOLERANCE, &|o| {
-            matches!(o.geometry, Geometry::Text { .. }).then(|| Bounds::new(100.0, 100.0, 120.0, 24.0))
+            matches!(o.geometry, Geometry::Text { .. })
+                .then(|| Bounds::new(100.0, 100.0, 120.0, 24.0))
         });
         assert_eq!(measured, Some(id));
     }

@@ -306,6 +306,12 @@
       <default>true</default>
       <summary>Keep captures in the history even after they were saved</summary>
     </key>
+    <!-- HIS-05 (D181): each capture in the history is read on this machine, so the
+         history and the Activities search find it by its text. Off deletes what was read. -->
+    <key name="history-read-text" type="b">
+      <default>true</default>
+      <summary>Read the text in the history's captures, so a search finds them by it</summary>
+    </key>
 
     <!-- spec/08 §7's "Retina export": the editor renders at the capture's own pixel
          density, or scaled to 1x. -->

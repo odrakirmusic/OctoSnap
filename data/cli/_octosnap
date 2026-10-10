@@ -1,0 +1,543 @@
+#compdef octosnap
+
+autoload -U is-at-least
+
+_octosnap() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_octosnap_commands" \
+"*::: :->octosnap" \
+&& ret=0
+    case $state in
+    (octosnap)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:octosnap-command-$line[1]:"
+        case $line[1] in
+            (capture)
+_arguments "${_arguments_options[@]}" : \
+'-m+[What to capture]:MODE:((all-in-one\:"The overlay with its toolbar and the last selection restored"
+area\:"Drag out a region"
+window\:"Pick a window"
+fullscreen\:"The whole monitor under the pointer"
+previous-area\:"The last selection again, with no overlay"
+self-timer\:"Select a region, then capture after a countdown"))' \
+'--mode=[What to capture]:MODE:((all-in-one\:"The overlay with its toolbar and the last selection restored"
+area\:"Drag out a region"
+window\:"Pick a window"
+fullscreen\:"The whole monitor under the pointer"
+previous-area\:"The last selection again, with no overlay"
+self-timer\:"Select a region, then capture after a countdown"))' \
+'-a+[What to do with it, overriding the configured after-capture actions]:ACTION:(copy save annotate upload pin)' \
+'--action=[What to do with it, overriding the configured after-capture actions]:ACTION:(copy save annotate upload pin)' \
+'(-a --action)-o+[Write the capture to this file as a PNG, or to standard output with \`-\`, once it is taken, and do nothing else with it\: no card, no copy, no save]:FILE:_files' \
+'(-a --action)--output=[Write the capture to this file as a PNG, or to standard output with \`-\`, once it is taken, and do nothing else with it\: no card, no copy, no save]:FILE:_files' \
+'--rect=[Skip the overlay and capture exactly this region, as logical x,y,width,height]:X,Y,W,H:_default' \
+'--display=[Which monitor, by connector name. See \`octosnap monitors\`]:CONNECTOR:_default' \
+'--timer=[Countdown in seconds. Implies --mode self-timer]:SECONDS:_default' \
+'--freeze[Freeze the screen while selecting, overriding the setting]' \
+'(--freeze)--no-freeze[Do not freeze the screen, overriding the setting]' \
+'--cursor[Include the pointer, overriding the setting]' \
+'(--cursor)--no-cursor[Exclude the pointer, overriding the setting]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+&& ret=0
+;;
+(record)
+_arguments "${_arguments_options[@]}" : \
+'--rect=[Record exactly this region, as logical x,y,width,height. Default\: the whole monitor under the pointer]:X,Y,W,H:_default' \
+'--display=[Which monitor, by connector name. See \`octosnap monitors\`]:CONNECTOR:_default' \
+'--seconds=[How long to record]:SECONDS:_default' \
+'--fps=[Frames per second; 0 is the screen'\''s own rate, and nothing above 50 is honoured, because a GIF cannot play faster]:FPS:_default' \
+'--max-width=[The widest the GIF may be, in pixels; 0 for no cap]:PIXELS:_default' \
+'--quality=[The encoder'\''s quality, from 1 to 100]:QUALITY:_default' \
+'-o+[Where to write the GIF. Default\: \`octosnap-<date>.gif\` in the current directory]:FILE:_files' \
+'--output=[Where to write the GIF. Default\: \`octosnap-<date>.gif\` in the current directory]:FILE:_files' \
+'--target=[How pipewiresrc is pointed at the stream (\`docs/spikes/11\`)\: a knob for measuring, so it is in no help]:TARGET:((node-id\:"\`path=<node id>\`, straight from \`PipeWireStreamAdded\`"
+serial\:"\`target-object=<object.serial>\`, resolved through \`pw-cli\`"))' \
+'--gif[The output is a GIF, the only format there is; accepted so scripts read right]' \
+'--no-cursor[Leave the pointer out of the recording]' \
+'--mark-recording[Tell the compositor this is a recording, so it shows its own indicator too]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(stop-recording)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(open)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':path -- The project file:_files' \
+&& ret=0
+;;
+(settings)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::tab -- Which page to open:(general shortcuts quick-access screenshots annotate advanced about)' \
+&& ret=0
+;;
+(copy-last)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(save-last)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(pin)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':path -- The image file, or `-` to read one from standard input:_files' \
+&& ret=0
+;;
+(annotate)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':path -- The file, or `-` to read an image from standard input:_files' \
+&& ret=0
+;;
+(open-from-clipboard)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(desktop-icons)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::action -- What to do with them:(toggle hide show)' \
+&& ret=0
+;;
+(add-overlay)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':path -- The image file, or `-` to read one from standard input:_files' \
+&& ret=0
+;;
+(text)
+_arguments "${_arguments_options[@]}" : \
+'--linebreaks[Keep the line breaks the page had, overriding the setting]' \
+'(--linebreaks)--single-line[Join each paragraph into one line, overriding the setting]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::path -- The image file. Without one, select an area on screen and read that:_files' \
+&& ret=0
+;;
+(history)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(restore)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(ping)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(shell-version)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(monitors)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(status)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_octosnap__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:octosnap-help-command-$line[1]:"
+        case $line[1] in
+            (capture)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(record)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(stop-recording)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(open)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(settings)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(copy-last)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(save-last)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(pin)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(annotate)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(open-from-clipboard)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(desktop-icons)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add-overlay)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(text)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(history)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(restore)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ping)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(shell-version)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(monitors)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(status)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_octosnap_commands] )) ||
+_octosnap_commands() {
+    local commands; commands=(
+'capture:Take a screenshot' \
+'record:Record a GIF of a rectangle for a fixed time, in this process rather than the app' \
+'stop-recording:Stop the recording in progress. Does nothing when nothing is recording' \
+'open:Open a .octosnap project for editing' \
+'settings:Open the settings window' \
+'copy-last:Put the most recent capture back on the clipboard' \
+'save-last:Write the most recent capture to the export location' \
+'pin:Pin an image to the screen' \
+'annotate:Open an image, or a .octosnap project, in the annotation editor' \
+'open-from-clipboard:Open the clipboard'\''s image in the annotation editor' \
+'desktop-icons:Hide, show or toggle the desktop icons' \
+'add-overlay:Add an image file to the Quick Access Overlay as a card' \
+'text:Recognise the text in an image and copy it' \
+'history:Open the capture history' \
+'restore:Bring back the most recently closed card' \
+'ping:Check that the app answers, starting it if it is not running' \
+'shell-version:Report the shell extension'\''s version and protocol' \
+'monitors:Print the monitor layout as the extension sees it, in logical coordinates' \
+'status:Report on the app and the shell extension at once' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'octosnap commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__add-overlay_commands] )) ||
+_octosnap__subcmd__add-overlay_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap add-overlay commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__annotate_commands] )) ||
+_octosnap__subcmd__annotate_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap annotate commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__capture_commands] )) ||
+_octosnap__subcmd__capture_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap capture commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__copy-last_commands] )) ||
+_octosnap__subcmd__copy-last_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap copy-last commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__desktop-icons_commands] )) ||
+_octosnap__subcmd__desktop-icons_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap desktop-icons commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help_commands] )) ||
+_octosnap__subcmd__help_commands() {
+    local commands; commands=(
+'capture:Take a screenshot' \
+'record:Record a GIF of a rectangle for a fixed time, in this process rather than the app' \
+'stop-recording:Stop the recording in progress. Does nothing when nothing is recording' \
+'open:Open a .octosnap project for editing' \
+'settings:Open the settings window' \
+'copy-last:Put the most recent capture back on the clipboard' \
+'save-last:Write the most recent capture to the export location' \
+'pin:Pin an image to the screen' \
+'annotate:Open an image, or a .octosnap project, in the annotation editor' \
+'open-from-clipboard:Open the clipboard'\''s image in the annotation editor' \
+'desktop-icons:Hide, show or toggle the desktop icons' \
+'add-overlay:Add an image file to the Quick Access Overlay as a card' \
+'text:Recognise the text in an image and copy it' \
+'history:Open the capture history' \
+'restore:Bring back the most recently closed card' \
+'ping:Check that the app answers, starting it if it is not running' \
+'shell-version:Report the shell extension'\''s version and protocol' \
+'monitors:Print the monitor layout as the extension sees it, in logical coordinates' \
+'status:Report on the app and the shell extension at once' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'octosnap help commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__add-overlay_commands] )) ||
+_octosnap__subcmd__help__subcmd__add-overlay_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help add-overlay commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__annotate_commands] )) ||
+_octosnap__subcmd__help__subcmd__annotate_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help annotate commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__capture_commands] )) ||
+_octosnap__subcmd__help__subcmd__capture_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help capture commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__copy-last_commands] )) ||
+_octosnap__subcmd__help__subcmd__copy-last_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help copy-last commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__desktop-icons_commands] )) ||
+_octosnap__subcmd__help__subcmd__desktop-icons_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help desktop-icons commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__help_commands] )) ||
+_octosnap__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help help commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__history_commands] )) ||
+_octosnap__subcmd__help__subcmd__history_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help history commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__monitors_commands] )) ||
+_octosnap__subcmd__help__subcmd__monitors_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help monitors commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__open_commands] )) ||
+_octosnap__subcmd__help__subcmd__open_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help open commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__open-from-clipboard_commands] )) ||
+_octosnap__subcmd__help__subcmd__open-from-clipboard_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help open-from-clipboard commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__pin_commands] )) ||
+_octosnap__subcmd__help__subcmd__pin_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help pin commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__ping_commands] )) ||
+_octosnap__subcmd__help__subcmd__ping_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help ping commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__record_commands] )) ||
+_octosnap__subcmd__help__subcmd__record_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help record commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__restore_commands] )) ||
+_octosnap__subcmd__help__subcmd__restore_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help restore commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__save-last_commands] )) ||
+_octosnap__subcmd__help__subcmd__save-last_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help save-last commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__settings_commands] )) ||
+_octosnap__subcmd__help__subcmd__settings_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help settings commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__shell-version_commands] )) ||
+_octosnap__subcmd__help__subcmd__shell-version_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help shell-version commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__status_commands] )) ||
+_octosnap__subcmd__help__subcmd__status_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help status commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__stop-recording_commands] )) ||
+_octosnap__subcmd__help__subcmd__stop-recording_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help stop-recording commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__help__subcmd__text_commands] )) ||
+_octosnap__subcmd__help__subcmd__text_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap help text commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__history_commands] )) ||
+_octosnap__subcmd__history_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap history commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__monitors_commands] )) ||
+_octosnap__subcmd__monitors_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap monitors commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__open_commands] )) ||
+_octosnap__subcmd__open_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap open commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__open-from-clipboard_commands] )) ||
+_octosnap__subcmd__open-from-clipboard_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap open-from-clipboard commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__pin_commands] )) ||
+_octosnap__subcmd__pin_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap pin commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__ping_commands] )) ||
+_octosnap__subcmd__ping_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap ping commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__record_commands] )) ||
+_octosnap__subcmd__record_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap record commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__restore_commands] )) ||
+_octosnap__subcmd__restore_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap restore commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__save-last_commands] )) ||
+_octosnap__subcmd__save-last_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap save-last commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__settings_commands] )) ||
+_octosnap__subcmd__settings_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap settings commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__shell-version_commands] )) ||
+_octosnap__subcmd__shell-version_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap shell-version commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__status_commands] )) ||
+_octosnap__subcmd__status_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap status commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__stop-recording_commands] )) ||
+_octosnap__subcmd__stop-recording_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap stop-recording commands' commands "$@"
+}
+(( $+functions[_octosnap__subcmd__text_commands] )) ||
+_octosnap__subcmd__text_commands() {
+    local commands; commands=()
+    _describe -t commands 'octosnap text commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_octosnap" ]; then
+    _octosnap "$@"
+else
+    compdef _octosnap octosnap
+fi

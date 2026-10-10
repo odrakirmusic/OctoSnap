@@ -26,10 +26,10 @@
 
 use std::ops::Range;
 
+use crate::StitchError;
 use crate::align::{self, Fixed};
 use crate::frame::Frame;
 use crate::signature::{Row, Signatures};
-use crate::StitchError;
 
 /// `spec/07` §1.2: "if 3 failures -> stop (end reached)".
 const MISSES: u8 = 3;
@@ -873,7 +873,11 @@ mod tests {
         stitcher.push(window(64, 200, 0, 0), 120).expect("f0");
         for (i, seed) in [11u32, 22, 33].into_iter().enumerate() {
             let next = stitcher.push(window(64, 200, 0, seed), 120).expect("a stranger");
-            let wanted = if i + 1 >= usize::from(MISSES) { Next::Stop(End::Unmatched) } else { Next::Smaller };
+            let wanted = if i + 1 >= usize::from(MISSES) {
+                Next::Stop(End::Unmatched)
+            } else {
+                Next::Smaller
+            };
             assert_eq!(next, wanted, "stranger {i}");
         }
     }
@@ -1138,10 +1142,20 @@ mod tests {
         let mut stitcher = Stitcher::new(Direction::Down, Limits::default());
         stitcher.push(looking(Look::Prose, 240, 200, 0, 4), 120).expect("the first frame");
         // 190 of 200: the frames share ten rows, which is under `MIN_OVERLAP`.
-        assert_eq!(stitcher.push(looking(Look::Prose, 240, 200, 190, 4), 120).expect("a frame"), Next::Smaller);
-        assert_eq!(stitcher.size(), (240, 200), "nothing may be appended from a frame nobody placed");
+        assert_eq!(
+            stitcher.push(looking(Look::Prose, 240, 200, 190, 4), 120).expect("a frame"),
+            Next::Smaller
+        );
+        assert_eq!(
+            stitcher.size(),
+            (240, 200),
+            "nothing may be appended from a frame nobody placed"
+        );
         // And a frame that *does* overlap is still placed afterwards, from the same anchor.
-        assert_eq!(stitcher.push(looking(Look::Prose, 240, 200, 150, 4), 120).expect("a frame"), Next::Scroll);
+        assert_eq!(
+            stitcher.push(looking(Look::Prose, 240, 200, 150, 4), 120).expect("a frame"),
+            Next::Scroll
+        );
         assert_eq!(stitcher.size(), (240, 350));
     }
 
@@ -1160,11 +1174,17 @@ mod tests {
             for i in 0..=4u32 {
                 // Told 3 x step, moved step: every wrong peak is nearer the hint than the
                 // right one.
-                stitcher.push(looking(Look::Listing, 240, 200, i * step, 6), step * 3).expect("a frame");
+                stitcher
+                    .push(looking(Look::Listing, 240, 200, i * step, 6), step * 3)
+                    .expect("a frame");
             }
             let height = 200 + 4 * step;
             assert_eq!(stitcher.size(), (240, height), "in {step}s");
-            assert_eq!(stitcher.finish().expect("a result"), looking(Look::Listing, 240, height, 0, 6), "in {step}s");
+            assert_eq!(
+                stitcher.finish().expect("a result"),
+                looking(Look::Listing, 240, height, 0, 6),
+                "in {step}s"
+            );
         }
     }
 
@@ -1339,7 +1359,6 @@ mod tests {
         assert_eq!(stitcher.finish().expect("a result"), frame);
     }
 
-
     /// `docs/progress/M6-REAL-SESSION-CHECKLIST.md` §1 item 3's spreadsheet: a frozen
     /// first column, captured sideways. It is a sticky header turned on its side, which
     /// is the whole claim `spec/07` §1.2's "horizontal mode is the transpose" makes about
@@ -1401,6 +1420,4 @@ mod tests {
             assert_eq!(stitcher.size(), (240, 570), "{count} images: every row of the page");
         }
     }
-
-
 }

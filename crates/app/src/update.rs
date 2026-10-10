@@ -120,7 +120,11 @@ impl Found {
     pub fn from_variant(info: &glib::Variant) -> Self {
         let dict = glib::VariantDict::new(Some(info));
         let read = |key: &str| dict.lookup::<String>(key).ok().flatten().unwrap_or_default();
-        Self { running: read("running-commit"), local: read("local-commit"), remote: read("remote-commit") }
+        Self {
+            running: read("running-commit"),
+            local: read("local-commit"),
+            remote: read("remote-commit"),
+        }
     }
 
     /// What it means. An install that already happened, by Software or `flatpak update`,
@@ -294,7 +298,10 @@ pub fn install() {
 
 /// The monitor's object path, made the first time it is needed. The portal keeps it for as
 /// long as this connection lasts.
-async fn ensure_monitor(updates: &Rc<Updates>, connection: &gio::DBusConnection) -> Result<String, String> {
+async fn ensure_monitor(
+    updates: &Rc<Updates>,
+    connection: &gio::DBusConnection,
+) -> Result<String, String> {
     if let Some(path) = updates.monitor.borrow().clone() {
         return Ok(path);
     }
@@ -346,16 +353,24 @@ impl Updates {
                     // A restart that did not happen is not tried again at every poll.
                     (_, State::Installing { .. } | State::Installed | State::Deferred) => {}
                     // The release the user, or the release itself, already refused.
-                    (State::Available { commit }, State::Failed(Failure::NotAllowed | Failure::NeedsPermissions))
-                        if self.attempted.borrow().as_deref() == Some(commit.as_str()) => {}
+                    (
+                        State::Available { commit },
+                        State::Failed(Failure::NotAllowed | Failure::NeedsPermissions),
+                    ) if self.attempted.borrow().as_deref() == Some(commit.as_str()) => {}
                     _ => self.set(state),
                 }
             }
             "Progress" => {
                 let dict = glib::VariantDict::new(Some(&info));
                 let number = |key: &str| dict.lookup::<u32>(key).ok().flatten().unwrap_or_default();
-                let text = |key: &str| dict.lookup::<String>(key).ok().flatten().unwrap_or_default();
-                let state = progressed(number("status"), number("progress"), &text("error"), &text("error_message"));
+                let text =
+                    |key: &str| dict.lookup::<String>(key).ok().flatten().unwrap_or_default();
+                let state = progressed(
+                    number("status"),
+                    number("progress"),
+                    &text("error"),
+                    &text("error_message"),
+                );
                 if state == State::Current {
                     info!("the portal had nothing to install");
                 }
@@ -419,7 +434,8 @@ impl Updates {
     /// leaves this one running, and is not started again: the next login starts it.
     async fn restart(self: &Rc<Self>) {
         let Some(connection) = self.app.dbus_connection() else { return };
-        let exe = std::env::current_exe().map_or_else(|_| "/app/bin/octosnap-app".into(), |p| p.to_string_lossy().into_owned());
+        let exe = std::env::current_exe()
+            .map_or_else(|_| "/app/bin/octosnap-app".into(), |p| p.to_string_lossy().into_owned());
         // The new release writes where this one does. The portal also numbers the
         // environment's descriptor after the highest one it was given, which with none is
         // 0, and `flatpak run` refuses that: update-test.sh found it at the first restart.
@@ -454,7 +470,9 @@ impl Updates {
         self.spawn.borrow_mut().subscription = Some(subscription);
         // The new release starts while this one still runs, and would keep this run's log
         // as a crash's: update-test.sh found every restart filing one.
-        *self.handed_over.borrow_mut() = Some(crate::diagnostics::hand_over(&crate::diagnostics::directory()).unwrap_or_default());
+        *self.handed_over.borrow_mut() = Some(
+            crate::diagnostics::hand_over(&crate::diagnostics::directory()).unwrap_or_default(),
+        );
         info!("starting the new release in this one's place");
         match connection
             .call_with_unix_fd_list_future(
@@ -496,10 +514,15 @@ impl Updates {
     fn spawn_ended(self: &Rc<Self>) {
         let status = {
             let spawn = self.spawn.borrow();
-            spawn.pid.and_then(|pid| spawn.exited.iter().find(|(exited, _)| *exited == pid).map(|(_, status)| *status))
+            spawn.pid.and_then(|pid| {
+                spawn.exited.iter().find(|(exited, _)| *exited == pid).map(|(_, status)| *status)
+            })
         };
         if let Some(status) = status {
-            warn!(status, "the new release ended before it took over; this one runs on, and the next login starts it");
+            warn!(
+                status,
+                "the new release ended before it took over; this one runs on, and the next login starts it"
+            );
             self.take_back();
             self.set(State::Deferred);
         }
@@ -611,7 +634,12 @@ mod tests {
     fn the_portals_refusals_are_told_apart() {
         // As flatpak 1.16's portal sends them, seen in the D170 spike.
         assert_eq!(
-            progressed(3, 0, "org.freedesktop.DBus.Error.AccessDenied", "Application update not allowed"),
+            progressed(
+                3,
+                0,
+                "org.freedesktop.DBus.Error.AccessDenied",
+                "Application update not allowed"
+            ),
             State::Failed(Failure::NotAllowed)
         );
         assert_eq!(
@@ -627,7 +655,10 @@ mod tests {
             progressed(3, 0, "org.freedesktop.DBus.Error.Failed", "No network."),
             State::Failed(Failure::Other("No network".into()))
         );
-        assert_eq!(progressed(3, 0, "", ""), State::Failed(Failure::Other("the portal gave no reason".into())));
+        assert_eq!(
+            progressed(3, 0, "", ""),
+            State::Failed(Failure::Other("the portal gave no reason".into()))
+        );
     }
 
     #[test]
@@ -671,10 +702,20 @@ mod tests {
 
     #[test]
     fn spawn_is_called_with_the_portals_signature() {
-        assert_eq!(spawn_parameters("/app/bin/octosnap-app", None, &[]).type_().as_str(), "(ayaaya{uh}a{ss}ua{sv})");
-        let with_log = spawn_parameters("/app/bin/octosnap-app", Some("debug".into()), &[(0, 0), (1, 1), (2, 2)]);
+        assert_eq!(
+            spawn_parameters("/app/bin/octosnap-app", None, &[]).type_().as_str(),
+            "(ayaaya{uh}a{ss}ua{sv})"
+        );
+        let with_log = spawn_parameters(
+            "/app/bin/octosnap-app",
+            Some("debug".into()),
+            &[(0, 0), (1, 1), (2, 2)],
+        );
         let argv: Vec<Vec<u8>> = with_log.child_value(1).get().unwrap_or_default();
-        assert_eq!(argv, vec![b"/app/bin/octosnap-app\0".to_vec(), b"--gapplication-replace\0".to_vec()]);
+        assert_eq!(
+            argv,
+            vec![b"/app/bin/octosnap-app\0".to_vec(), b"--gapplication-replace\0".to_vec()]
+        );
         assert_eq!(with_log.child_value(4).get::<u32>(), Some(SPAWN_LATEST_VERSION));
         assert_eq!(with_log.child_value(3).n_children(), 1);
     }
@@ -684,8 +725,10 @@ mod tests {
         // With none, the portal hands `flatpak run` its environment as descriptor 0, which
         // it refuses: the first restart update-test.sh ran ended so.
         let parameters = spawn_parameters("/app/bin/octosnap-app", None, &[(0, 0), (1, 1), (2, 2)]);
-        let fds: std::collections::HashMap<u32, glib::variant::Handle> = parameters.child_value(2).get().unwrap_or_default();
-        let mut passed: Vec<(u32, i32)> = fds.into_iter().map(|(to, handle)| (to, handle.0)).collect();
+        let fds: std::collections::HashMap<u32, glib::variant::Handle> =
+            parameters.child_value(2).get().unwrap_or_default();
+        let mut passed: Vec<(u32, i32)> =
+            fds.into_iter().map(|(to, handle)| (to, handle.0)).collect();
         passed.sort_unstable();
         assert_eq!(passed, vec![(0, 0), (1, 1), (2, 2)]);
     }

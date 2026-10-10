@@ -17,8 +17,8 @@ use std::rc::Rc;
 use gtk::gio;
 use gtk::prelude::*;
 use octosnap_core::actions::{AfterAction, ClipboardPlan, ConfirmModifiers, Plan, Policy, resolve};
-use octosnap_core::request::CaptureRequest;
 use octosnap_core::history::Kind;
+use octosnap_core::request::CaptureRequest;
 use octosnap_core::savepath::{
     DEFAULT_JPEG_QUALITY, ImageFormat, recording_dir, save_as_target, screenshot_dir, unique_path,
 };
@@ -505,8 +505,14 @@ impl<B: ShellBridge> CaptureFlow<B> {
                     "the chosen name could not hold the picture's format"
                 );
             }
-            write_still(&capture.path, &target.path, target.format, config.jpeg_quality, target.chosen)
-                .await?;
+            write_still(
+                &capture.path,
+                &target.path,
+                target.format,
+                config.jpeg_quality,
+                target.chosen,
+            )
+            .await?;
             target.path
         };
         *self.last_saved.borrow_mut() = Some(written.clone());
@@ -650,7 +656,10 @@ impl<B: ShellBridge> CaptureFlow<B> {
         }
 
         for action in &plan.actions {
-            if matches!(action, AfterAction::Upload | AfterAction::AskName | AfterAction::OpenEditor) {
+            if matches!(
+                action,
+                AfterAction::Upload | AfterAction::AskName | AfterAction::OpenEditor
+            ) {
                 outcome.deferred.push(*action);
             }
         }
@@ -900,7 +909,8 @@ impl<B: ShellBridge> CaptureFlow<B> {
                 }
             }
         }
-        if let Err(e) = gio::File::for_path(&dir).make_directory_with_parents(gio::Cancellable::NONE)
+        if let Err(e) =
+            gio::File::for_path(&dir).make_directory_with_parents(gio::Cancellable::NONE)
             && !e.matches(gio::IOErrorEnum::Exists)
         {
             return Err(SaveError::Directory(dir, e));
@@ -965,7 +975,8 @@ impl<B: ShellBridge> CaptureFlow<B> {
         // stays sync. The write below is the part that matters: spec/10 §6 caps UI-thread
         // work at 4 ms and a 4K PNG is megabytes, so that one is a future -- and an encode
         // is a worker's.
-        if let Err(e) = gio::File::for_path(&dir).make_directory_with_parents(gio::Cancellable::NONE)
+        if let Err(e) =
+            gio::File::for_path(&dir).make_directory_with_parents(gio::Cancellable::NONE)
             && !e.matches(gio::IOErrorEnum::Exists)
         {
             return Err(SaveError::Directory(dir, e));
@@ -973,7 +984,8 @@ impl<B: ShellBridge> CaptureFlow<B> {
 
         match format {
             Some(format) => {
-                write_still(&capture.path, &destination, format, config.jpeg_quality, false).await?;
+                write_still(&capture.path, &destination, format, config.jpeg_quality, false)
+                    .await?;
             }
             None => copy_file(&capture.path, &destination, false).await?,
         }
@@ -1062,10 +1074,7 @@ pub fn play_cue(cue: Cue) {
 fn decode_modifiers(mask: u32) -> ConfirmModifiers {
     const SHIFT_MASK: u32 = 1 << 0;
     const CONTROL_MASK: u32 = 1 << 2;
-    ConfirmModifiers {
-        ctrl: mask & CONTROL_MASK != 0,
-        shift: mask & SHIFT_MASK != 0,
-    }
+    ConfirmModifiers { ctrl: mask & CONTROL_MASK != 0, shift: mask & SHIFT_MASK != 0 }
 }
 
 /// True when the image should go on the clipboard *now*.
@@ -1073,10 +1082,7 @@ fn decode_modifiers(mask: u32) -> ConfirmModifiers {
 /// `ACT-01`'s Copy+Upload rule means "copy the link when the upload finishes" must not
 /// also put the image there first.
 fn should_copy_now(plan: &Plan) -> bool {
-    matches!(
-        plan.clipboard,
-        Some(ClipboardPlan::Image | ClipboardPlan::ImageThenLink)
-    )
+    matches!(plan.clipboard, Some(ClipboardPlan::Image | ClipboardPlan::ImageThenLink))
 }
 
 fn pictures_dir() -> PathBuf {
@@ -1095,15 +1101,12 @@ fn videos_dir() -> PathBuf {
 /// is: the recording folder, the recording template, `.gif` -- never a `.png` name on GIF
 /// bytes.
 fn is_recording(capture: &CaptureResult) -> bool {
-    matches!(Kind::of(capture), Kind::Gif | Kind::Video) || octosnap_core::history::is_gif(&capture.path)
+    matches!(Kind::of(capture), Kind::Gif | Kind::Video)
+        || octosnap_core::history::is_gif(&capture.path)
 }
 
 fn capture_type(recording: bool) -> filename::CaptureType {
-    if recording {
-        filename::CaptureType::Recording
-    } else {
-        filename::CaptureType::Screenshot
-    }
+    if recording { filename::CaptureType::Recording } else { filename::CaptureType::Screenshot }
 }
 
 /// The extension the spool file already carries, lower-cased; `gif` if it somehow has
@@ -1274,7 +1277,10 @@ mod tests {
         // The clipboard's own copy of it (D165), under the name the save below gets too.
         let copied = dir.path().join("clipboard/01REC/Shot 2026-09-07 1.gif");
         assert_eq!(bridge.clipboard_calls(), vec![copied.clone()]);
-        assert_eq!(std::fs::read(&copied).expect("copied"), std::fs::read(&capture.path).expect("written"));
+        assert_eq!(
+            std::fs::read(&copied).expect("copied"),
+            std::fs::read(&capture.path).expect("written")
+        );
         let saved = outcome.saved_to.expect("saved");
         assert_eq!(saved.file_name(), copied.file_name());
         assert!(saved.is_file());
@@ -1310,7 +1316,11 @@ mod tests {
         let first = recording_capture_in(dir.path());
         let later = dir.path().join("01LATER.gif");
         std::fs::write(&later, b"GIF89a later").expect("write source");
-        let second = CaptureResult { path: later.clone(), meta_path: later.with_extension("json"), ..first.clone() };
+        let second = CaptureResult {
+            path: later.clone(),
+            meta_path: later.with_extension("json"),
+            ..first.clone()
+        };
         let shot = capture_in(dir.path(), 0);
 
         run(flow.copy(&first)).expect("first GIF");
@@ -1349,7 +1359,10 @@ mod tests {
         let capture = recording_capture_in(dir.path());
         let saved = run(flow.save_capture(&capture)).expect("saved");
 
-        assert!(saved.starts_with(&recordings), "a GIF belongs under the recording folder, got {saved:?}");
+        assert!(
+            saved.starts_with(&recordings),
+            "a GIF belongs under the recording folder, got {saved:?}"
+        );
         assert!(!saved.starts_with(&shots), "and not under the screenshot folder");
         assert_eq!(saved.extension().and_then(|e| e.to_str()), Some("gif"));
     }
@@ -1406,10 +1419,7 @@ mod tests {
     #[test]
     fn a_save_policy_writes_the_templated_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = Policy {
-            configured: vec![AfterAction::Save],
-            ..Policy::default()
-        };
+        let policy = Policy { configured: vec![AfterAction::Save], ..Policy::default() };
         let flow = CaptureFlow::new(NullBridge::default(), policy, save_config_in(dir.path()));
         let capture = capture_in(dir.path(), 0);
 
@@ -1431,10 +1441,7 @@ mod tests {
     fn ctrl_at_confirm_copies_even_under_a_save_only_policy() {
         let dir = tempfile::tempdir().expect("tempdir");
         let bridge = NullBridge::default();
-        let policy = Policy {
-            configured: vec![AfterAction::Save],
-            ..Policy::default()
-        };
+        let policy = Policy { configured: vec![AfterAction::Save], ..Policy::default() };
         let flow = CaptureFlow::new(bridge.clone(), policy, save_config_in(dir.path()));
 
         let outcome = run(flow.handle(&capture_in(dir.path(), 1 << 2)));
@@ -1468,10 +1475,7 @@ mod tests {
     #[test]
     fn a_second_capture_with_the_same_name_does_not_overwrite() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = Policy {
-            configured: vec![AfterAction::Save],
-            ..Policy::default()
-        };
+        let policy = Policy { configured: vec![AfterAction::Save], ..Policy::default() };
         // Counter width 1 and a fixed template, so both renders collide on the name.
         let save = SaveConfig {
             template: "Shot".to_owned(),
@@ -1496,7 +1500,8 @@ mod tests {
     #[test]
     fn card_shown_is_what_the_overlay_reported() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
+        let flow =
+            CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
         let shown = Rc::new(Cell::new(false));
         {
             let shown = Rc::clone(&shown);
@@ -1521,7 +1526,8 @@ mod tests {
     #[test]
     fn an_overlay_that_refuses_falls_back_to_a_notification() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
+        let flow =
+            CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
         flow.set_card_shower(Box::new(|_, _| false));
 
         let outcome = run(flow.handle(&capture_in(dir.path(), 0)));
@@ -1564,10 +1570,7 @@ mod tests {
     #[test]
     fn the_suggested_name_does_not_advance_the_counter() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let save = SaveConfig {
-            template: "Shot {n}".to_owned(),
-            ..save_config_in(dir.path())
-        };
+        let save = SaveConfig { template: "Shot {n}".to_owned(), ..save_config_in(dir.path()) };
         let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save);
         let capture = capture_in(dir.path(), 0);
 
@@ -1589,7 +1592,8 @@ mod tests {
     #[test]
     fn save_as_honours_the_chosen_path_exactly() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
+        let flow =
+            CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
         let capture = capture_in(dir.path(), 0);
         let chosen = dir.path().join("somewhere else.png");
 
@@ -1611,10 +1615,7 @@ mod tests {
     fn every_save_writes_the_configured_format() {
         for format in [ImageFormat::Png, ImageFormat::Jpg, ImageFormat::Webp] {
             let dir = tempfile::tempdir().expect("tempdir");
-            let policy = Policy {
-                configured: vec![AfterAction::Save],
-                ..Policy::default()
-            };
+            let policy = Policy { configured: vec![AfterAction::Save], ..Policy::default() };
             let save = SaveConfig { format, jpeg_quality: 80, ..save_config_in(dir.path()) };
             let flow = CaptureFlow::new(NullBridge::default(), policy, save);
             let capture = still_in(dir.path(), 64, 48, true);
@@ -1683,10 +1684,8 @@ mod tests {
     #[test]
     fn a_failing_bridge_does_not_stop_the_save() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = Policy {
-            configured: vec![AfterAction::Copy, AfterAction::Save],
-            ..Policy::default()
-        };
+        let policy =
+            Policy { configured: vec![AfterAction::Copy, AfterAction::Save], ..Policy::default() };
         let bridge = NullBridge::default().unavailable("extension not enabled");
         let flow = CaptureFlow::new(bridge, policy, save_config_in(dir.path()));
 
@@ -1702,7 +1701,8 @@ mod tests {
     #[test]
     fn a_read_that_fails_at_once_never_says_it_is_reading() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
+        let flow =
+            CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
         let asked = Rc::new(Cell::new(0u32));
         {
             let asked = Rc::clone(&asked);
@@ -1760,7 +1760,8 @@ mod tests {
     #[test]
     fn an_install_with_nothing_waiting_reads_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
+        let flow =
+            CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
         assert!(flow.waiting().is_none());
         assert_eq!(run(flow.read_waiting()), None);
     }
@@ -1770,13 +1771,15 @@ mod tests {
     #[test]
     fn a_read_waits_exactly_when_there_is_no_pack() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let flow = CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
+        let flow =
+            CaptureFlow::new(NullBridge::default(), Policy::default(), save_config_in(dir.path()));
         let file = dir.path().join("capture.png");
         let rect = Rect { x: 4, y: 8, width: 120, height: 40 };
 
         let outcome = run(flow.read_text(&file, Some(rect), Some(false)));
 
-        let no_pack = matches!(&outcome.recognised, Some(Recognised::Failed(why)) if why == NO_PACK);
+        let no_pack =
+            matches!(&outcome.recognised, Some(Recognised::Failed(why)) if why == NO_PACK);
         assert_eq!(no_pack, !crate::ocr::ready(), "{outcome:?}");
         match flow.waiting() {
             Some(waiting) => {

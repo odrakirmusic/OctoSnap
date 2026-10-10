@@ -125,6 +125,11 @@ pub fn parse_rect(text: &str) -> Result<Rect, RectParseError> {
     if width <= 0 || height <= 0 {
         return Err(RectParseError::EmptyRect { width, height });
     }
+    // Every consumer works out the right and bottom edges, and in a release build an
+    // overflow there wraps to the other side of the desktop rather than failing (D174).
+    if x.checked_add(width).is_none() || y.checked_add(height).is_none() {
+        return Err(RectParseError::OutOfRange);
+    }
     Ok(Rect::new(x, y, width, height))
 }
 
@@ -138,6 +143,8 @@ pub enum RectParseError {
     TooManyParts,
     #[error("a {width}x{height} rect has no area")]
     EmptyRect { width: i32, height: i32 },
+    #[error("the rect reaches past the largest coordinate there is")]
+    OutOfRange,
 }
 
 #[cfg(test)]
@@ -152,6 +159,14 @@ mod tests {
     #[test]
     fn tolerates_spaces_between_the_parts() {
         assert_eq!(parse_rect("10, 20, 300, 200"), Ok(Rect::new(10, 20, 300, 200)));
+    }
+
+    /// D174: an edge past `i32::MAX` would wrap round in a release build.
+    #[test]
+    fn a_rect_whose_edge_overflows_is_refused() {
+        assert_eq!(parse_rect("2147483000,0,1000,10"), Err(RectParseError::OutOfRange));
+        assert_eq!(parse_rect("0,2147483647,10,1"), Err(RectParseError::OutOfRange));
+        assert_eq!(parse_rect("2147482647,0,1000,10"), Ok(Rect::new(2_147_482_647, 0, 1000, 10)));
     }
 
     #[test]

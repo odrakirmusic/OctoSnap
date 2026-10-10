@@ -20,7 +20,7 @@
 use std::ops::Range;
 
 use crate::frame::Frame;
-use crate::signature::{Row, Signatures, SEGMENT};
+use crate::signature::{Row, SEGMENT, Signatures};
 
 /// `spec/07` §1.2: "accept if NCC > 0.85".
 pub const ACCEPT: f64 = 0.85;
@@ -311,7 +311,12 @@ impl Fixed {
     /// scrolled through it; a sticky header is by construction against the top and a
     /// sticky footer against the bottom.
     #[must_use]
-    pub fn between(previous: &Frame, previous_rows: &Signatures, current: &Frame, current_rows: &Signatures) -> Self {
+    pub fn between(
+        previous: &Frame,
+        previous_rows: &Signatures,
+        current: &Frame,
+        current_rows: &Signatures,
+    ) -> Self {
         let height = previous_rows.len().min(current_rows.len());
         if height == 0 {
             return Self::default();
@@ -341,7 +346,10 @@ impl Fixed {
         // capture, because the mask is settled once. If what is left between the runs has
         // no shape of its own, there is nothing sticky here: there is nothing at all.
         let body = candidate.body(height);
-        if body.end <= body.start || !previous_rows.varies(body.clone()) || !current_rows.varies(body) {
+        if body.end <= body.start
+            || !previous_rows.varies(body.clone())
+            || !current_rows.varies(body)
+        {
             return Self::default();
         }
         candidate
@@ -660,9 +668,7 @@ pub fn fitted(
     let tries: Vec<(usize, u32)> = peaks
         .iter()
         .enumerate()
-        .flat_map(|(at, peak)| {
-            [peak.offset - 1, peak.offset].into_iter().map(move |row| (at, row))
-        })
+        .flat_map(|(at, peak)| [peak.offset - 1, peak.offset].into_iter().map(move |row| (at, row)))
         .collect();
     let fits = spread(tries.len(), |at| {
         at.map(|at| between(previous, current, &band, Some(&changed), &body, tries[at].1, COARSE))
@@ -1110,7 +1116,11 @@ fn ncc(a: &[f64], b: &[f64]) -> f64 {
     }
     match (var_a < FLAT, var_b < FLAT) {
         (true, true) => {
-            if (mean_a - mean_b).abs() < FLAT.sqrt() { 1.0 } else { 0.0 }
+            if (mean_a - mean_b).abs() < FLAT.sqrt() {
+                1.0
+            } else {
+                0.0
+            }
         }
         (true, false) | (false, true) => 0.0,
         (false, false) => top / (var_a * var_b).sqrt(),
@@ -1121,7 +1131,7 @@ fn ncc(a: &[f64], b: &[f64]) -> f64 {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::testing::{looking, window, with_sidebar, Look, RULE};
+    use crate::testing::{Look, RULE, looking, window, with_sidebar};
 
     /// The runs of segments that changed at both places: joined across the words they
     /// span, split where either place stood still, and none where nothing changed.
@@ -1257,7 +1267,8 @@ mod tests {
         let stride = 64 * 4;
         pixels[(200 - 18) * stride..].copy_from_slice(&first.pixels()[(200 - 18) * stride..]);
         let second = Frame::new(64, 200, pixels).expect("a frame");
-        let fixed = Fixed::between(&first, &Signatures::of(&first), &second, &Signatures::of(&second));
+        let fixed =
+            Fixed::between(&first, &Signatures::of(&first), &second, &Signatures::of(&second));
         assert_eq!(fixed.footer, 18);
         assert_eq!(fixed.header, 0);
     }
@@ -1265,7 +1276,8 @@ mod tests {
     #[test]
     fn two_identical_frames_do_not_report_the_whole_page_as_sticky() {
         let first = window(64, 200, 0, 0);
-        let fixed = Fixed::between(&first, &Signatures::of(&first), &first, &Signatures::of(&first));
+        let fixed =
+            Fixed::between(&first, &Signatures::of(&first), &first, &Signatures::of(&first));
         assert_eq!(fixed.header, 80);
         assert_eq!(fixed.footer, 80);
         assert_eq!(fixed.body(200), 80..120);
@@ -1368,7 +1380,8 @@ mod tests {
     /// pixels and gets the page's own answer.
     #[test]
     fn the_pixels_break_a_tie_the_signatures_cannot() {
-        let (first, second) = (looking(Look::Listing, 240, 200, 0, 6), looking(Look::Listing, 240, 200, 40, 6));
+        let (first, second) =
+            (looking(Look::Listing, 240, 200, 0, 6), looking(Look::Listing, 240, 200, 40, 6));
         let (a, b) = (Signatures::of(&first), Signatures::of(&second));
         // Five peaks a line pitch apart, all of them the same score to three decimals.
         let peaks = contenders(&a, &b, Fixed::default(), 120);
@@ -1376,7 +1389,10 @@ mod tests {
         assert!(peaks.iter().all(|peak| peak.offset.is_multiple_of(20)), "{peaks:?}");
         // Told the page moved 120 when it moved 40: the signatures believe the step.
         assert_eq!(locate(&a, &b, Fixed::default(), 120).map(|found| found.offset), Some(120));
-        assert_eq!(place(&first, &a, &second, &b, Fixed::default(), 120).map(|found| found.offset), Some(40));
+        assert_eq!(
+            place(&first, &a, &second, &b, Fixed::default(), 120).map(|found| found.offset),
+            Some(40)
+        );
     }
 
     /// A page the compositor resampled scrolls by fractions of a row, and every row of type

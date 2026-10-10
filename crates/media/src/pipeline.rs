@@ -100,11 +100,13 @@ impl Graph {
         // System memory, which Mutter fills by painting the stage afresh. The extension
         // keeps the red frame out of what that paint puts in this crop (D115); a stream of
         // another kind is not known to put its pixels in the same places.
-        let system_memory = factory("capsfilter")?.create()
+        let system_memory = factory("capsfilter")?
+            .create()
             .property("caps", gst::Caps::builder("video/x-raw").build())
             .build()?;
         let rate = factory("videorate")?.create().build()?;
-        let at_rate = factory("capsfilter")?.create()
+        let at_rate = factory("capsfilter")?
+            .create()
             .property(
                 "caps",
                 gst::Caps::builder("video/x-raw")
@@ -112,7 +114,8 @@ impl Graph {
                     .build(),
             )
             .build()?;
-        let crop = factory("videocrop")?.create()
+        let crop = factory("videocrop")?
+            .create()
             .property("left", int(plan.crop.left)?)
             .property("top", int(plan.crop.top)?)
             .property("right", int(plan.crop.right)?)
@@ -126,10 +129,10 @@ impl Graph {
         // every source pixel that contributes is read; text downscaled with it stays
         // legible. It costs nothing at 1:1, where videoscale passes the buffer through,
         // and at GIF sizes the cost is well under a frame interval.
-        let scale = factory("videoscale")?.create()
-            .property_from_str("method", "lanczos")
-            .build()?;
-        let at_size = factory("capsfilter")?.create()
+        let scale =
+            factory("videoscale")?.create().property_from_str("method", "lanczos").build()?;
+        let at_size = factory("capsfilter")?
+            .create()
             .property(
                 "caps",
                 gst::Caps::builder("video/x-raw")
@@ -302,7 +305,8 @@ fn new_sample(
         }
         let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
         let caps = sample.caps().ok_or(gst::FlowError::NotNegotiated)?;
-        let info = gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::NotNegotiated)?;
+        let info =
+            gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::NotNegotiated)?;
         let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info)
             .map_err(|_| gst::FlowError::Error)?;
         let image = rgba_image(&frame).ok_or(gst::FlowError::Error)?;

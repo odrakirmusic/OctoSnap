@@ -17,9 +17,21 @@ workspace = true
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
+# `capture --output` waits for its capture's signal (SYS-11, D175). Already the media
+# crate's, so nothing new is built.
+futures-channel = { version = "0.3", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 gio = "0.22"
 glib = "0.22"
 octosnap-core = { version = "0.1.0", path = "../core" }
 octosnap-media = { version = "0.1.0", path = "../media" }
 octosnap-shell = { version = "0.1.0", path = "../shell" }
 thiserror = "2.0.20"
+
+[dev-dependencies]
+# The completions and the man page in data/cli, which a test makes from the definition
+# above and compares (SYS-11, D175). Not in the binary: the files are installed.
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
+# The URL scheme's properties (ENG-03, D173).
+proptest = { version = "1.11", default-features = false, features = ["std"] }

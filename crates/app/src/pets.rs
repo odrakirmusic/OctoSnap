@@ -141,11 +141,13 @@ struct Sheets {
 impl Sheets {
     fn new(sheets: HashMap<String, Sheet>) -> Self {
         let width = sheets.values().map(|s| s.width).max().unwrap_or(0);
-        let lift = sheets.values().flat_map(|s| s.steps.iter().map(|step| step.2)).max().unwrap_or(0);
+        let lift =
+            sheets.values().flat_map(|s| s.steps.iter().map(|step| step.2)).max().unwrap_or(0);
         let baseline = sheets.values().map(|s| s.baseline).max().unwrap_or(0);
         let floor = lift + baseline;
         // Below the floor: whatever a pet draws under the row it stands on.
-        let height = floor + sheets.values().map(|s| s.height.saturating_sub(s.baseline)).max().unwrap_or(0);
+        let height =
+            floor + sheets.values().map(|s| s.height.saturating_sub(s.baseline)).max().unwrap_or(0);
         Self { sheets, frames: RefCell::default(), width, floor, height }
     }
 
@@ -156,10 +158,15 @@ impl Sheets {
             .borrow_mut()
             .entry(kind.to_owned())
             .or_insert_with(|| {
-                let bytes = gio::resources_lookup_data(&format!("{RESOURCES}/{kind}.png"), gio::ResourceLookupFlags::NONE)
-                    .map_err(|e| warn!(kind, "a pet's strip is missing: {e}"))
+                let bytes = gio::resources_lookup_data(
+                    &format!("{RESOURCES}/{kind}.png"),
+                    gio::ResourceLookupFlags::NONE,
+                )
+                .map_err(|e| warn!(kind, "a pet's strip is missing: {e}"))
+                .ok()?;
+                let rgba = decode(&bytes)
+                    .map_err(|e| warn!(kind, "a pet's strip does not read: {e}"))
                     .ok()?;
-                let rgba = decode(&bytes).map_err(|e| warn!(kind, "a pet's strip does not read: {e}")).ok()?;
                 Some(Rc::new(frames_as_rects(&rgba, sheet)))
             })
             .clone()
@@ -174,10 +181,14 @@ thread_local! {
 fn sheets() -> Option<Rc<Sheets>> {
     SHEETS.with(|cell| {
         cell.get_or_init(|| {
-            let bytes = gio::resources_lookup_data(&format!("{RESOURCES}/pets.json"), gio::ResourceLookupFlags::NONE)
-                .map_err(|e| warn!("the pets' sheets are missing: {e}"))
-                .ok()?;
-            let sheets = parse(&bytes).map_err(|e| warn!("the pets' sheets do not read: {e}")).ok()?;
+            let bytes = gio::resources_lookup_data(
+                &format!("{RESOURCES}/pets.json"),
+                gio::ResourceLookupFlags::NONE,
+            )
+            .map_err(|e| warn!("the pets' sheets are missing: {e}"))
+            .ok()?;
+            let sheets =
+                parse(&bytes).map_err(|e| warn!("the pets' sheets do not read: {e}")).ok()?;
             Some(Rc::new(Sheets::new(sheets)))
         })
         .clone()
@@ -220,7 +231,11 @@ button.octosnap-pet-card:checked {
 }
 ",
     );
-    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 }
 
 mod imp {
@@ -289,7 +304,9 @@ mod imp {
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             let Some(sheets) = sheets() else { return };
             let kind = self.kind.borrow();
-            let (Some(sheet), Some(frames)) = (sheets.sheets.get(kind.as_str()), sheets.frames(&kind)) else {
+            let (Some(sheet), Some(frames)) =
+                (sheets.sheets.get(kind.as_str()), sheets.frames(&kind))
+            else {
                 return;
             };
             let (frame, _, lift) = sheet.steps.get(self.step.get()).copied().unwrap_or((0, 0, 0));
@@ -355,10 +372,7 @@ mod imp {
                 let physical = logical * scale;
                 (physical.round() - physical) / scale
             };
-            (
-                snap(f64::from(origin.x()) + sx + x),
-                snap(f64::from(origin.y()) + sy + y),
-            )
+            (snap(f64::from(origin.x()) + sx + x), snap(f64::from(origin.y()) + sy + y))
         }
 
         /// Starts the loop from wherever the pet is in it, or holds the resting frame when
@@ -385,13 +399,16 @@ mod imp {
                 .and_then(|sheet| sheet.steps.get(self.step.get()))
                 .map_or(650, |step| step.1);
             let weak = self.obj().downgrade();
-            let timer = glib::timeout_add_local_once(Duration::from_millis(u64::from(ms.max(16))), move || {
-                let Some(widget) = weak.upgrade() else { return };
-                let imp = widget.imp();
-                // Fired, so there is nothing left to remove.
-                imp.timer.take();
-                imp.advance();
-            });
+            let timer = glib::timeout_add_local_once(
+                Duration::from_millis(u64::from(ms.max(16))),
+                move || {
+                    let Some(widget) = weak.upgrade() else { return };
+                    let imp = widget.imp();
+                    // Fired, so there is nothing left to remove.
+                    imp.timer.take();
+                    imp.advance();
+                },
+            );
             if let Some(old) = self.timer.replace(Some(timer)) {
                 old.remove();
             }
@@ -399,7 +416,8 @@ mod imp {
 
         fn advance(&self) {
             let Some(sheets) = sheets() else { return };
-            let steps = sheets.sheets.get(self.kind.borrow().as_str()).map_or(0, |sheet| sheet.steps.len());
+            let steps =
+                sheets.sheets.get(self.kind.borrow().as_str()).map_or(0, |sheet| sheet.steps.len());
             if steps == 0 {
                 return;
             }
@@ -426,8 +444,9 @@ mod imp {
                 }
             });
             watches.push((settings.upcast(), handler));
-            if let Some(scroller) =
-                widget.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>()
+            if let Some(scroller) = widget
+                .ancestor(gtk::ScrolledWindow::static_type())
+                .and_downcast::<gtk::ScrolledWindow>()
             {
                 let adjustment = scroller.vadjustment();
                 let weak = widget.downgrade();
@@ -478,12 +497,21 @@ impl PetPreview {
         imp.base.set(base);
         *imp.kind.borrow_mut() = kind.to_owned();
         // Pets side by side would otherwise breathe in step, which no two animals do.
-        let steps = sheets().and_then(|sheets| sheets.sheets.get(kind).map(|sheet| sheet.steps.len())).unwrap_or(0);
+        let steps = sheets()
+            .and_then(|sheets| sheets.sheets.get(kind).map(|sheet| sheet.steps.len()))
+            .unwrap_or(0);
         if steps > 0 {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                clippy::cast_sign_loss
+            )]
             imp.step.set(glib::random_int_range(0, steps as i32) as usize);
         }
-        preview.update_property(&[gtk::accessible::Property::Label(&format!("{} the {kind}", name(kind)))]);
+        preview.update_property(&[gtk::accessible::Property::Label(&format!(
+            "{} the {kind}",
+            name(kind)
+        ))]);
         preview
     }
 }
@@ -500,7 +528,10 @@ mod tests {
     /// be a pet no card could bring out.
     #[test]
     fn the_app_knows_the_extensions_pets_in_their_order() {
-        let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../extension/src/pets/art/index.ts"));
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../extension/src/pets/art/index.ts"
+        ));
         let list = &source[source.find("export const PET_KINDS").expect("the list")..];
         let list = &list[list.find("= [").expect("its start") + 3..];
         let list = &list[..list.find(']').expect("its end")];
@@ -519,12 +550,21 @@ mod tests {
         for kind in KINDS {
             let sheet = sheets.get(kind).unwrap_or_else(|| panic!("a sheet for the {kind}"));
             let file = std::fs::File::open(format!("{DATA}/{kind}.png")).expect("its strip");
-            let reader = png::Decoder::new(std::io::BufReader::new(file)).read_info().expect("a PNG");
+            let reader =
+                png::Decoder::new(std::io::BufReader::new(file)).read_info().expect("a PNG");
             let info = reader.info();
-            assert_eq!((info.width, info.height), (sheet.width * sheet.frames, sheet.height), "the {kind}'s strip");
+            assert_eq!(
+                (info.width, info.height),
+                (sheet.width * sheet.frames, sheet.height),
+                "the {kind}'s strip"
+            );
             assert!(!sheet.steps.is_empty(), "the {kind} has a loop");
             for &(frame, ms, lift) in &sheet.steps {
-                assert!(frame < sheet.frames, "the {kind}'s loop names frame {frame} of {}", sheet.frames);
+                assert!(
+                    frame < sheet.frames,
+                    "the {kind}'s loop names frame {frame} of {}",
+                    sheet.frames
+                );
                 assert!(ms > 0, "the {kind}'s loop has a step of no time");
                 assert!(lift < sheet.height, "the {kind} jumps {lift} art pixels");
             }
@@ -549,7 +589,10 @@ mod tests {
                     for yy in y..y + h {
                         for xx in x..x + w {
                             let cell = &mut drawn[yy as usize * width + xx as usize];
-                            assert!(cell.is_none(), "the {kind}'s frame {frame} draws ({xx}, {yy}) twice");
+                            assert!(
+                                cell.is_none(),
+                                "the {kind}'s frame {frame} draws ({xx}, {yy}) twice"
+                            );
                             *cell = Some(colour);
                         }
                     }
@@ -559,7 +602,11 @@ mod tests {
                         let at = (y * stride + frame * width + x) * 4;
                         let pixel: [u8; 4] = rgba[at..at + 4].try_into().expect("four bytes");
                         let want = (pixel[3] != 0).then_some(pixel);
-                        assert_eq!(drawn[y * width + x], want, "the {kind}'s frame {frame} at ({x}, {y})");
+                        assert_eq!(
+                            drawn[y * width + x],
+                            want,
+                            "the {kind}'s frame {frame} at ({x}, {y})"
+                        );
                     }
                 }
             }
@@ -570,10 +617,14 @@ mod tests {
     /// says so.
     #[test]
     fn the_bundle_carries_every_pets_strip() {
-        let bundle = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/octosnap.gresource.xml"));
+        let bundle =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/octosnap.gresource.xml"));
         assert!(bundle.contains("<file>pets/pets.json</file>"));
         for kind in KINDS {
-            assert!(bundle.contains(&format!("<file>pets/{kind}.png</file>")), "the {kind}'s strip");
+            assert!(
+                bundle.contains(&format!("<file>pets/{kind}.png</file>")),
+                "the {kind}'s strip"
+            );
         }
     }
 }

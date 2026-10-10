@@ -73,6 +73,10 @@ pub enum RequestedAction {
     Annotate,
     Upload,
     Pin,
+    /// Keep the capture and do nothing else with it: no card, no copy, no save. The
+    /// history files it like any capture that had no card. What `octosnap capture
+    /// --output` asks for, since it writes the file itself (`SYS-11`, D175).
+    Keep,
 }
 
 impl RequestedAction {
@@ -84,6 +88,7 @@ impl RequestedAction {
             "annotate" => Self::Annotate,
             "upload" => Self::Upload,
             "pin" => Self::Pin,
+            "keep" => Self::Keep,
             // An empty string is the documented "no action requested" value, not an error.
             _ => return None,
         })
@@ -97,12 +102,12 @@ impl RequestedAction {
             Self::Annotate => "annotate",
             Self::Upload => "upload",
             Self::Pin => "pin",
+            Self::Keep => "keep",
         }
     }
 
     /// Every value, for a CLI's `--action` help text and the settings UI.
-    pub const ALL: [Self; 5] =
-        [Self::Copy, Self::Save, Self::Annotate, Self::Upload, Self::Pin];
+    pub const ALL: [Self; 5] = [Self::Copy, Self::Save, Self::Annotate, Self::Upload, Self::Pin];
 }
 
 /// Source window information, present for window captures and for the top window under

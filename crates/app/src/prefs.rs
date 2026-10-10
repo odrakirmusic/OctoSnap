@@ -246,13 +246,21 @@ fn build() -> adw::PreferencesDialog {
     if app_settings.is_none() || ext_settings.is_none() {
         // In a Flatpak both schemas ship with the app, so a missing one is a broken
         // installation or an extension that is not answering (D123), never a dev build.
-        dialog.add_toast(adw::Toast::new(match (&app_settings, &ext_settings, settings::sandboxed()) {
-            (None, _, true) => "This installation of OctoSnap is missing its settings; reinstall it",
-            (Some(_), _, true) => "The OctoSnap extension is not answering, so its settings are unavailable",
-            (None, None, false) => "Neither schema is installed; run scripts/install-dev.sh",
-            (None, _, false) => "The app's schema is not installed; run scripts/install-dev.sh",
-            (Some(_), _, false) => "The extension's schema is not installed; its settings are unavailable",
-        }));
+        dialog.add_toast(adw::Toast::new(
+            match (&app_settings, &ext_settings, settings::sandboxed()) {
+                (None, _, true) => {
+                    "This installation of OctoSnap is missing its settings; reinstall it"
+                }
+                (Some(_), _, true) => {
+                    "The OctoSnap extension is not answering, so its settings are unavailable"
+                }
+                (None, None, false) => "Neither schema is installed; run scripts/install-dev.sh",
+                (None, _, false) => "The app's schema is not installed; run scripts/install-dev.sh",
+                (Some(_), _, false) => {
+                    "The extension's schema is not installed; its settings are unavailable"
+                }
+            },
+        ));
     }
 
     // `spec/08` §0's order, with About last, minus the three tabs whose features are
@@ -341,9 +349,7 @@ fn quick_access_page(app_settings: Option<&gio::Settings>) -> adw::PreferencesPa
         .collect();
     let auto_close = adw::ComboRow::builder()
         .title("Close cards automatically")
-        .model(&gtk::StringList::new(
-            &labels.iter().map(String::as_str).collect::<Vec<_>>(),
-        ))
+        .model(&gtk::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>()))
         .build();
     match with_key(app_settings, "qao-auto-close-seconds") {
         Some(s) => bind_auto_close(s, &auto_close),
@@ -395,7 +401,9 @@ fn bind_auto_close(settings: &gio::Settings, row: &adw::ComboRow) {
     let settings = settings.clone();
     row.connect_selected_notify(move |row| {
         let Some(seconds) = AutoClose::CHOICES.get(row.selected() as usize) else { return };
-        if let Err(e) = settings.set_int("qao-auto-close-seconds", i32::try_from(*seconds).unwrap_or(0)) {
+        if let Err(e) =
+            settings.set_int("qao-auto-close-seconds", i32::try_from(*seconds).unwrap_or(0))
+        {
             warn!("could not store the auto-close interval: {e}");
         }
     });
@@ -466,7 +474,11 @@ fn general_page(
         (AfterAction::Copy, "Copy to clipboard", ""),
         (AfterAction::Save, "Save to the export location", ""),
         (AfterAction::Annotate, "Open in the editor", ""),
-        (AfterAction::Pin, "Pin to the screen", "Where it was taken; the card comes back when the pin closes"),
+        (
+            AfterAction::Pin,
+            "Pin to the screen",
+            "Where it was taken; the card comes back when the pin closes",
+        ),
     ] {
         let row = adw::SwitchRow::builder().title(title).build();
         if !subtitle.is_empty() {
@@ -505,7 +517,9 @@ fn general_page(
             // sound. Connected after the binding has set the row, so opening Settings is
             // quiet.
             shutter.connect_selected_notify(|row| {
-                if let Some(kind) = SHUTTER_ORDER.get(row.selected() as usize).filter(|kind| **kind != "none") {
+                if let Some(kind) =
+                    SHUTTER_ORDER.get(row.selected() as usize).filter(|kind| **kind != "none")
+                {
                     activate_app_action_with("preview-shutter", Some(&kind.to_variant()));
                 }
             });
@@ -532,7 +546,9 @@ fn general_page(
     // are in them, since they have the "tink" `spec/09` §4 gives them (D134).
     let ui_sounds = adw::SwitchRow::builder()
         .title("Action sounds")
-        .subtitle("When a recording starts and stops, text is recognised, and a copy or a pin is made")
+        .subtitle(
+            "When a recording starts and stops, text is recognised, and a copy or a pin is made",
+        )
         .build();
     bind_boolean(app_settings, "ui-sounds", &ui_sounds);
     feedback.add(&ui_sounds);
@@ -651,7 +667,9 @@ fn updates_row() -> Option<adw::ActionRow> {
     use crate::update::State;
     fn show(row: &adw::ActionRow, button: &gtk::Button, spinner: &adw::Spinner, state: &State) {
         let line = match state {
-            State::Current => format!("OctoSnap {}. {}", env!("CARGO_PKG_VERSION"), state.subtitle()),
+            State::Current => {
+                format!("OctoSnap {}. {}", env!("CARGO_PKG_VERSION"), state.subtitle())
+            }
             _ => state.subtitle(),
         };
         row.set_subtitle(&line);
@@ -678,7 +696,9 @@ fn updates_row() -> Option<adw::ActionRow> {
     info!(?state, "settings' updates row");
     let weak = (row.downgrade(), button.downgrade(), spinner.downgrade());
     crate::update::watch(move |state| {
-        let (Some(row), Some(button), Some(spinner)) = (weak.0.upgrade(), weak.1.upgrade(), weak.2.upgrade()) else {
+        let (Some(row), Some(button), Some(spinner)) =
+            (weak.0.upgrade(), weak.1.upgrade(), weak.2.upgrade())
+        else {
             return false;
         };
         show(&row, &button, &spinner, state);
@@ -689,7 +709,8 @@ fn updates_row() -> Option<adw::ActionRow> {
 }
 
 pub(crate) fn launch_at_login_row() -> adw::SwitchRow {
-    const SUBTITLE: &str = "Starts the service with the session, so the first capture is not a cold start";
+    const SUBTITLE: &str =
+        "Starts the service with the session, so the first capture is not a cold start";
     let row = adw::SwitchRow::builder().title("Launch at login").subtitle(SUBTITLE).build();
     if !settings::sandboxed() {
         row.set_active(autostart_enabled());
@@ -755,7 +776,9 @@ pub(crate) fn refresh_autostart() {
         return;
     };
     match std::fs::write(&path, updated) {
-        Ok(()) => info!(path = %path.display(), "launch at login now starts with the malloc settings"),
+        Ok(()) => {
+            info!(path = %path.display(), "launch at login now starts with the malloc settings")
+        }
         Err(e) => warn!(path = %path.display(), "could not update launch at login: {e}"),
     }
 }
@@ -766,13 +789,12 @@ fn set_autostart(on: bool) {
         return;
     }
     let result = if on {
-        std::env::current_exe()
-            .and_then(|exe| {
-                if let Some(dir) = path.parent() {
-                    std::fs::create_dir_all(dir)?;
-                }
-                std::fs::write(&path, octosnap_core::autostart::entry(&exe))
-            })
+        std::env::current_exe().and_then(|exe| {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&path, octosnap_core::autostart::entry(&exe))
+        })
     } else {
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
@@ -955,9 +977,7 @@ fn screenshots_page(
     }
     capture.add(&crosshair);
 
-    let magnifier = adw::SwitchRow::builder()
-        .title("Magnify pixels under the crosshair")
-        .build();
+    let magnifier = adw::SwitchRow::builder().title("Magnify pixels under the crosshair").build();
     bind_boolean(ext_settings, "shot-magnifier", &magnifier);
     capture.add(&magnifier);
     // Another dependent row: no crosshair means no magnifier to show.
@@ -975,8 +995,12 @@ fn screenshots_page(
     // After Capture is on the General page, not above this row, where the title used to
     // point (D136).
     let shortcuts_respect = adw::SwitchRow::builder()
-        .title("\u{201c}Capture Area and \u{2026}\u{201d} shortcuts add to the After Capture actions")
-        .subtitle("Those are on the General page. Off means such a shortcut does only what its name says")
+        .title(
+            "\u{201c}Capture Area and \u{2026}\u{201d} shortcuts add to the After Capture actions",
+        )
+        .subtitle(
+            "Those are on the General page. Off means such a shortcut does only what its name says",
+        )
         .build();
     bind_boolean(app_settings, "area-shortcuts-respect-actions", &shortcuts_respect);
     capture.add(&shortcuts_respect);
@@ -1026,12 +1050,7 @@ fn window_captures_group(app_settings: Option<&gio::Settings>) -> adw::Preferenc
 
     let background = adw::ComboRow::builder()
         .title("Background")
-        .model(&gtk::StringList::new(&[
-            "Transparent",
-            "Desktop wallpaper",
-            "An image",
-            "A colour",
-        ]))
+        .model(&gtk::StringList::new(&["Transparent", "Desktop wallpaper", "An image", "A colour"]))
         .build();
     const BACKGROUND_ORDER: [&str; 4] = ["transparent", "wallpaper", "image", "color"];
     match with_key(app_settings, "window-background") {
@@ -1104,8 +1123,7 @@ fn window_captures_group(app_settings: Option<&gio::Settings>) -> adw::Preferenc
 /// An image-file row: the chosen file's name, and a chooser that filters to images.
 fn image_row(app_settings: Option<&gio::Settings>, key: &'static str) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title("Image").build();
-    let choose =
-        gtk::Button::builder().label("Choose\u{2026}").valign(gtk::Align::Center).build();
+    let choose = gtk::Button::builder().label("Choose\u{2026}").valign(gtk::Align::Center).build();
     row.add_suffix(&choose);
     row.set_activatable_widget(Some(&choose));
 
@@ -1132,8 +1150,7 @@ fn image_row(app_settings: Option<&gio::Settings>, key: &'static str) -> adw::Ac
         }
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
-        let dialog =
-            gtk::FileDialog::builder().title("Background image").filters(&filters).build();
+        let dialog = gtk::FileDialog::builder().title("Background image").filters(&filters).build();
         let settings = settings.clone();
         dialog.open(
             choose.root().and_downcast_ref::<gtk::Window>(),
@@ -1297,7 +1314,11 @@ fn recording_page(
         .description("What happens to a GIF once the recording stops")
         .build();
     for (action, title, subtitle) in [
-        (AfterAction::ShowOverlay, "Show the overlay card", "A card in the corner with Copy, Save and drag-out"),
+        (
+            AfterAction::ShowOverlay,
+            "Show the overlay card",
+            "A card in the corner with Copy, Save and drag-out",
+        ),
         (AfterAction::Copy, "Copy to clipboard", ""),
         (AfterAction::Save, "Save to the export location", ""),
     ] {
@@ -1323,10 +1344,7 @@ fn folder_row(
     default_dir: fn() -> std::path::PathBuf,
 ) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title("Folder").build();
-    let choose = gtk::Button::builder()
-        .label("Choose\u{2026}")
-        .valign(gtk::Align::Center)
-        .build();
+    let choose = gtk::Button::builder().label("Choose\u{2026}").valign(gtk::Align::Center).build();
     row.add_suffix(&choose);
     row.set_activatable_widget(Some(&choose));
 
@@ -1396,7 +1414,7 @@ fn videos_dir() -> std::path::PathBuf {
 /// for an action the *app* serves but the installed extension's schema does not yet
 /// carry renders insensitive (`with_key`), which is the honest state between the two
 /// halves' releases. Text capture is the one still missing, and arrives with it.
-const SHORTCUT_GROUPS: &[(&str, &[(&str, &str)])] = &[
+pub(crate) const SHORTCUT_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Screenshots",
         &[
@@ -1536,6 +1554,18 @@ fn shortcuts_page(ext_settings: Option<&gio::Settings>) -> adw::PreferencesPage 
         page.add(&group);
     }
 
+    // `SYS-12` (D179): the keys inside the app's own windows, which no row here sets.
+    let inside = adw::PreferencesGroup::builder().title("Inside OctoSnap's Windows").build();
+    let row = adw::ActionRow::builder()
+        .title("Keyboard Shortcuts")
+        .subtitle("The editor's, the cards', the pins' and the rest. Ctrl+? shows them too.")
+        .build();
+    let show = app_action_button("Show", "shortcuts");
+    row.add_suffix(&show);
+    row.set_activatable_widget(Some(&show));
+    inside.add(&row);
+    page.add(&inside);
+
     let note = adw::PreferencesGroup::builder()
         .description(
             "Changing a shortcut takes effect immediately. A key GNOME Shell, the window \
@@ -1601,12 +1631,15 @@ pub(crate) fn print_keys_group(ext: &gio::Settings, accent: bool) -> adw::Prefer
     let ext = ext.clone();
     let strv = |settings: &gio::Settings| {
         let settings = settings.clone();
-        move |key: &str| -> Vec<String> { settings.strv(key).iter().map(ToString::to_string).collect() }
+        move |key: &str| -> Vec<String> {
+            settings.strv(key).iter().map(ToString::to_string).collect()
+        }
     };
     // Weakly, all four: both settings objects hold this, and so does the button's own
     // handler, which holds the settings (D139).
     let refresh = {
-        let (row, button, ext, gnome) = (row.downgrade(), button.downgrade(), ext.downgrade(), gnome.downgrade());
+        let (row, button, ext, gnome) =
+            (row.downgrade(), button.downgrade(), ext.downgrade(), gnome.downgrade());
         move || {
             let (Some(row), Some(button), Some(ext), Some(gnome)) =
                 (row.upgrade(), button.upgrade(), ext.upgrade(), gnome.upgrade())
@@ -1708,8 +1741,11 @@ fn known_bindings(ext: &gio::Settings) -> Vec<octosnap_core::shortcuts::Binding>
             && media.settings_schema().is_some_and(|s| s.has_key("custom-keybindings"))
         {
             for path in media.strv("custom-keybindings") {
-                let custom =
-                    gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, Some(path.as_str()));
+                let custom = gio::Settings::new_full(
+                    &schema,
+                    None::<&gio::SettingsBackend>,
+                    Some(path.as_str()),
+                );
                 known.push(Binding {
                     schema: custom_id.clone(),
                     key: custom.string("name").to_string(),
@@ -1731,10 +1767,7 @@ fn known_bindings(ext: &gio::Settings) -> Vec<octosnap_core::shortcuts::Binding>
 fn shortcut_row(settings: &gio::Settings, key: &'static str, label: &str) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(label).build();
 
-    let button = gtk::Button::builder()
-        .valign(gtk::Align::Center)
-        .width_request(180)
-        .build();
+    let button = gtk::Button::builder().valign(gtk::Align::Center).width_request(180).build();
     button.add_css_class("flat");
 
     let clear = gtk::Button::builder()
@@ -1918,7 +1951,9 @@ fn shortcut_row(settings: &gio::Settings, key: &'static str, label: &str) -> adw
 /// such as the function keys, Print and the media keys, can.
 fn usable_as_global(keyval: gtk::gdk::Key, mods: gtk::gdk::ModifierType) -> bool {
     use gtk::gdk::{Key, ModifierType};
-    if mods.intersects(ModifierType::CONTROL_MASK | ModifierType::ALT_MASK | ModifierType::SUPER_MASK) {
+    if mods
+        .intersects(ModifierType::CONTROL_MASK | ModifierType::ALT_MASK | ModifierType::SUPER_MASK)
+    {
         return true;
     }
     let types = keyval.to_unicode().is_some();
@@ -2135,7 +2170,9 @@ fn pets_page(ext_settings: Option<&gio::Settings>) -> adw::PreferencesPage {
     let show = adw::PreferencesGroup::new();
     let enabled = adw::SwitchRow::builder()
         .title("Show desktop pets")
-        .subtitle("Pixel-art friends who live on the desktop. Captures and recordings never show them")
+        .subtitle(
+            "Pixel-art friends who live on the desktop. Captures and recordings never show them",
+        )
         .build();
     bind_boolean(Some(settings), "pets-enabled", &enabled);
     show.add(&enabled);
@@ -2205,7 +2242,12 @@ fn pets_page(ext_settings: Option<&gio::Settings>) -> adw::PreferencesPage {
     let menu = adw::ComboRow::builder()
         .title("Menu placement")
         .subtitle("Where a right-click on a pet opens its capture menu")
-        .model(&gtk::StringList::new(&["Automatic", "Above the pet", "Below the pet", "Around the pet"]))
+        .model(&gtk::StringList::new(&[
+            "Automatic",
+            "Above the pet",
+            "Below the pet",
+            "Around the pet",
+        ]))
         .build();
     const MENU_ORDER: [&str; 4] = ["auto", "above", "below", "around"];
     match with_key(Some(settings), "pet-menu") {
@@ -2296,19 +2338,25 @@ fn bind_pet_cards(settings: &gio::Settings, cards: &[(&'static str, gtk::ToggleB
             if card.is_active() == current.iter().any(|v| v == kind) {
                 return;
             }
-            let out = |k: &str| if k == kind { card.is_active() } else { current.iter().any(|v| v == k) };
+            let out =
+                |k: &str| if k == kind { card.is_active() } else { current.iter().any(|v| v == k) };
             let next: Vec<&str> = crate::pets::KINDS
                 .iter()
                 .copied()
                 .filter(|k| out(k))
-                .chain(current.iter().map(String::as_str).filter(|v| !crate::pets::KINDS.contains(v)))
+                .chain(
+                    current.iter().map(String::as_str).filter(|v| !crate::pets::KINDS.contains(v)),
+                )
                 .collect();
             if next.is_empty() {
                 card.set_active(true);
-                if let Some(dialog) =
-                    card.ancestor(adw::PreferencesDialog::static_type()).and_downcast::<adw::PreferencesDialog>()
+                if let Some(dialog) = card
+                    .ancestor(adw::PreferencesDialog::static_type())
+                    .and_downcast::<adw::PreferencesDialog>()
                 {
-                    dialog.add_toast(adw::Toast::new("One pet stays out. The switch above puts them all away"));
+                    dialog.add_toast(adw::Toast::new(
+                        "One pet stays out. The switch above puts them all away",
+                    ));
                 }
                 return;
             }
@@ -2320,7 +2368,10 @@ fn bind_pet_cards(settings: &gio::Settings, cards: &[(&'static str, gtk::ToggleB
 // --- Advanced ------------------------------------------------------------------------
 
 /// `spec/08` §9: the command line and links, history retention, and debug logging.
-fn advanced_page(app_settings: Option<&gio::Settings>, ext_settings: Option<&gio::Settings>) -> adw::PreferencesPage {
+fn advanced_page(
+    app_settings: Option<&gio::Settings>,
+    ext_settings: Option<&gio::Settings>,
+) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::builder()
         .title("Advanced")
         .name(PAGE_ADVANCED)
@@ -2358,11 +2409,23 @@ fn advanced_page(app_settings: Option<&gio::Settings>, ext_settings: Option<&gio
         .build();
     bind_boolean(app_settings, "history-keep-saved", &keep_saved);
     history.add(&keep_saved);
+    // `HIS-05` (D181).
+    let read_text = adw::SwitchRow::builder()
+        .title("Find captures by their text")
+        .subtitle(
+            "Reads each capture on this machine, with the language pack below, so the \
+             history and the Activities search find it by what it says. Off deletes what \
+             was read",
+        )
+        .build();
+    bind_boolean(app_settings, "history-read-text", &read_text);
+    history.add(&read_text);
     let clear = adw::ActionRow::builder()
         .title("Clear the history")
         .subtitle("Removes every entry; saved copies stay where they are")
         .build();
-    let clear_button = gtk::Button::builder().label("Clear\u{2026}").valign(gtk::Align::Center).build();
+    let clear_button =
+        gtk::Button::builder().label("Clear\u{2026}").valign(gtk::Align::Center).build();
     clear_button.add_css_class("destructive-action");
     // Anchored to the button itself: the row held here, whose suffix the button is, was a
     // ring that kept the row (D139).
@@ -2386,9 +2449,7 @@ fn advanced_page(app_settings: Option<&gio::Settings>, ext_settings: Option<&gio
     let language = adw::ComboRow::builder()
         .title("Language")
         .subtitle("Automatic tries the packs you have installed and keeps the best read")
-        .model(&gtk::StringList::new(
-            &crate::ocr::Language::ALL.map(crate::ocr::Language::name),
-        ))
+        .model(&gtk::StringList::new(&crate::ocr::Language::ALL.map(crate::ocr::Language::name)))
         .build();
     match with_key(app_settings, "ocr-language") {
         Some(s) => bind_enum_row(
@@ -2433,9 +2494,13 @@ fn advanced_page(app_settings: Option<&gio::Settings>, ext_settings: Option<&gio
     // with its own `debug-log` on (D135), so it follows this row, and one switch turns on
     // the detail of both. An extension from before the key is left alone, quietly: the
     // app's half still works, so the row is not unavailable.
-    if let Some(ext) = ext_settings.filter(|s| s.settings_schema().is_some_and(|schema| schema.has_key("debug-log"))) {
+    if let Some(ext) = ext_settings
+        .filter(|s| s.settings_schema().is_some_and(|schema| schema.has_key("debug-log")))
+    {
         let ext = ext.clone();
-        debug.connect_active_notify(move |row| wrote("debug-log", ext.set_boolean("debug-log", row.is_active())));
+        debug.connect_active_notify(move |row| {
+            wrote("debug-log", ext.set_boolean("debug-log", row.is_active()))
+        });
     }
     if std::env::var_os("RUST_LOG").is_some() {
         debug.set_subtitle("RUST_LOG is set for this process and takes precedence");
@@ -2510,10 +2575,8 @@ fn about_page() -> adw::PreferencesPage {
         .build();
 
     let app_group = adw::PreferencesGroup::builder().title("OctoSnap").build();
-    let version = adw::ActionRow::builder()
-        .title("Version")
-        .subtitle(env!("CARGO_PKG_VERSION"))
-        .build();
+    let version =
+        adw::ActionRow::builder().title("Version").subtitle(env!("CARGO_PKG_VERSION")).build();
     app_group.add(&version);
     let protocol = adw::ActionRow::builder()
         .title("Protocol")
@@ -2594,7 +2657,8 @@ fn about_page() -> adw::PreferencesPage {
         ("Releases", format!("{REPOSITORY}/releases")),
     ] {
         let row = adw::ActionRow::builder().title(title).subtitle(&url).build();
-        let open = gtk::LinkButton::builder().uri(&url).label("Open").valign(gtk::Align::Center).build();
+        let open =
+            gtk::LinkButton::builder().uri(&url).label("Open").valign(gtk::Align::Center).build();
         row.add_suffix(&open);
         row.set_activatable_widget(Some(&open));
         links.add(&row);
@@ -2695,10 +2759,8 @@ fn bind_enum_row<T: PartialEq + Copy + 'static>(
 ) {
     let apply = move |row: &adw::ComboRow, settings: &gio::Settings| {
         let current = settings.string(key);
-        let index = order
-            .iter()
-            .position(|candidate| to_wire(*candidate) == current.as_str())
-            .unwrap_or(0);
+        let index =
+            order.iter().position(|candidate| to_wire(*candidate) == current.as_str()).unwrap_or(0);
         // Guarded, or writing the setting below re-enters this and fights the user.
         if row.selected() as usize != index {
             row.set_selected(index as u32);
@@ -2789,10 +2851,7 @@ fn bind_string_list_member(
             current.into_iter().filter(|v| v != member).collect()
         };
 
-        wrote(
-            key,
-            settings.set_strv(key, next.iter().map(String::as_str).collect::<Vec<_>>()),
-        );
+        wrote(key, settings.set_strv(key, next.iter().map(String::as_str).collect::<Vec<_>>()));
     });
 }
 
@@ -2848,7 +2907,9 @@ mod tests {
     fn a_global_shortcut_needs_ctrl_alt_or_super_unless_the_key_types_nothing() {
         use gtk::gdk::{Key, ModifierType};
         let none = ModifierType::empty();
-        for key in [Key::a, Key::_5, Key::space, Key::comma, Key::Left, Key::Tab, Key::Return, Key::KP_1] {
+        for key in
+            [Key::a, Key::_5, Key::space, Key::comma, Key::Left, Key::Tab, Key::Return, Key::KP_1]
+        {
             assert!(!usable_as_global(key, none), "{key:?} alone");
         }
         assert!(!usable_as_global(Key::A, ModifierType::SHIFT_MASK), "Shift+A types a capital");

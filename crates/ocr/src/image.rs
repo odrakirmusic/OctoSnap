@@ -62,9 +62,8 @@ impl Gray {
             .0
             .iter()
             .map(|p| {
-                let l = 0.2126 * f32::from(p[0])
-                    + 0.7152 * f32::from(p[1])
-                    + 0.0722 * f32::from(p[2]);
+                let l =
+                    0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2]);
                 l.round().clamp(0.0, 255.0) as u8
             })
             .collect();
@@ -88,10 +87,7 @@ impl Gray {
 
     #[must_use]
     pub fn at(&self, x: u32, y: u32) -> u8 {
-        self.pixels
-            .get((y as usize) * (self.width as usize) + (x as usize))
-            .copied()
-            .unwrap_or(0)
+        self.pixels.get((y as usize) * (self.width as usize) + (x as usize)).copied().unwrap_or(0)
     }
 
     /// Mean luminance, 0.0 to 1.0.
@@ -132,10 +128,8 @@ impl Gray {
         if (width, height) == (self.width, self.height) {
             return self.clone();
         }
-        let (ratio_x, ratio_y) = (
-            f64::from(self.width) / f64::from(width),
-            f64::from(self.height) / f64::from(height),
-        );
+        let (ratio_x, ratio_y) =
+            (f64::from(self.width) / f64::from(width), f64::from(self.height) / f64::from(height));
         let mut pixels = Vec::with_capacity((width as usize) * (height as usize));
         for y in 0..height {
             // The half-pixel offset both ways: destination pixel `y` covers the source

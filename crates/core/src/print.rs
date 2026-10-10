@@ -51,7 +51,8 @@ impl Layout {
         if w <= 0.0 || h <= 0.0 || pw <= 0.0 || ph <= 0.0 {
             return Self { scale: 1.0, pages: 1, split: Split::None, image, page };
         }
-        let one_page = Self { scale: (pw / w).min(ph / h), pages: 1, split: Split::None, image, page };
+        let one_page =
+            Self { scale: (pw / w).min(ph / h), pages: 1, split: Split::None, image, page };
 
         // How much longer than the page the image is, along each axis, in the page's own
         // proportions: 1 is the page's shape exactly.

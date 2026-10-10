@@ -61,7 +61,11 @@ mod tests {
             0,
             0,
             Style::new(Rgba::new(1.0, 0.0, 0.0, 1.0), 3, false),
-            Geometry::Rect { bounds: Bounds::new(x, 0.0, 100.0, 100.0), filled: false, radius: 0.0 },
+            Geometry::Rect {
+                bounds: Bounds::new(x, 0.0, 100.0, 100.0),
+                filled: false,
+                radius: 0.0,
+            },
         ))
     }
 

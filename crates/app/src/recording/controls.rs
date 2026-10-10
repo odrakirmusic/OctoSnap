@@ -14,6 +14,8 @@ use adw::prelude::*;
 
 use octosnap_media::text;
 
+use crate::first_frame::FirstFrame;
+
 /// `spec/09` §3: the controls fade in over 150 ms.
 const APPEAR_MS: u32 = 150;
 
@@ -22,6 +24,7 @@ const APPEAR_MS: u32 = 150;
 pub struct Pill {
     window: gtk::ApplicationWindow,
     time: gtk::Label,
+    first_frame: FirstFrame,
 }
 
 impl Pill {
@@ -90,8 +93,15 @@ impl Pill {
         // Mapped, not presented: the extension gives it a place and it takes clicks there
         // without ever stealing focus from what the user is recording.
         window.set_visible(true);
+        let first_frame = FirstFrame::of(&window);
 
-        Rc::new(Self { window, time })
+        Rc::new(Self { window, time, first_frame })
+    }
+
+    /// Resolves once the pill has painted its first frame, when the extension can find it
+    /// to place (D176).
+    pub fn first_frame(&self) -> FirstFrame {
+        self.first_frame.clone()
     }
 
     /// The GTK object path the extension addresses this window by (`docs/spikes/01-02`),

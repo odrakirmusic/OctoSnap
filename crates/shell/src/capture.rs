@@ -11,11 +11,10 @@ use std::path::PathBuf;
 
 use glib::prelude::ToVariant;
 use octosnap_core::request::CaptureRequest;
-use octosnap_core::{CaptureMode, CaptureResult, RequestedAction, Rect, SourceWindow};
+use octosnap_core::{CaptureMode, CaptureResult, Rect, RequestedAction, SourceWindow};
 
 use crate::error::BridgeError;
 use crate::variant;
-
 
 fn missing(field: &str) -> BridgeError {
     BridgeError::MalformedReply {
@@ -94,10 +93,8 @@ pub fn request_to_variant(request: &CaptureRequest) -> glib::Variant {
     let options = glib::VariantDict::new(None);
 
     if let Some(rect) = request.rect {
-        options.insert_value(
-            "rect",
-            &glib::Variant::from((rect.x, rect.y, rect.width, rect.height)),
-        );
+        options
+            .insert_value("rect", &glib::Variant::from((rect.x, rect.y, rect.width, rect.height)));
     }
     if let Some(display) = &request.display {
         options.insert("display", display.as_str());
@@ -144,10 +141,7 @@ pub fn request_from_variant(payload: &glib::Variant) -> Result<CaptureRequest, B
     }
 
     let mode = payload.child_value(0).get::<String>().ok_or_else(|| {
-        BridgeError::MalformedReply {
-            method: "capture",
-            detail: "mode is not a string".to_owned(),
-        }
+        BridgeError::MalformedReply { method: "capture", detail: "mode is not a string".to_owned() }
     })?;
     let mode = CaptureMode::from_wire(&mode).ok_or_else(|| BridgeError::MalformedReply {
         method: "capture",
@@ -179,6 +173,11 @@ pub const APP1_INTERFACE_XML: &str = r#"
     </method>
     <method name="HandleCapture">
       <arg type="a{sv}" direction="in" name="result"/>
+    </method>
+    <method name="Capture">
+      <arg type="s" direction="in" name="mode"/>
+      <arg type="a{sv}" direction="in" name="options"/>
+      <arg type="s" direction="out" name="handle"/>
     </method>
   </interface>
 </node>"#;
@@ -298,8 +297,7 @@ mod tests {
     fn an_empty_rect_falls_back_to_the_overlay() {
         let options = glib::VariantDict::new(None);
         options.insert_value("rect", &glib::Variant::from((0i32, 0i32, 0i32, 0i32)));
-        let payload =
-            glib::Variant::tuple_from_iter(["area".to_variant(), options.end()]);
+        let payload = glib::Variant::tuple_from_iter(["area".to_variant(), options.end()]);
         assert_eq!(request_from_variant(&payload).expect("decode").rect, None);
     }
 
@@ -310,8 +308,7 @@ mod tests {
         let options = glib::VariantDict::new(None);
         options.insert("freeze", "yes please");
         options.insert("timer", 5i32);
-        let payload =
-            glib::Variant::tuple_from_iter(["self-timer".to_variant(), options.end()]);
+        let payload = glib::Variant::tuple_from_iter(["self-timer".to_variant(), options.end()]);
         let decoded = request_from_variant(&payload).expect("decode");
         assert_eq!(decoded.freeze, None);
         assert_eq!(decoded.timer, Some(5));

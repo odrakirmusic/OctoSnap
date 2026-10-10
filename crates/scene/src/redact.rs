@@ -60,8 +60,11 @@ impl Pixels {
     /// Wraps a buffer, or answers `None` when its length does not match its size.
     #[must_use]
     pub fn from_rgba(width: usize, height: usize, rgba: Vec<u8>) -> Option<Self> {
-        (rgba.len() == width.checked_mul(height)?.checked_mul(4)?)
-            .then_some(Self { width, height, rgba })
+        (rgba.len() == width.checked_mul(height)?.checked_mul(4)?).then_some(Self {
+            width,
+            height,
+            rgba,
+        })
     }
 
     /// The pixel at `(x, y)`, or transparent black outside the buffer.
@@ -285,8 +288,10 @@ fn secure_blur(source: &Pixels, cell: f64, seed: u64) -> Pixels {
         return source.clone();
     }
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let (cols, rows) =
-        ((source.width as f64 / cell).ceil() as usize, (source.height as f64 / cell).ceil() as usize);
+    let (cols, rows) = (
+        (source.width as f64 / cell).ceil() as usize,
+        (source.height as f64 / cell).ceil() as usize,
+    );
     let (cols, rows) = (cols.max(1), rows.max(1));
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
     let edge = |i: usize, len: usize| ((i as f64) * cell).round().min(len as f64) as usize;
@@ -582,7 +587,13 @@ impl SplitMix {
 #[cfg(test)]
 // A failing assertion should panic, so expect() is the right tool here. The
 // workspace-wide ban exists to keep panics out of D-Bus handlers, not out of tests.
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 mod tests {
     use super::*;
 
@@ -596,12 +607,16 @@ mod tests {
                 let gradient = ((x + y) * 255 / (width + height)) as u8;
                 let stripe = if x % 6 < 3 { 60 } else { 0 };
                 let noise = (rng.unit() * 20.0) as u8;
-                px.set(x, y, [
-                    gradient.saturating_add(stripe),
-                    gradient.saturating_add(noise),
-                    255 - gradient,
-                    255,
-                ]);
+                px.set(
+                    x,
+                    y,
+                    [
+                        gradient.saturating_add(stripe),
+                        gradient.saturating_add(noise),
+                        255 - gradient,
+                        255,
+                    ],
+                );
             }
         }
         px
@@ -613,12 +628,7 @@ mod tests {
     }
 
     fn mean_abs_diff(a: &Pixels, b: &Pixels) -> f64 {
-        let total: u64 = a
-            .rgba
-            .iter()
-            .zip(&b.rgba)
-            .map(|(p, q)| u64::from(p.abs_diff(*q)))
-            .sum();
+        let total: u64 = a.rgba.iter().zip(&b.rgba).map(|(p, q)| u64::from(p.abs_diff(*q))).sum();
         total as f64 / a.rgba.len() as f64
     }
 
@@ -767,7 +777,8 @@ mod tests {
         assert!((90..=150).contains(&mid), "the edge pixel {mid} is not between 40 and 200");
         assert!(out.at(2, h / 2)[0] > 190, "far from the edge the left side is unchanged");
         assert!(out.at(w - 3, h / 2)[0] < 50, "far from the edge the right side is unchanged");
-        let red = |px: &Pixels| px.rgba.as_chunks::<4>().0.iter().map(|p| f64::from(p[0])).sum::<f64>();
+        let red =
+            |px: &Pixels| px.rgba.as_chunks::<4>().0.iter().map(|p| f64::from(p[0])).sum::<f64>();
         let (mean_before, mean_after) = (red(&edge), red(&out));
         assert!((mean_before - mean_after).abs() / mean_before < 0.02, "the blur changed the tone");
     }

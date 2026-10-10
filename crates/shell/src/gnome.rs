@@ -172,17 +172,16 @@ impl ShellBridge for GnomeExtensionBridge {
     async fn version(&self) -> Result<ShellVersion, BridgeError> {
         let reply = self.call("Version", None, "(su)").await?;
         let (version, protocol) =
-            reply
-                .get::<(String, u32)>()
-                .ok_or_else(|| BridgeError::MalformedReply {
-                    method: "Version",
-                    detail: format!("expected (su), got {}", reply.type_()),
-                })?;
+            reply.get::<(String, u32)>().ok_or_else(|| BridgeError::MalformedReply {
+                method: "Version",
+                detail: format!("expected (su), got {}", reply.type_()),
+            })?;
         Ok(ShellVersion { version, protocol })
     }
 
     async fn set_spool(&self, dir: &Path) -> Result<(), BridgeError> {
-        let params = glib::Variant::tuple_from_iter([glib::Variant::from(dir.to_string_lossy().as_ref())]);
+        let params =
+            glib::Variant::tuple_from_iter([glib::Variant::from(dir.to_string_lossy().as_ref())]);
         self.call("SetSpool", Some(params), "()").await?;
         Ok(())
     }
@@ -200,13 +199,10 @@ impl ShellBridge for GnomeExtensionBridge {
     async fn begin_capture(&self, request: &CaptureRequest) -> Result<String, BridgeError> {
         let params = capture::request_to_variant(request);
         let reply = self.call("BeginCapture", Some(params), "(s)").await?;
-        reply
-            .child_value(0)
-            .get::<String>()
-            .ok_or_else(|| BridgeError::MalformedReply {
-                method: "BeginCapture",
-                detail: "handle is not a string".to_owned(),
-            })
+        reply.child_value(0).get::<String>().ok_or_else(|| BridgeError::MalformedReply {
+            method: "BeginCapture",
+            detail: "handle is not a string".to_owned(),
+        })
     }
 
     async fn cancel_capture(&self, handle: &str) -> Result<(), BridgeError> {
@@ -225,14 +221,18 @@ impl ShellBridge for GnomeExtensionBridge {
         let reply = self
             .call_with_timeout("ReadClipboardImage", None, "(ss)", CLIPBOARD_READ_TIMEOUT_MS)
             .await?;
-        let (path, name) = reply.get::<(String, String)>().ok_or_else(|| BridgeError::MalformedReply {
-            method: "ReadClipboardImage",
-            detail: "the reply is not a path and a name".to_owned(),
-        })?;
+        let (path, name) =
+            reply.get::<(String, String)>().ok_or_else(|| BridgeError::MalformedReply {
+                method: "ReadClipboardImage",
+                detail: "the reply is not a path and a name".to_owned(),
+            })?;
         if path.is_empty() {
             return Ok(None);
         }
-        Ok(Some(ClipboardImage { path: PathBuf::from(path), name: (!name.is_empty()).then_some(name) }))
+        Ok(Some(ClipboardImage {
+            path: PathBuf::from(path),
+            name: (!name.is_empty()).then_some(name),
+        }))
     }
 
     async fn set_clipboard_text(&self, text: &str) -> Result<(), BridgeError> {
@@ -277,12 +277,12 @@ impl ShellBridge for GnomeExtensionBridge {
             options.end(),
         ]);
         let reply = self.call("PlaceWindow", Some(params), "((iiii))").await?;
-        let (x, y, width, height) = reply
-            .child_value(0)
-            .get::<(i32, i32, i32, i32)>()
-            .ok_or_else(|| BridgeError::MalformedReply {
-                method: "PlaceWindow",
-                detail: "the landed rect is not (iiii)".to_owned(),
+        let (x, y, width, height) =
+            reply.child_value(0).get::<(i32, i32, i32, i32)>().ok_or_else(|| {
+                BridgeError::MalformedReply {
+                    method: "PlaceWindow",
+                    detail: "the landed rect is not (iiii)".to_owned(),
+                }
             })?;
         Ok(Rect::new(x, y, width, height))
     }
@@ -295,12 +295,12 @@ impl ShellBridge for GnomeExtensionBridge {
     ) -> Result<Rect, BridgeError> {
         let params = glib::Variant::from((object_path.to_owned(), dx, dy));
         let reply = self.call("MoveWindowBy", Some(params), "((iiii))").await?;
-        let (x, y, width, height) = reply
-            .child_value(0)
-            .get::<(i32, i32, i32, i32)>()
-            .ok_or_else(|| BridgeError::MalformedReply {
-                method: "MoveWindowBy",
-                detail: "the landed rect is not (iiii)".to_owned(),
+        let (x, y, width, height) =
+            reply.child_value(0).get::<(i32, i32, i32, i32)>().ok_or_else(|| {
+                BridgeError::MalformedReply {
+                    method: "MoveWindowBy",
+                    detail: "the landed rect is not (iiii)".to_owned(),
+                }
             })?;
         Ok(Rect::new(x, y, width, height))
     }
@@ -358,7 +358,11 @@ impl ShellBridge for GnomeExtensionBridge {
         Ok(())
     }
 
-    async fn start_scroll_assist(&self, rect: Rect, direction: ScrollDirection) -> Result<String, BridgeError> {
+    async fn start_scroll_assist(
+        &self,
+        rect: Rect,
+        direction: ScrollDirection,
+    ) -> Result<String, BridgeError> {
         // The step stays on the wire, as nothing: it was how far `ScrollStep` scrolled,
         // which went with auto-scroll (D153), and a shell from before that still asks for
         // three arguments.
@@ -381,7 +385,8 @@ impl ShellBridge for GnomeExtensionBridge {
         // A grab is a repaint on the compositor's own thread -- 6.6 ms plus about 80 ms a
         // megapixel (`docs/spikes/17`), so a full-height selection on a 4K screen is
         // already past the default two seconds by itself on a busy machine.
-        let reply = self.call_with_timeout("GrabFrame", Some(params), "(s)", GRAB_TIMEOUT_MS).await?;
+        let reply =
+            self.call_with_timeout("GrabFrame", Some(params), "(s)", GRAB_TIMEOUT_MS).await?;
         reply.get::<(String,)>().map(|(path,)| std::path::PathBuf::from(path)).ok_or_else(|| {
             BridgeError::MalformedReply {
                 method: "GrabFrame",
@@ -400,12 +405,11 @@ impl ShellBridge for GnomeExtensionBridge {
         // The reply arrives when the user clicks, so the two-second timeout every other
         // call lives under is a person's patience here, not a bus's.
         let reply = self.call_with_timeout("PickColor", None, "(bddd)", PICK_TIMEOUT_MS).await?;
-        let (ok, r, g, b) = reply.get::<(bool, f64, f64, f64)>().ok_or_else(|| {
-            BridgeError::MalformedReply {
+        let (ok, r, g, b) =
+            reply.get::<(bool, f64, f64, f64)>().ok_or_else(|| BridgeError::MalformedReply {
                 method: "PickColor",
                 detail: format!("expected (bddd), got {}", reply.type_()),
-            }
-        })?;
+            })?;
         Ok(ok.then_some(PickedColor { r, g, b }))
     }
 
@@ -430,11 +434,9 @@ impl ShellBridge for GnomeExtensionBridge {
         let mut monitors = Vec::with_capacity(array.n_children());
         for index in 0..array.n_children() {
             let dict = array.child_value(index);
-            monitors.push(monitor_from_dict(&dict).ok_or_else(|| {
-                BridgeError::MalformedReply {
-                    method: "GetMonitors",
-                    detail: format!("monitor {index} is missing a required key"),
-                }
+            monitors.push(monitor_from_dict(&dict).ok_or_else(|| BridgeError::MalformedReply {
+                method: "GetMonitors",
+                detail: format!("monitor {index} is missing a required key"),
             })?);
         }
 

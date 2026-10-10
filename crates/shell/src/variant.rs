@@ -41,7 +41,7 @@ pub fn bool_(dict: &glib::VariantDict, key: &str) -> Option<bool> {
 pub fn rect(dict: &glib::VariantDict, key: &str) -> Option<Rect> {
     let ty = VariantTy::new("(iiii)").ok()?;
     let (x, y, width, height) = dict.lookup_value(key, Some(ty))?.get::<(i32, i32, i32, i32)>()?;
-    Some(Rect { x, y, width, height })
+    edges_fit(Rect { x, y, width, height })
 }
 
 /// Four separate integer keys as a rect, which is how `GetMonitors` reports geometry.
@@ -52,12 +52,21 @@ pub fn rect_from_parts(
     width: &str,
     height: &str,
 ) -> Option<Rect> {
-    Some(Rect {
+    edges_fit(Rect {
         x: i32_(dict, x)?,
         y: i32_(dict, y)?,
         width: i32_(dict, width)?,
         height: i32_(dict, height)?,
     })
+}
+
+/// `None` for a rect whose right or bottom edge is past the last coordinate there is. No
+/// screen has one, and everything downstream adds the size to the origin, which in a
+/// release build wraps round rather than failing (D174).
+fn edges_fit(rect: Rect) -> Option<Rect> {
+    rect.x.checked_add(rect.width)?;
+    rect.y.checked_add(rect.height)?;
+    Some(rect)
 }
 
 #[cfg(test)]
@@ -92,7 +101,10 @@ mod tests {
     #[test]
     fn reads_rects_both_ways() {
         let d = dict();
-        assert_eq!(rect_from_parts(&d, "x", "y", "width", "height"), Some(Rect::new(0, 0, 1536, 960)));
+        assert_eq!(
+            rect_from_parts(&d, "x", "y", "width", "height"),
+            Some(Rect::new(0, 0, 1536, 960))
+        );
         assert_eq!(rect(&d, "work-area"), Some(Rect::new(0, 0, 1536, 923)));
     }
 
@@ -105,5 +117,21 @@ mod tests {
         assert_eq!(rect(&d, "no-such-key"), None);
         // "width" is an i32, so asking for a double must fail rather than coerce.
         assert_eq!(f64_(&d, "width"), None);
+    }
+
+    /// D174: the session bus reaches the app from any of the user's programs, so a rect in
+    /// a payload is checked as one from a link is.
+    #[test]
+    fn a_rect_whose_edge_overflows_is_none() {
+        let d = dict();
+        d.insert_value("far", &glib::Variant::from((i32::MAX - 10, 0i32, 11i32, 10i32)));
+        d.insert_value("under", &glib::Variant::from((0i32, i32::MIN, 10i32, -1i32)));
+        d.insert_value("edge", &glib::Variant::from((i32::MAX - 10, 0i32, 10i32, 10i32)));
+        assert_eq!(rect(&d, "far"), None);
+        assert_eq!(rect(&d, "under"), None);
+        assert_eq!(rect(&d, "edge"), Some(Rect::new(i32::MAX - 10, 0, 10, 10)));
+        d.insert("width", i32::MAX);
+        d.insert("x", 1i32);
+        assert_eq!(rect_from_parts(&d, "x", "y", "width", "height"), None);
     }
 }

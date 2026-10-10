@@ -57,10 +57,13 @@ impl Frame {
     /// normalises to eight-bit samples but not to four channels, so the channel count is
     /// still a question after `read_info` and the expansion happens here.
     pub fn read(path: &Path) -> Result<Self, StitchError> {
-        let file = std::fs::File::open(path).map_err(|e| StitchError::Io(path.display().to_string(), e.to_string()))?;
+        let file = std::fs::File::open(path)
+            .map_err(|e| StitchError::Io(path.display().to_string(), e.to_string()))?;
         let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
         decoder.set_transformations(png::Transformations::normalize_to_color8());
-        let mut reader = decoder.read_info().map_err(|e| StitchError::Io(path.display().to_string(), e.to_string()))?;
+        let mut reader = decoder
+            .read_info()
+            .map_err(|e| StitchError::Io(path.display().to_string(), e.to_string()))?;
         let (width, height) = {
             let info = reader.info();
             (info.width, info.height)
@@ -80,16 +83,21 @@ impl Frame {
             png::ColorType::GrayscaleAlpha => 2,
             png::ColorType::Grayscale => 1,
             png::ColorType::Indexed => {
-                return Err(StitchError::Io(path.display().to_string(), "still indexed after expansion".into()));
+                return Err(StitchError::Io(
+                    path.display().to_string(),
+                    "still indexed after expansion".into(),
+                ));
             }
         };
-        let pixels = to_rgba(&buffer[..frame.buffer_size()], (width as usize) * (height as usize), channels);
+        let pixels =
+            to_rgba(&buffer[..frame.buffer_size()], (width as usize) * (height as usize), channels);
         Self::new(width, height, pixels)
     }
 
     /// The stitched result, as a PNG.
     pub fn write(&self, path: &Path) -> Result<(), StitchError> {
-        let file = std::fs::File::create(path).map_err(|e| StitchError::Io(path.display().to_string(), e.to_string()))?;
+        let file = std::fs::File::create(path)
+            .map_err(|e| StitchError::Io(path.display().to_string(), e.to_string()))?;
         let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), self.width, self.height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
@@ -199,10 +207,12 @@ impl Frame {
         let mut pixels = Vec::with_capacity((out_w as usize) * (out_h as usize) * 4);
         for y in 0..out_h {
             let y0 = (u64::from(y) * u64::from(self.height) / u64::from(out_h)) as u32;
-            let y1 = (((u64::from(y) + 1) * u64::from(self.height) / u64::from(out_h)) as u32).max(y0 + 1);
+            let y1 = (((u64::from(y) + 1) * u64::from(self.height) / u64::from(out_h)) as u32)
+                .max(y0 + 1);
             for x in 0..out_w {
                 let x0 = (u64::from(x) * u64::from(self.width) / u64::from(out_w)) as u32;
-                let x1 = (((u64::from(x) + 1) * u64::from(self.width) / u64::from(out_w)) as u32).max(x0 + 1);
+                let x1 = (((u64::from(x) + 1) * u64::from(self.width) / u64::from(out_w)) as u32)
+                    .max(x0 + 1);
                 let mut sums = [0u64; 4];
                 let mut count = 0u64;
                 for row in y0..y1.min(self.height) {

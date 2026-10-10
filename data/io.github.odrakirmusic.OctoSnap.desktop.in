@@ -4,11 +4,32 @@ Name=OctoSnap
 GenericName=Screen Capture
 Comment=Capture, annotate and record the screen
 Keywords=screenshot;capture;screen;record;annotate;snip;
-Exec=@BINDIR@/octosnap %u
+Exec=@BINDIR@/octosnap %U
 Icon=io.github.odrakirmusic.OctoSnap
 Terminal=false
 Type=Application
 Categories=Graphics;Utility;
-MimeType=x-scheme-handler/octosnap;application/x-octosnap-project;
+MimeType=x-scheme-handler/octosnap;application/x-octosnap-project;image/png;image/jpeg;image/webp;image/gif;
 StartupNotify=false
 X-GNOME-UsesNotifications=true
+Actions=all-in-one;capture-area;capture-fullscreen;capture-window;history;
+
+[Desktop Action all-in-one]
+Name=All-In-One
+Exec=@BINDIR@/octosnap launcher all-in-one
+
+[Desktop Action capture-area]
+Name=Capture Area
+Exec=@BINDIR@/octosnap launcher capture-area
+
+[Desktop Action capture-fullscreen]
+Name=Capture Fullscreen
+Exec=@BINDIR@/octosnap launcher capture-fullscreen
+
+[Desktop Action capture-window]
+Name=Capture Window
+Exec=@BINDIR@/octosnap launcher capture-window
+
+[Desktop Action history]
+Name=History
+Exec=@BINDIR@/octosnap launcher history

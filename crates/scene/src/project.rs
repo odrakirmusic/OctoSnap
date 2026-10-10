@@ -48,12 +48,44 @@ pub const FORMAT: u32 = 1;
 // `spec/05` §8's extension, MIME type and thumbnail size come from `octosnap_core`,
 // which the CLI and the `.desktop` file also read: what a project is *called* is shared
 // vocabulary, and only what is *inside* it is this module's business.
-pub use octosnap_core::project::{EXTENSION, LEGACY_EXTENSION, MIME_TYPE, THUMBNAIL_SIZE, is_project};
+pub use octosnap_core::project::{
+    EXTENSION, LEGACY_EXTENSION, MIME_TYPE, THUMBNAIL_SIZE, is_project,
+};
 
 const MANIFEST: &str = "manifest.json";
 const OBJECTS: &str = "objects.json";
 const THUMBNAIL: &str = "thumbnail.png";
 const ASSETS: &str = "assets/";
+
+// How far a project may expand as it is read (D174). A project can come from anywhere, and a
+// zip names the size of each entry without having to tell the truth about it: a few
+// kilobytes can unpack into gigabytes and fill the memory or the disk. Every limit is far
+// past what OctoSnap writes. A 16K-square capture's PNG is under the base's limit, and
+// thirty objects are 30 kB of `objects.json`.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    manifest: u64,
+    objects: u64,
+    base: u64,
+    asset: u64,
+    total: u64,
+    entries: usize,
+}
+
+const LIMITS: Limits = Limits {
+    manifest: 1 << 20,
+    objects: 64 << 20,
+    base: 1 << 30,
+    asset: 256 << 20,
+    total: 2 << 30,
+    entries: 10_000,
+};
+
+/// The widest and tallest a document may say it is, in document units, and the scales it
+/// may say it was captured at. Past them a canvas is not a picture anyone took, and the
+/// renderer would be asked for a texture no GPU makes.
+const SIZE_LIMIT: f64 = 100_000.0;
+const SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.1..=16.0;
 
 /// `spec/05` §8's `manifest.json`, field for field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,6 +112,24 @@ pub struct Manifest {
 }
 
 impl Manifest {
+    /// Refuses sizes and scales no capture has (D174), before anything is unpacked or
+    /// drawn at them.
+    fn check(&self) -> Result<(), Error> {
+        if !self.scale.is_finite() || !SCALE_RANGE.contains(&self.scale) {
+            return Err(Error::Invalid("scale"));
+        }
+        let fits = |b: Bounds| {
+            [b.x, b.y, b.width, b.height].iter().all(|v| v.is_finite() && v.abs() <= SIZE_LIMIT)
+        };
+        if !fits(self.canvas) {
+            return Err(Error::Invalid("canvas"));
+        }
+        if self.base_size.is_some_and(|b| !fits(b)) {
+            return Err(Error::Invalid("picture's size"));
+        }
+        Ok(())
+    }
+
     /// The manifest for a scene, with the base named as it will be stored.
     #[must_use]
     pub fn of(scene: &Scene, created: u64) -> Self {
@@ -111,6 +161,10 @@ pub enum Error {
     Missing(&'static str),
     /// `manifest.json` says a `format` this build does not know.
     Format(u32),
+    /// An entry, or the whole archive, unpacks past what a project holds (D174).
+    TooLarge(&'static str),
+    /// `manifest.json` gives a size or a scale no document has (D174).
+    Invalid(&'static str),
 }
 
 impl std::fmt::Display for Error {
@@ -120,10 +174,13 @@ impl std::fmt::Display for Error {
             Self::Zip(e) => write!(f, "{e}"),
             Self::Json(e) => write!(f, "{e}"),
             Self::Missing(entry) => write!(f, "the project has no {entry}"),
-            Self::Format(version) => write!(
-                f,
-                "the project is format {version} and this build understands {FORMAT}"
-            ),
+            Self::TooLarge(what) => {
+                write!(f, "the project's {what} is larger than a project holds")
+            }
+            Self::Invalid(what) => write!(f, "the project's {what} is not one a picture can have"),
+            Self::Format(version) => {
+                write!(f, "the project is format {version} and this build understands {FORMAT}")
+            }
         }
     }
 }
@@ -199,10 +256,7 @@ pub fn write(
     // -- a hundred bytes *larger*, for the CPU cost of compressing a third of a megabyte.
     // The thumbnail is a PNG too and is left deflated only because it is small enough for
     // the difference not to be worth a second code path.
-    zip.start_file(
-        &manifest.base,
-        options.compression_method(zip::CompressionMethod::Stored),
-    )?;
+    zip.start_file(&manifest.base, options.compression_method(zip::CompressionMethod::Stored))?;
     let mut source = std::fs::File::open(base)?;
     std::io::copy(&mut source, &mut zip)?;
 
@@ -262,30 +316,39 @@ pub struct Opened {
 /// is a document the editor can open with no further arrangement — which is what §8's
 /// "opening a project from a card or history restores full editability" asks for.
 pub fn read(path: &Path, into: &Path) -> Result<Opened, Error> {
+    read_within(path, into, LIMITS)
+}
+
+fn read_within(path: &Path, into: &Path, limits: Limits) -> Result<Opened, Error> {
     let file = std::fs::File::open(path)?;
     let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file))?;
+    if zip.len() > limits.entries {
+        return Err(Error::TooLarge("list of files"));
+    }
 
-    let manifest: Manifest = serde_json::from_str(&entry_to_string(&mut zip, MANIFEST)?)?;
+    let manifest: Manifest =
+        serde_json::from_str(&entry_to_string(&mut zip, MANIFEST, limits.manifest)?)?;
     if manifest.format != FORMAT {
         return Err(Error::Format(manifest.format));
     }
+    manifest.check()?;
+    let mut unpacked = 0;
 
     // The base's name is checked rather than trusted. A zip entry is attacker-controlled
     // text, and `..` in it is the path-traversal that turns "open this project" into
     // "write anywhere the user can" -- the reason §8 says assets are "a name inside the
     // project's `assets/`, never a path into the user's filesystem".
     let base_name = safe_name(&manifest.base).ok_or(Error::Missing("a usable base image"))?;
-    let objects = entry_to_string(&mut zip, OBJECTS)?;
+    let objects = entry_to_string(&mut zip, OBJECTS, limits.objects)?;
     let has_thumbnail = zip.index_for_name(THUMBNAIL).is_some();
 
     std::fs::create_dir_all(into)?;
     let base_path = into.join(&base_name);
     {
-        let mut entry = zip
-            .by_name(&manifest.base)
-            .map_err(|_| Error::Missing("its base image"))?;
+        let mut entry =
+            zip.by_name(&manifest.base).map_err(|_| Error::Missing("its base image"))?;
         let mut out = std::fs::File::create(&base_path)?;
-        std::io::copy(&mut entry, &mut out)?;
+        unpacked += copy_limited(&mut entry, &mut out, limits.base, "base image")?;
     }
 
     // `spec/05` §8's `assets/`, extracted beside the base for the same reason: an object
@@ -301,7 +364,10 @@ pub fn read(path: &Path, into: &Path) -> Result<Opened, Error> {
         let out_dir = into.join("assets");
         std::fs::create_dir_all(&out_dir)?;
         let mut out = std::fs::File::create(out_dir.join(&asset))?;
-        std::io::copy(&mut entry, &mut out)?;
+        unpacked += copy_limited(&mut entry, &mut out, limits.asset, "inserted image")?;
+        if unpacked > limits.total {
+            return Err(Error::TooLarge("contents"));
+        }
     }
 
     // The base's own size where the manifest records it, and the canvas where it does
@@ -363,11 +429,30 @@ fn safe_name(name: &str) -> Option<String> {
 fn entry_to_string<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     name: &'static str,
+    limit: u64,
 ) -> Result<String, Error> {
-    let mut entry = zip.by_name(name).map_err(|_| Error::Missing(name))?;
+    let entry = zip.by_name(name).map_err(|_| Error::Missing(name))?;
     let mut text = String::new();
-    entry.read_to_string(&mut text)?;
+    entry.take(limit + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > limit {
+        return Err(Error::TooLarge(name));
+    }
     Ok(text)
+}
+
+/// Copies an entry out, and stops one byte past `limit` rather than at the entry's end,
+/// whatever size the archive claims for it.
+fn copy_limited(
+    entry: &mut impl Read,
+    out: &mut impl Write,
+    limit: u64,
+    what: &'static str,
+) -> Result<u64, Error> {
+    let copied = std::io::copy(&mut entry.take(limit + 1), out)?;
+    if copied > limit {
+        return Err(Error::TooLarge(what));
+    }
+    Ok(copied)
 }
 
 #[cfg(test)]
@@ -399,6 +484,7 @@ mod tests {
                 smoothing: true,
                 highlighter: false,
                 band: None,
+                pressure: None,
             },
         ));
         scene
@@ -601,11 +687,7 @@ mod tests {
         let mut history = History::new();
         assert!(history.apply(
             &mut opened,
-            Command::Change {
-                id: subject.id,
-                before: Box::new(subject),
-                after: Box::new(moved),
-            },
+            Command::Change { id: subject.id, before: Box::new(subject), after: Box::new(moved) },
         ));
         assert_ne!(opened.to_objects_json().unwrap(), before);
         assert!(history.undo(&mut opened));
@@ -666,5 +748,124 @@ mod tests {
             zip::ZipWriter::new(file).finish().unwrap();
         }
         assert!(matches!(read(&empty, &dir.join("out")), Err(Error::Missing("manifest.json"))));
+    }
+
+    /// A project as `write` makes it, with one inserted image, for the limits' tests.
+    fn written(name: &str) -> (PathBuf, PathBuf) {
+        let dir = temp(name);
+        let base = write_base(&dir);
+        let picture = dir.join("logo.png");
+        std::fs::write(&picture, b"pretend PNG").unwrap();
+        let mut document = scene();
+        document.base.file = base.to_string_lossy().into_owned();
+        document.add(Object::new(
+            20,
+            1,
+            Style::default(),
+            Geometry::Image {
+                bounds: Bounds::new(0.0, 0.0, 10.0, 10.0),
+                file: picture.to_string_lossy().into_owned(),
+            },
+        ));
+        let project = dir.join("doc.octosnap");
+        write(&project, &document, &base, None, 1).unwrap();
+        (project, dir)
+    }
+
+    /// D174: each entry stops at its limit, and so does the whole, whatever the archive
+    /// says the entries hold. The limits are small here so the test unpacks bytes, not
+    /// gigabytes; the next test does it at the real size once.
+    #[test]
+    fn every_entry_and_the_whole_stop_at_their_limits() {
+        let (project, dir) = written("limits");
+        let out = dir.join("out");
+        assert!(read_within(&project, &out, LIMITS).is_ok(), "the real limits take it");
+
+        let cases = [
+            (Limits { entries: 2, ..LIMITS }, "list of files"),
+            (Limits { manifest: 16, ..LIMITS }, "manifest.json"),
+            (Limits { objects: 16, ..LIMITS }, "objects.json"),
+            (Limits { base: 8, ..LIMITS }, "base image"),
+            (Limits { asset: 4, ..LIMITS }, "inserted image"),
+            (Limits { total: 40, ..LIMITS }, "contents"),
+        ];
+        for (limits, what) in cases {
+            match read_within(&project, &out, limits) {
+                Err(Error::TooLarge(said)) => assert_eq!(said, what),
+                other => panic!("{what}: expected TooLarge, got {other:?}"),
+            }
+        }
+    }
+
+    /// A few kilobytes that unpack into 64 MB of `objects.json`, read with the real limits.
+    #[test]
+    fn a_compressed_bomb_is_refused_at_the_real_limit() {
+        let (project, dir) = written("bomb");
+        let bomb = dir.join("bomb.octosnap");
+        {
+            let mut source = zip::ZipArchive::new(std::fs::File::open(&project).unwrap()).unwrap();
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&bomb).unwrap());
+            for index in 0..source.len() {
+                let entry = source.by_index(index).unwrap();
+                if entry.name() == OBJECTS {
+                    continue;
+                }
+                zip.raw_copy_file(entry).unwrap();
+            }
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            zip.start_file(OBJECTS, options).unwrap();
+            std::io::copy(&mut std::io::repeat(b' ').take(LIMITS.objects + 1), &mut zip).unwrap();
+            zip.finish().unwrap();
+        }
+        assert!(std::fs::metadata(&bomb).unwrap().len() < 1 << 20, "the bomb is small on disk");
+        assert!(matches!(read(&bomb, &dir.join("out")), Err(Error::TooLarge("objects.json"))));
+    }
+
+    /// D174: a manifest's sizes and scale are a picture's, or the project is refused before
+    /// anything is unpacked at them.
+    #[test]
+    fn a_manifest_with_impossible_numbers_is_refused() {
+        let (project, dir) = written("numbers");
+        let manifest: serde_json::Value = {
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(&project).unwrap()).unwrap();
+            serde_json::from_str(&entry_to_string(&mut zip, MANIFEST, LIMITS.manifest).unwrap())
+                .unwrap()
+        };
+        let cases: [(&str, serde_json::Value, &str); 5] = [
+            ("scale", serde_json::json!(0.0), "scale"),
+            ("scale", serde_json::json!(1e9), "scale"),
+            ("canvas", serde_json::json!({"x": 0, "y": 0, "width": 1e12, "height": 10}), "canvas"),
+            ("canvas", serde_json::json!({"x": -1e7, "y": 0, "width": 10, "height": 10}), "canvas"),
+            (
+                "base_size",
+                serde_json::json!({"x": 0, "y": 0, "width": 10, "height": 1e300}),
+                "picture's size",
+            ),
+        ];
+        for (key, value, what) in cases {
+            let mut changed = manifest.clone();
+            changed[key] = value;
+            let path = dir.join("changed.octosnap");
+            {
+                let mut source =
+                    zip::ZipArchive::new(std::fs::File::open(&project).unwrap()).unwrap();
+                let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+                for index in 0..source.len() {
+                    let entry = source.by_index(index).unwrap();
+                    if entry.name() != MANIFEST {
+                        zip.raw_copy_file(entry).unwrap();
+                    }
+                }
+                let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+                zip.start_file(MANIFEST, options).unwrap();
+                zip.write_all(changed.to_string().as_bytes()).unwrap();
+                zip.finish().unwrap();
+            }
+            match read(&path, &dir.join("out")) {
+                Err(Error::Invalid(said)) => assert_eq!(said, what, "{key}"),
+                other => panic!("{key}: expected Invalid, got {other:?}"),
+            }
+        }
     }
 }

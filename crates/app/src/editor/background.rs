@@ -26,9 +26,7 @@ use gtk::subclass::prelude::ObjectSubclassIsExt;
 use octosnap_scene::background::{
     self, Blur, GRADIENT_SET, MAX_CORNER_RADIUS, MAX_INSET, MAX_PADDING, MAX_SHADOW,
 };
-use octosnap_scene::{
-    Background, BackgroundParams, Bounds, Command, Geometry, Object, Point, Ratio, Style,
-};
+use octosnap_scene::{Background, BackgroundParams, Bounds, Point, Ratio};
 
 use super::picker::Picker;
 use super::window::Editor;
@@ -138,64 +136,15 @@ impl Editor {
     /// needs -- `History::apply` folds the next batch of the same shape into this one, so
     /// a drag from 100 to 240 is one press of Ctrl+Z (`Command::absorb`).
     ///
-    /// An empty parameter set removes the object rather than storing one that draws
-    /// nothing, and puts the canvas back to the rect the background was laid out over.
+    /// What the step holds is `background::apply`'s, in the scene crate where a unit test
+    /// reaches it: an empty parameter set removes the object rather than storing one that
+    /// draws nothing, and puts the canvas back to the rect the background was laid out
+    /// over; over the crop's own fill, the background takes its slot and keeps it, and
+    /// None gives it back (D192).
     pub(super) fn apply_background(self: &Rc<Self>, params: &BackgroundParams, open: bool) {
         let Some(scene) = self.canvas.scene() else { return };
         let source = self.background_source(&params.clone());
-        let before = scene.canvas;
-        let existing = scene.background().map(|(id, _)| id);
-        let mut commands = Vec::new();
-
-        if params.is_empty() {
-            if let Some(id) = existing
-                && let Some(object) = scene.get(id)
-            {
-                commands.push(Command::Remove(object.clone()));
-                // Back to what the background was laid out over, which is the crop if
-                // there was one and the capture if there was not.
-                if before != source {
-                    commands.push(Command::CanvasChange { before, after: source });
-                }
-            }
-        } else {
-            let after = background::layout(source, params).canvas;
-            let geometry =
-                Geometry::Background { params: params.clone(), source: Some(source) };
-            match existing.and_then(|id| scene.get(id)) {
-                Some(was) => {
-                    let mut now = was.clone();
-                    now.geometry = geometry;
-                    // Kept in step so a project written by this build still opens as the
-                    // right flat colour in one written before it (`nodes.rs`).
-                    if let Background::Color { color } = params.background {
-                        now.style.color = color;
-                    }
-                    commands.push(Command::Change {
-                        id: was.id,
-                        before: Box::new(was.clone()),
-                        after: Box::new(now),
-                    });
-                }
-                None => {
-                    let lowest = scene.objects().iter().map(|o| o.z).min().unwrap_or(0);
-                    let color = match params.background {
-                        Background::Color { color } => color,
-                        _ => Style::default().color,
-                    };
-                    commands.push(Command::Add(Object::new(
-                        lowest.saturating_sub(1),
-                        now_seconds(),
-                        Style::new(color, 1, false),
-                        geometry,
-                    )));
-                }
-            }
-            if before != after {
-                commands.push(Command::CanvasChange { before, after });
-            }
-        }
-
+        let commands = background::apply(&scene, params, source, now_seconds());
         if commands.is_empty() {
             return;
         }
@@ -578,10 +527,9 @@ impl Editor {
                 holder.append(&row);
                 row = new_row();
             }
-            row.append(&self.source_button(
-                Background::Color { color: background::rgb(packed) },
-                name,
-            ));
+            row.append(
+                &self.source_button(Background::Color { color: background::rgb(packed) }, name),
+            );
         }
 
         // The custom picker, at the end of the second row: §2's own colour popover, so
@@ -907,9 +855,8 @@ impl Editor {
         none.add_tick_callback(move |button, _| {
             let bounds = button.root().and_then(|root| button.compute_bounds(&root));
             #[allow(clippy::cast_possible_truncation)]
-            let rect = bounds.map(|b| {
-                (b.x() as i32, b.y() as i32, b.width() as i32, b.height() as i32)
-            });
+            let rect =
+                bounds.map(|b| (b.x() as i32, b.y() as i32, b.width() as i32, b.height() as i32));
             if rect.is_none_or(|r| r.2 <= 0) || last.replace(rect) != rect {
                 still.set(0);
                 return glib::ControlFlow::Continue;
@@ -1038,8 +985,7 @@ impl Editor {
             if at < presets.len() {
                 let gone = presets.remove(at);
                 // The default cannot point at something that is not there any more.
-                if crate::settings::background_default()
-                    .is_some_and(|preset| preset.id == gone.id)
+                if crate::settings::background_default().is_some_and(|preset| preset.id == gone.id)
                 {
                     crate::settings::set_background_default("");
                 }
@@ -1077,10 +1023,8 @@ impl Editor {
                 Ok(stored) => {
                     editor.fill_wallpapers();
                     let params = editor.background_params();
-                    editor.apply_background(
-                        &params.with(Background::Image { file: stored }),
-                        false,
-                    );
+                    editor
+                        .apply_background(&params.with(Background::Image { file: stored }), false);
                 }
                 Err(why) => editor.toast(&format!("Could not add the image: {why}"), None),
             }
@@ -1139,11 +1083,7 @@ impl Editor {
 
     #[must_use]
     pub(super) fn background_panel_open(&self) -> bool {
-        self.background
-            .split
-            .borrow()
-            .as_ref()
-            .is_some_and(adw::OverlaySplitView::shows_sidebar)
+        self.background.split.borrow().as_ref().is_some_and(adw::OverlaySplitView::shows_sidebar)
     }
 }
 
@@ -1160,9 +1100,7 @@ fn import_wallpaper(from: &std::path::Path) -> Result<String, String> {
     let mut to = home.join(&stem).with_extension(&extension);
     let mut n = 2;
     while to.exists() {
-        to = home
-            .join(format!("{}-{n}", stem.to_string_lossy()))
-            .with_extension(&extension);
+        to = home.join(format!("{}-{n}", stem.to_string_lossy())).with_extension(&extension);
         n += 1;
     }
     std::fs::copy(from, &to).map_err(|why| why.to_string())?;
@@ -1267,14 +1205,12 @@ fn wallpaper_files() -> Vec<String> {
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    matches!(
-                        extension.to_ascii_lowercase().as_str(),
-                        "png" | "jpg" | "jpeg" | "webp" | "avif"
-                    )
-                })
+            path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "webp" | "avif"
+                )
+            })
         })
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
@@ -1300,14 +1236,9 @@ fn presets_menu() -> gio::Menu {
     let defaults = gio::Menu::new();
     defaults.append(Some("None"), Some("win.background-default::"));
     for preset in &presets {
-        saved.append(
-            Some(&preset.name),
-            Some(&format!("win.background-preset::{}", preset.id)),
-        );
-        defaults.append(
-            Some(&preset.name),
-            Some(&format!("win.background-default::{}", preset.id)),
-        );
+        saved.append(Some(&preset.name), Some(&format!("win.background-preset::{}", preset.id)));
+        defaults
+            .append(Some(&preset.name), Some(&format!("win.background-default::{}", preset.id)));
     }
     menu.append_section(Some("Presets"), &saved);
     // Shift at capture still skips it (§4.13), as Settings' row says.
@@ -1378,12 +1309,7 @@ mod swatch {
                     #[allow(clippy::cast_precision_loss)]
                     snapshot.append_color(
                         &dark,
-                        &gtk::graphene::Rect::new(
-                            col as f32 * cell,
-                            row as f32 * cell,
-                            cell,
-                            cell,
-                        ),
+                        &gtk::graphene::Rect::new(col as f32 * cell, row as f32 * cell, cell, cell),
                     );
                 }
             }

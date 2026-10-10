@@ -116,6 +116,22 @@ impl Pictures {
     }
 }
 
+/// The icon's History (`SYS-09`): shows the strip, and leaves it be if it is already up,
+/// where `open-history` would close it.
+pub fn show(app: &adw::Application) {
+    if OPEN.with(|o| o.borrow().is_none()) {
+        toggle(app);
+    }
+}
+
+/// `SYS-13`'s "show all results" (D181): the strip, searching for `query`.
+pub fn search(app: &adw::Application, query: &str) {
+    show(app);
+    if let Some(strip) = OPEN.with(|o| o.borrow().clone()) {
+        strip.search_for(query);
+    }
+}
+
 /// `open-history`: shows the strip, or closes it if it is up.
 pub fn toggle(app: &adw::Application) {
     if let Some(open) = OPEN.with(|o| o.borrow_mut().take()) {
@@ -196,6 +212,10 @@ pub struct Strip {
     pages: gtk::Stack,
     empty: Empty,
     filter: Cell<Filter>,
+    /// `HIS-05`'s search, where the strip's title was (D181).
+    search: gtk::SearchEntry,
+    /// The search's words, as `octosnap_core::search` takes them; empty when not searching.
+    terms: RefCell<Vec<String>>,
     selected: RefCell<Vec<String>>,
     /// Every tile the row has built, bound or not.
     tiles: RefCell<Vec<Rc<Tile>>>,
@@ -265,8 +285,10 @@ impl Empty {
         match filter {
             Filter::All => {
                 self.title.set_text("No captures yet");
-                self.description
-                    .set_text(&format!("Captures you close stay here for {kept_for}. {}", self.how.sentence()));
+                self.description.set_text(&format!(
+                    "Captures you close stay here for {kept_for}. {}",
+                    self.how.sentence()
+                ));
                 self.set_up.set_visible(matches!(self.how, Hint::SetUp));
             }
             other => {
@@ -276,10 +298,29 @@ impl Empty {
                     _ => other.label().to_lowercase(),
                 };
                 self.title.set_text(&format!("No {noun} yet"));
-                self.description.set_text(&format!("{} you close stay here for {kept_for}.", other.label()));
+                self.description
+                    .set_text(&format!("{} you close stay here for {kept_for}.", other.label()));
                 self.set_up.set_visible(false);
             }
         }
+    }
+}
+
+impl Empty {
+    /// A search that found nothing.
+    fn show_search(&self, query: &str, reading: bool) {
+        self.title.set_text(&format!("Nothing found for \u{201c}{query}\u{201d}"));
+        let mut description = String::from(
+            "Captures are found by the text in them, the app they came from and their \
+             window\u{2019}s title.",
+        );
+        if !reading {
+            description.push_str(" Reading their text is off in Settings.");
+        } else if !crate::ocr::ready() {
+            description.push_str(" Their text is read once a language pack is installed.");
+        }
+        self.description.set_text(&description);
+        self.set_up.set_visible(false);
     }
 }
 
@@ -303,14 +344,18 @@ impl Hint {
             .filter(|schema| schema.has_key("capture-area"))
             .and_then(|_| ext.strv("capture-area").first().map(ToString::to_string))
             .and_then(|accel| gtk::accelerator_parse(&accel))
-            .map_or(Self::Menu, |(key, mods)| Self::Key(gtk::accelerator_get_label(key, mods).to_string()))
+            .map_or(Self::Menu, |(key, mods)| {
+                Self::Key(gtk::accelerator_get_label(key, mods).to_string())
+            })
     }
 
     fn sentence(&self) -> String {
         match self {
             Self::Key(key) => format!("{key} captures an area."),
             Self::Menu => "Take one from OctoSnap's menu in the top bar.".to_owned(),
-            Self::SetUp => "OctoSnap's GNOME Shell extension takes them, and it is not set up yet.".to_owned(),
+            Self::SetUp => {
+                "OctoSnap's GNOME Shell extension takes them, and it is not set up yet.".to_owned()
+            }
         }
     }
 }
@@ -348,10 +393,19 @@ impl Strip {
         body.set_margin_end(SHADOW_MARGIN);
 
         let header = gtk::CenterBox::new();
-        let title = gtk::Label::new(Some("History"));
-        title.add_css_class("heading");
-        title.add_css_class("dim-label");
-        header.set_start_widget(Some(&title));
+        // `HIS-05` (D181): the search is where the title was, and its placeholder is the
+        // title. Typing anywhere in the strip searches, so the field takes no focus until
+        // then: the strip stays the glance-and-grab surface `spec/07` §4.2 asks for, with
+        // its keys its own (`wire_keys`).
+        let search = gtk::SearchEntry::builder()
+            .placeholder_text("Search History")
+            .width_chars(22)
+            .can_focus(false)
+            .valign(gtk::Align::Center)
+            .build();
+        search.update_property(&[gtk::accessible::Property::Label("Search the history")]);
+        search.set_key_capture_widget(Some(&window));
+        header.set_start_widget(Some(&search));
         let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header.set_center_widget(Some(&chips));
         let overflow = gtk::MenuButton::builder()
@@ -406,6 +460,8 @@ impl Strip {
             pages,
             empty,
             filter: Cell::new(Filter::All),
+            search: search.clone(),
+            terms: RefCell::new(Vec::new()),
             selected: RefCell::new(Vec::new()),
             tiles: RefCell::new(Vec::new()),
             refresh_queued: Cell::new(false),
@@ -436,6 +492,7 @@ impl Strip {
         }
         strip.build_chips(&chips);
         overflow.set_menu_model(Some(&strip.overflow_menu()));
+        strip.wire_search();
         strip.wire_keys();
         strip.wire_wheel();
         strip.refresh();
@@ -570,7 +627,9 @@ impl Strip {
     }
 
     fn place(self: &Rc<Self>) {
-        let (Some(path), Some((x, y)), Some(flow)) = (self.object_path(), self.target.get(), crate::capture_flow()) else {
+        let (Some(path), Some((x, y)), Some(flow)) =
+            (self.object_path(), self.target.get(), crate::capture_flow())
+        else {
             return;
         };
         let weak = Rc::downgrade(self);
@@ -606,10 +665,8 @@ impl Strip {
             // The chip carries its kind's icon, the same one its tiles wear (D109).
             let chip = match filter.icon() {
                 Some(icon) => {
-                    let content = adw::ButtonContent::builder()
-                        .icon_name(icon)
-                        .label(filter.label())
-                        .build();
+                    let content =
+                        adw::ButtonContent::builder().icon_name(icon).label(filter.label()).build();
                     gtk::ToggleButton::builder().child(&content).build()
                 }
                 None => gtk::ToggleButton::with_label(filter.label()),
@@ -690,12 +747,18 @@ impl Strip {
     fn refresh(&self) {
         self.refresh_queued.set(false);
         let filter = self.filter.get();
-        let entries: Vec<Entry> =
-            self.history.entries().into_iter().filter(|e| filter.matches(e.kind)).collect();
+        let terms = self.terms.borrow().clone();
+        let all =
+            if terms.is_empty() { self.history.entries() } else { self.history.search(&terms) };
+        let entries: Vec<Entry> = all.into_iter().filter(|e| filter.matches(e.kind)).collect();
         // A selection that no longer exists is dropped rather than kept as a ghost.
         self.selected.borrow_mut().retain(|id| entries.iter().any(|e| &e.id == id));
 
-        if entries.is_empty() {
+        if entries.is_empty() && !terms.is_empty() {
+            let reading = crate::settings::Settings::load().history_read_text();
+            self.empty.show_search(self.search.text().trim(), reading);
+            self.pages.set_visible_child_name("empty");
+        } else if entries.is_empty() {
             self.empty.show(filter, self.history.retention().label());
             self.pages.set_visible_child_name("empty");
         } else {
@@ -899,7 +962,8 @@ impl Strip {
                     strip.annotate(&id);
                     return;
                 }
-                let toggle = gesture.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
+                let toggle =
+                    gesture.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
                 strip.select(&id, toggle);
             });
             root.add_controller(click);
@@ -912,7 +976,8 @@ impl Strip {
             // a cycle that kept every tile the row had built, about 10 MB a strip (D139).
             let anchor = root.downgrade();
             menu.connect_pressed(move |_, _, x, y| {
-                let (Some(strip), Some(id), Some(anchor)) = (weak.upgrade(), id_of(&tile), anchor.upgrade())
+                let (Some(strip), Some(id), Some(anchor)) =
+                    (weak.upgrade(), id_of(&tile), anchor.upgrade())
                 else {
                     return;
                 };
@@ -1128,11 +1193,8 @@ impl Strip {
         if shown.is_empty() {
             return;
         }
-        let current = self
-            .selected
-            .borrow()
-            .last()
-            .and_then(|id| shown.iter().position(|e| &e.id == id));
+        let current =
+            self.selected.borrow().last().and_then(|id| shown.iter().position(|e| &e.id == id));
         let next = match current {
             Some(at) => {
                 let len = isize::try_from(shown.len()).unwrap_or(1);
@@ -1225,7 +1287,11 @@ impl Strip {
                     crate::qao::CardThen::Copy => "Copy",
                     crate::qao::CardThen::SaveAs => "Save",
                 };
-                crate::notify::action_failed(&self.app, action, "The GIF's card could not be shown.");
+                crate::notify::action_failed(
+                    &self.app,
+                    action,
+                    "The GIF's card could not be shown.",
+                );
             }
         }
         self.close();
@@ -1236,7 +1302,8 @@ impl Strip {
         if self.through_a_card(id, crate::qao::CardThen::Copy) {
             return;
         }
-        let (Some(flow), Some(capture)) = (crate::capture_flow(), self.history.capture_of(id)) else {
+        let (Some(flow), Some(capture)) = (crate::capture_flow(), self.history.capture_of(id))
+        else {
             return;
         };
         let weak = Rc::downgrade(self);
@@ -1262,7 +1329,8 @@ impl Strip {
         if self.through_a_card(id, crate::qao::CardThen::SaveAs) {
             return;
         }
-        let (Some(flow), Some(capture)) = (crate::capture_flow(), self.history.capture_of(id)) else {
+        let (Some(flow), Some(capture)) = (crate::capture_flow(), self.history.capture_of(id))
+        else {
             return;
         };
         let weak = Rc::downgrade(self);
@@ -1334,7 +1402,8 @@ impl Strip {
     fn open_menu(self: &Rc<Self>, anchor: &gtk::Box, id: &str, x: f64, y: f64) {
         // A GIF's menu is its card's: Trim where an image has Annotate, and no Pin, which
         // a looping GIF is not sensibly (D68).
-        let gif = self.history.capture_of(id).is_some_and(|c| octosnap_core::history::is_gif(&c.path));
+        let gif =
+            self.history.capture_of(id).is_some_and(|c| octosnap_core::history::is_gif(&c.path));
         let menu = gio::Menu::new();
         let first = gio::Menu::new();
         first.append(Some("Restore"), Some("tile.restore"));
@@ -1388,9 +1457,63 @@ impl Strip {
         popover.popup();
     }
 
+    // --- search (`HIS-05`, D181) ----------------------------------------------------
+
+    /// The first key typed into the strip starts a search and gives the field the
+    /// keyboard; each change narrows the row, and the newest match is selected, so Return
+    /// restores what was searched for.
+    fn wire_search(self: &Rc<Self>) {
+        {
+            let weak = Rc::downgrade(self);
+            self.search.connect_search_started(move |search| {
+                let Some(strip) = weak.upgrade() else { return };
+                strip.focus_search(search);
+            });
+        }
+        let weak = Rc::downgrade(self);
+        self.search.connect_search_changed(move |search| {
+            let Some(strip) = weak.upgrade() else { return };
+            let terms = octosnap_core::search::terms(&search.text());
+            if *strip.terms.borrow() == terms {
+                return;
+            }
+            let searching = !terms.is_empty();
+            *strip.terms.borrow_mut() = terms;
+            strip.refresh();
+            let found = strip.shown.borrow().len();
+            if searching {
+                // Read by `history-test.sh`: how many words and how many found, never which.
+                info!(terms = strip.terms.borrow().len(), found, "history search");
+            }
+            let first = strip.shown.borrow().first().map(|entry| entry.id.clone());
+            if let Some(first) = first {
+                strip.select(&first, false);
+            }
+        });
+    }
+
+    fn focus_search(&self, search: &gtk::SearchEntry) {
+        search.set_can_focus(true);
+        search.grab_focus();
+        search.set_position(-1);
+    }
+
+    /// Escape with a search: the search ends, and the field gives the keyboard back.
+    fn end_search(&self) {
+        self.search.set_text("");
+        self.search.set_can_focus(false);
+        gtk::prelude::GtkWindowExt::set_focus(&self.window, None::<&gtk::Widget>);
+    }
+
+    /// The Activities search's "show more": the strip, searching for what it was asked.
+    pub fn search_for(self: &Rc<Self>, query: &str) {
+        self.search.set_text(query);
+        self.focus_search(&self.search);
+    }
+
     // --- keys -----------------------------------------------------------------------
 
-    /// The strip's keys, seen **before** the focused widget. GTK hands a new window's
+    /// The strip's keys ([`KEYS`]), seen **before** the focused widget. GTK hands a new window's
     /// focus to its first focusable child, and a focused button consumes Return itself,
     /// so in the bubble phase the very key the strip exists for -- Return to restore --
     /// went to the "All" chip and toggled a chip that was already on. Capture phase, and
@@ -1403,7 +1526,9 @@ impl Strip {
         keys.connect_key_pressed(move |_, key, _, state| {
             let Some(strip) = weak.upgrade() else { return glib::Propagation::Proceed };
             let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+            let searching = !strip.search.text().is_empty();
             match key {
+                gdk::Key::Escape if searching => strip.end_search(),
                 gdk::Key::Escape => strip.close(),
                 gdk::Key::Left => strip.move_selection(-1),
                 gdk::Key::Right => strip.move_selection(1),
@@ -1413,7 +1538,11 @@ impl Strip {
                         strip.restore(&ids);
                     }
                 }
-                gdk::Key::Delete | gdk::Key::BackSpace => strip.delete_selected(),
+                // Backspace edits the search: held down, it would run on past an empty
+                // field into the captures. Delete is the captures' (D181).
+                gdk::Key::BackSpace => return glib::Propagation::Proceed,
+                gdk::Key::Delete => strip.delete_selected(),
+                gdk::Key::f if ctrl => strip.focus_search(&strip.search),
                 gdk::Key::a if ctrl => strip.select_all(),
                 // The card's Copy key, for the one thumbnail selected: a clipboard holds
                 // one picture, and which of several to copy would be a guess.
@@ -1430,6 +1559,18 @@ impl Strip {
         self.window.add_controller(keys);
     }
 }
+
+/// The strip's keys in the shortcuts dialog's words (`SYS-12`, D179). The strip takes them
+/// in `Strip::wire_keys`'s `match`, which this follows: a key added there belongs here.
+pub(crate) const KEYS: &[(&str, &str)] = &[
+    ("Left Right", "Select the Previous or Next Capture"),
+    ("Return", "Restore the Selected Captures"),
+    ("<Control>a", "Select All"),
+    ("<Control>c", "Copy the Selected Capture"),
+    ("Delete", "Delete the Selected Captures"),
+    ("<Control>f", "Search, or Start Typing"),
+    ("Escape", "End the Search, or Close"),
+];
 
 impl Tile {
     /// The tile's place in the row, while it is bound.

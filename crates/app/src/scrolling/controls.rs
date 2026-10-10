@@ -46,7 +46,7 @@
 //! away. Not the recorder's dialog: that is a window of its own, placed by Mutter, and here
 //! it could land over the very page being stitched.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -54,6 +54,8 @@ use adw::prelude::*;
 use gtk::{gdk, glib};
 use octosnap_core::{Rect, ScrollDirection};
 use tracing::{debug, info};
+
+use crate::first_frame::FirstFrame;
 
 /// The preview's box in logical pixels. Tall and narrow, because what it shows is.
 const PREVIEW_WIDTH: i32 = 132;
@@ -128,12 +130,18 @@ pub struct Pill {
     /// Where the pill landed, the work area that holds it, and the selection: where Help's
     /// panel can go ([`Pill::set_room`]).
     room: Cell<Option<(Rect, Rect, Rect)>>,
+    /// Watched from when it is shown, so it is set then.
+    first_frame: OnceCell<FirstFrame>,
 }
 
 impl Pill {
     /// Builds and maps the pill. `ask` is called with whatever the user pressed; the
     /// controller decides what it means.
-    pub fn new(app: &adw::Application, direction: ScrollDirection, ask: impl Fn(Ask) + 'static) -> Rc<Self> {
+    pub fn new(
+        app: &adw::Application,
+        direction: ScrollDirection,
+        ask: impl Fn(Ask) + 'static,
+    ) -> Rc<Self> {
         let window = gtk::ApplicationWindow::builder()
             .application(app)
             .title("octosnap-scroll")
@@ -259,6 +267,7 @@ impl Pill {
             discard_asked: Cell::new(false),
             unask: RefCell::new(None),
             room: Cell::new(None),
+            first_frame: OnceCell::new(),
         });
         pill.refresh_hint();
         {
@@ -273,10 +282,17 @@ impl Pill {
             let weak = Rc::downgrade(&pill);
             sketch.set_draw_func(move |area, cr, width, height| {
                 let Some(pill) = weak.upgrade() else { return };
-                draw_sketch(cr, f64::from(width), f64::from(height), pill.direction.get(), area.color());
+                draw_sketch(
+                    cr,
+                    f64::from(width),
+                    f64::from(height),
+                    pill.direction.get(),
+                    area.color(),
+                );
             });
         }
         pill.window.set_visible(true);
+        let _ = pill.first_frame.set(FirstFrame::of(&pill.window));
 
         let ask = Rc::new(ask);
         {
@@ -297,7 +313,9 @@ impl Pill {
                 if pill.syncing.get() {
                     return;
                 }
-                if let Some(way) = group.active_name().as_deref().and_then(ScrollDirection::from_wire) {
+                if let Some(way) =
+                    group.active_name().as_deref().and_then(ScrollDirection::from_wire)
+                {
                     ask(Ask::Direction(way));
                 }
             });
@@ -343,6 +361,12 @@ impl Pill {
         self.cancel.remove_css_class("destructive-action");
         self.cancel.set_tooltip_text(Some("Cancel"));
         self.refresh_hint();
+    }
+
+    /// Resolves once the pill has painted its first frame, when the extension can find it
+    /// to place (D176).
+    pub fn first_frame(&self) -> FirstFrame {
+        self.first_frame.get().cloned().unwrap_or_else(|| FirstFrame::of(&self.window))
     }
 
     /// The GTK object path the extension addresses this window by, the same shape a card
@@ -403,10 +427,9 @@ impl Pill {
         let Some(words) = popover.child() else { return };
         words.set_size_request(width - GUIDE_FRAME, -1);
         let tall = words.measure(gtk::Orientation::Vertical, width - GUIDE_FRAME).1 + GUIDE_FRAME;
-        let top = self
-            .room
-            .get()
-            .map_or(height + GUIDE_GAP, |(landed, work_area, selection)| guide_top(landed, work_area, selection, tall));
+        let top = self.room.get().map_or(height + GUIDE_GAP, |(landed, work_area, selection)| {
+            guide_top(landed, work_area, selection, tall)
+        });
         // Anchored to the pill's top edge, which is inside the pill as an anchor has to be,
         // and moved from there by the offset, which can take it anywhere.
         popover.set_position(gtk::PositionType::Bottom);
@@ -578,11 +601,19 @@ fn choices(direction: ScrollDirection) -> (gtk::Box, adw::ToggleGroup, gtk::Draw
 /// outline holds, and the arrow the rest arrives along. Drawn for Down and Right and turned
 /// over for Up and Left, as the capture itself is (`spec/07` §1.3, "four directions, one
 /// algorithm"). `ink` is the pill's own text colour.
-fn draw_sketch(cr: &gtk::cairo::Context, width: f64, height: f64, direction: ScrollDirection, ink: gdk::RGBA) {
+fn draw_sketch(
+    cr: &gtk::cairo::Context,
+    width: f64,
+    height: f64,
+    direction: ScrollDirection,
+    ink: gdk::RGBA,
+) {
     // The picture is `SKETCH_HEIGHT` tall, grown into what the face leaves it as far as
     // the width allows, and in the middle of it. The face has room to spare since the
     // modes went (D153).
-    let zoom = ((height - SKETCH_ROOM) / f64::from(SKETCH_HEIGHT)).min(width / SKETCH_WIDTH).clamp(1.0, SKETCH_ZOOM);
+    let zoom = ((height - SKETCH_ROOM) / f64::from(SKETCH_HEIGHT))
+        .min(width / SKETCH_WIDTH)
+        .clamp(1.0, SKETCH_ZOOM);
     let top = ((height - f64::from(SKETCH_HEIGHT) * zoom) / 2.0).max(0.0).round();
     cr.translate(0.0, top);
     cr.scale(zoom, zoom);
@@ -720,7 +751,8 @@ fn tile(wire: &str, icon: &str, name: &str) -> adw::Toggle {
 fn guide_top(pill: Rect, work_area: Rect, selection: Rect, height: i32) -> i32 {
     let fits = |top: i32| {
         let panel = Rect::new(pill.x, pill.y + top, pill.width, height);
-        let on_work_area = panel.y >= work_area.y && panel.y + panel.height <= work_area.y + work_area.height;
+        let on_work_area =
+            panel.y >= work_area.y && panel.y + panel.height <= work_area.y + work_area.height;
         on_work_area && panel.overlap_area(selection) == 0
     };
     let under = pill.height + GUIDE_GAP;
@@ -885,7 +917,8 @@ mod tests {
 
     #[test]
     fn every_way_has_its_own_arrow() {
-        let names: std::collections::BTreeSet<_> = ScrollDirection::ALL.iter().map(|&way| icon_for(way)).collect();
+        let names: std::collections::BTreeSet<_> =
+            ScrollDirection::ALL.iter().map(|&way| icon_for(way)).collect();
         assert_eq!(names.len(), ScrollDirection::ALL.len());
         assert!(names.iter().all(|name| name.ends_with("-symbolic")));
     }

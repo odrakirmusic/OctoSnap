@@ -22,7 +22,9 @@ pub enum BridgeError {
     /// versions, which is `spec/10` §2's protocol-mismatch case and needs a different
     /// message. Conflating them produced "the extension is not available" for an
     /// extension that was plainly running, which cost real debugging time.
-    #[error("the shell extension does not implement {method}; the two halves are different versions")]
+    #[error(
+        "the shell extension does not implement {method}; the two halves are different versions"
+    )]
     Unsupported { method: &'static str },
 
     /// A reply arrived with a shape the contract does not allow.

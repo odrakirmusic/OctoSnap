@@ -84,12 +84,7 @@ impl Bounds {
     #[must_use]
     pub fn inflated(self, by: f64) -> Self {
         let r = self.normalised();
-        Self::new(
-            r.x - by,
-            r.y - by,
-            (r.width + 2.0 * by).max(0.0),
-            (r.height + 2.0 * by).max(0.0),
-        )
+        Self::new(r.x - by, r.y - by, (r.width + 2.0 * by).max(0.0), (r.height + 2.0 * by).max(0.0))
     }
 
     /// The smallest rectangle holding both.
@@ -107,6 +102,33 @@ impl Bounds {
             (a.x + a.width).max(b.x + b.width) - x,
             (a.y + a.height).max(b.y + b.height) - y,
         )
+    }
+
+    /// Whether the two share some area. Touching edges share none.
+    #[must_use]
+    pub fn overlaps(self, other: Self) -> bool {
+        let (a, b) = (self.normalised(), other.normalised());
+        a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+    }
+
+    /// The area the two share, or `None` when they share none, as [`Self::overlaps`] has it.
+    #[must_use]
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        let (a, b) = (self.normalised(), other.normalised());
+        let (x, y) = (a.x.max(b.x), a.y.max(b.y));
+        let right = (a.x + a.width).min(b.x + b.width);
+        let bottom = (a.y + a.height).min(b.y + b.height);
+        (right > x && bottom > y).then(|| Self::new(x, y, right - x, bottom - y))
+    }
+
+    /// Whether `other` lies wholly inside these bounds, edges included.
+    #[must_use]
+    pub fn holds(self, other: Self) -> bool {
+        let (a, b) = (self.normalised(), other.normalised());
+        b.x >= a.x
+            && b.y >= a.y
+            && b.x + b.width <= a.x + a.width
+            && b.y + b.height <= a.y + a.height
     }
 
     #[must_use]
@@ -134,6 +156,32 @@ impl Bounds {
         let nx = (point.x - c.x) / (r.width / 2.0);
         let ny = (point.y - c.y) / (r.height / 2.0);
         nx * nx + ny * ny <= 1.0
+    }
+
+    /// Its corners, clockwise from the top-left.
+    #[must_use]
+    pub fn corners(self) -> [Point; 4] {
+        let r = self.normalised();
+        let (right, bottom) = (r.x + r.width, r.y + r.height);
+        [
+            Point::new(r.x, r.y),
+            Point::new(right, r.y),
+            Point::new(right, bottom),
+            Point::new(r.x, bottom),
+        ]
+    }
+
+    /// Whether `point` is on these bounds with their corners rounded to `radius`, held to
+    /// half the shorter side as the renderer holds it: whether it is within `radius` of the
+    /// rectangle the corners' circles are centred on.
+    #[must_use]
+    pub fn rounded_contains(self, radius: f64, point: Point) -> bool {
+        let r = self.normalised();
+        let radius = radius.min(r.width / 2.0).min(r.height / 2.0).max(0.0);
+        let centres = r.inflated(-radius);
+        let dx = point.x - point.x.max(centres.x).min(centres.x + centres.width);
+        let dy = point.y - point.y.max(centres.y).min(centres.y + centres.height);
+        dx * dx + dy * dy <= radius * radius
     }
 }
 
@@ -166,8 +214,7 @@ impl Segment {
             return self.start.distance_to(point);
         }
         // The projection's position along the segment, clamped to its ends.
-        let t = (((point.x - self.start.x) * dx + (point.y - self.start.y) * dy)
-            / length_squared)
+        let t = (((point.x - self.start.x) * dx + (point.y - self.start.y) * dy) / length_squared)
             .clamp(0.0, 1.0);
         let nearest = Point::new(self.start.x + t * dx, self.start.y + t * dy);
         nearest.distance_to(point)
@@ -248,6 +295,17 @@ mod tests {
     }
 
     #[test]
+    fn an_intersection_is_the_area_both_share() {
+        let a = Bounds::new(0.0, 0.0, 100.0, 50.0);
+        let b = Bounds::new(60.0, 20.0, -80.0, 100.0);
+        assert_eq!(a.intersection(b), Some(Bounds::new(0.0, 20.0, 60.0, 30.0)));
+        assert_eq!(b.intersection(a), a.intersection(b));
+        // Touching edges share nothing, as `overlaps` has it.
+        assert_eq!(a.intersection(Bounds::new(100.0, 0.0, 10.0, 10.0)), None);
+        assert_eq!(a.intersection(Bounds::new(200.0, 0.0, 10.0, 10.0)), None);
+    }
+
+    #[test]
     fn union_grows_to_hold_both_and_is_order_independent() {
         let a = Bounds::new(0.0, 0.0, 10.0, 10.0);
         let b = Bounds::new(20.0, 5.0, 10.0, 10.0);
@@ -290,5 +348,27 @@ mod tests {
         assert!(!b.ellipse_contains(Point::new(5.0, 5.0)), "the bounding box's corner");
         assert!(b.contains(Point::new(5.0, 5.0)), "which the box does hold");
         assert!(!Bounds::new(0.0, 0.0, 0.0, 10.0).ellipse_contains(Point::new(0.0, 5.0)));
+    }
+
+    #[test]
+    fn a_rounded_rectangle_holds_its_edges_and_not_the_corners_its_radius_cuts() {
+        let b = Bounds::new(0.0, 0.0, 100.0, 40.0);
+        assert!(b.rounded_contains(10.0, Point::new(50.0, 0.0)), "the top edge's middle");
+        assert!(b.rounded_contains(10.0, Point::new(0.0, 20.0)), "the left edge's middle");
+        assert!(!b.rounded_contains(10.0, Point::new(1.0, 1.0)), "a corner it cuts");
+        assert!(!b.rounded_contains(10.0, Point::new(101.0, 20.0)), "beside it");
+        assert!(b.rounded_contains(0.0, Point::new(0.0, 0.0)), "a square corner");
+        // A radius past half the shorter side is held there: the ends are half circles.
+        assert!(b.rounded_contains(500.0, Point::new(20.0, 20.0)));
+        assert!(!b.rounded_contains(500.0, Point::new(3.0, 3.0)));
+        assert_eq!(
+            Bounds::new(10.0, 20.0, -10.0, 5.0).corners(),
+            [
+                Point::new(0.0, 20.0),
+                Point::new(10.0, 20.0),
+                Point::new(10.0, 25.0),
+                Point::new(0.0, 25.0)
+            ]
+        );
     }
 }

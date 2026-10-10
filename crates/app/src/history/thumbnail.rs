@@ -196,7 +196,9 @@ pub(crate) fn decode_png(source: &Path) -> Result<(Vec<u8>, usize, usize), Strin
         png::ColorType::Rgb => 3,
         png::ColorType::GrayscaleAlpha => 2,
         png::ColorType::Grayscale => 1,
-        png::ColorType::Indexed => return Err(format!("{}: still indexed after expansion", source.display())),
+        png::ColorType::Indexed => {
+            return Err(format!("{}: still indexed after expansion", source.display()));
+        }
     };
     Ok((to_rgba(&buffer[..frame.buffer_size()], width, height, channels), width, height))
 }

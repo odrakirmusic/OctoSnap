@@ -163,10 +163,7 @@ impl Policy {
     /// `spec/08`'s defaults for recordings: show the overlay and save.
     #[must_use]
     pub fn recording_defaults() -> Self {
-        Self {
-            configured: vec![AfterAction::ShowOverlay, AfterAction::Save],
-            ..Self::default()
-        }
+        Self { configured: vec![AfterAction::ShowOverlay, AfterAction::Save], ..Self::default() }
     }
 }
 
@@ -205,11 +202,12 @@ pub fn resolve(
     requested: Option<RequestedAction>,
     modifiers: ConfirmModifiers,
 ) -> Plan {
-    let mut actions: Vec<AfterAction> = match requested {
+    let mut actions: Vec<AfterAction> = match requested.map(from_request) {
+        // SYS-11: the command line writes the file itself, and asked for nothing else.
+        Some(None) => Vec::new(),
         // CAP-14: the "& ..." variants override the configured actions, unless the
         // setting says to respect them, in which case they add to the set.
-        Some(request) => {
-            let requested_action = from_request(request);
+        Some(Some(requested_action)) => {
             if policy.shortcuts_respect_configured {
                 let mut merged = policy.configured.clone();
                 push_unique(&mut merged, requested_action);
@@ -235,21 +233,20 @@ pub fn resolve(
 
     let clipboard = clipboard_plan(&actions, policy.copy_upload);
 
-    Plan {
-        actions,
-        clipboard,
-        skip_background_preset: modifiers.shift,
-    }
+    Plan { actions, clipboard, skip_background_preset: modifiers.shift }
 }
 
-fn from_request(request: RequestedAction) -> AfterAction {
-    match request {
+/// The after-capture action a request stands for, or `None` for `Keep`, which stands for
+/// none at all.
+fn from_request(request: RequestedAction) -> Option<AfterAction> {
+    Some(match request {
         RequestedAction::Copy => AfterAction::Copy,
         RequestedAction::Save => AfterAction::Save,
         RequestedAction::Annotate => AfterAction::Annotate,
         RequestedAction::Upload => AfterAction::Upload,
         RequestedAction::Pin => AfterAction::Pin,
-    }
+        RequestedAction::Keep => return None,
+    })
 }
 
 fn push_unique(actions: &mut Vec<AfterAction>, action: AfterAction) {
@@ -259,10 +256,7 @@ fn push_unique(actions: &mut Vec<AfterAction>, action: AfterAction) {
 }
 
 /// `ACT-01`'s "special rules when Copy + Upload are both on (copy link vs. image)".
-fn clipboard_plan(
-    actions: &[AfterAction],
-    behavior: CopyUploadBehavior,
-) -> Option<ClipboardPlan> {
+fn clipboard_plan(actions: &[AfterAction], behavior: CopyUploadBehavior) -> Option<ClipboardPlan> {
     let copying = actions.contains(&AfterAction::Copy);
     let uploading = actions.contains(&AfterAction::Upload);
 
@@ -314,10 +308,7 @@ mod tests {
 
     #[test]
     fn ctrl_at_confirm_copies_even_when_copy_is_not_configured() {
-        let policy = Policy {
-            configured: vec![AfterAction::Save],
-            ..Policy::default()
-        };
+        let policy = Policy { configured: vec![AfterAction::Save], ..Policy::default() };
         let plan = resolve(&policy, None, CTRL);
         assert!(plan.has(AfterAction::Copy));
         assert!(plan.has(AfterAction::Save));
@@ -327,10 +318,7 @@ mod tests {
     #[test]
     fn ctrl_does_not_duplicate_an_already_configured_copy() {
         let plan = resolve(&Policy::default(), None, CTRL);
-        assert_eq!(
-            plan.actions.iter().filter(|a| **a == AfterAction::Copy).count(),
-            1
-        );
+        assert_eq!(plan.actions.iter().filter(|a| **a == AfterAction::Copy).count(), 1);
     }
 
     #[test]
@@ -355,10 +343,7 @@ mod tests {
 
     #[test]
     fn the_setting_makes_a_shortcut_variant_additive_instead() {
-        let policy = Policy {
-            shortcuts_respect_configured: true,
-            ..Policy::default()
-        };
+        let policy = Policy { shortcuts_respect_configured: true, ..Policy::default() };
         let plan = resolve(&policy, Some(RequestedAction::Save), NO_MODS);
         assert!(plan.has(AfterAction::Save));
         assert!(plan.has(AfterAction::Copy));
@@ -371,6 +356,23 @@ mod tests {
         assert!(plan.has(AfterAction::Copy));
     }
 
+    /// D175: `--output` keeps the capture and does nothing else with it, whatever is
+    /// configured and however the setting combines a request with it. Ctrl still copies,
+    /// since that is the user's hand at the confirm.
+    #[test]
+    fn keep_takes_every_configured_action_away() {
+        for respect in [false, true] {
+            let policy = Policy { shortcuts_respect_configured: respect, ..Policy::default() };
+            let plan = resolve(&policy, Some(RequestedAction::Keep), NO_MODS);
+            assert!(plan.actions.is_empty(), "{:?}", plan.actions);
+            assert!(!plan.writes_to_export_location());
+            let plan = resolve(&policy, Some(RequestedAction::Keep), CTRL);
+            assert_eq!(plan.actions, [AfterAction::Copy]);
+        }
+        assert_eq!(RequestedAction::from_wire("keep"), Some(RequestedAction::Keep));
+        assert_eq!(RequestedAction::Keep.as_wire(), "keep");
+    }
+
     /// A card that is switched off must not reappear because a shortcut was used.
     ///
     /// There used to be a second setting for this, `qao-enabled`, that could only ever
@@ -380,10 +382,7 @@ mod tests {
     /// setting, and this test is what proves the override path never resurrects the card.
     #[test]
     fn a_disabled_overlay_stays_disabled_under_an_override() {
-        let policy = Policy {
-            configured: vec![AfterAction::Copy],
-            ..Policy::default()
-        };
+        let policy = Policy { configured: vec![AfterAction::Copy], ..Policy::default() };
         let plan = resolve(&policy, Some(RequestedAction::Save), NO_MODS);
         assert!(!plan.has(AfterAction::ShowOverlay));
         assert_eq!(plan.actions, vec![AfterAction::Save]);
@@ -397,10 +396,7 @@ mod tests {
             configured: vec![AfterAction::Copy, AfterAction::Upload],
             ..Policy::default()
         };
-        assert_eq!(
-            resolve(&policy, None, NO_MODS).clipboard,
-            Some(ClipboardPlan::ImageThenLink)
-        );
+        assert_eq!(resolve(&policy, None, NO_MODS).clipboard, Some(ClipboardPlan::ImageThenLink));
     }
 
     #[test]
@@ -430,10 +426,7 @@ mod tests {
     /// an unrequested side effect on something the user may be mid-way through using.
     #[test]
     fn uploading_alone_never_touches_the_clipboard() {
-        let policy = Policy {
-            configured: vec![AfterAction::Upload],
-            ..Policy::default()
-        };
+        let policy = Policy { configured: vec![AfterAction::Upload], ..Policy::default() };
         assert_eq!(resolve(&policy, None, NO_MODS).clipboard, None);
     }
 
@@ -441,14 +434,8 @@ mod tests {
     /// from the settings.
     #[test]
     fn ctrl_copy_alongside_a_configured_upload_uses_the_upload_rule() {
-        let policy = Policy {
-            configured: vec![AfterAction::Upload],
-            ..Policy::default()
-        };
-        assert_eq!(
-            resolve(&policy, None, CTRL).clipboard,
-            Some(ClipboardPlan::ImageThenLink)
-        );
+        let policy = Policy { configured: vec![AfterAction::Upload], ..Policy::default() };
+        assert_eq!(resolve(&policy, None, CTRL).clipboard, Some(ClipboardPlan::ImageThenLink));
     }
 
     // --- wire round trip ----------------------------------------------------
@@ -494,10 +481,7 @@ mod tests {
 
     #[test]
     fn an_empty_configured_set_yields_an_empty_plan() {
-        let policy = Policy {
-            configured: vec![],
-            ..Policy::default()
-        };
+        let policy = Policy { configured: vec![], ..Policy::default() };
         let plan = resolve(&policy, None, NO_MODS);
         assert!(plan.actions.is_empty());
         assert_eq!(plan.clipboard, None);

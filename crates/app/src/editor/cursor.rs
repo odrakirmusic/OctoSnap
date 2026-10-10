@@ -40,8 +40,10 @@ pub enum Hover {
     Selectable,
     /// Empty picture under a tool that would draw with a press.
     Draw(Tool),
-    /// Empty picture under the text tool.
+    /// Empty picture under the text tool, or a word live text can select (`ANN-27`).
     Text,
+    /// A link or an address live text found: a click opens it.
+    Link,
     /// Empty picture under the Select tool.
     Idle,
     /// Space is held; a press would pan.
@@ -71,6 +73,7 @@ impl Cursors {
             Hover::Selected => named("move"),
             Hover::Selectable => named("pointer"),
             Hover::Text => named("text"),
+            Hover::Link => named("pointer"),
             Hover::Idle => named("default"),
             Hover::Pan => named("grab"),
             Hover::Panning => named("grabbing"),

@@ -17,6 +17,9 @@ workspace = true
 
 [dependencies]
 adw = { version = "0.9", package = "libadwaita", features = ["v1_9"] }
+# `ANN-33`'s SVG and PDF export (D184): the cairo GTK already links, with the two surfaces
+# it is built with turned on. No crate the lockfile did not already have.
+cairo-rs = { version = "0.22.9", features = ["svg", "pdf"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 gio = "0.22"
 glib = "0.22"

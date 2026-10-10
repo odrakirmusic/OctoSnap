@@ -85,7 +85,9 @@ fn without_launch_env(command: &str) -> &str {
     loop {
         rest = rest.trim_start();
         match rest.split_once(' ') {
-            Some((word, after)) if word.starts_with("MALLOC_") && word.contains('=') => rest = after,
+            Some((word, after)) if word.starts_with("MALLOC_") && word.contains('=') => {
+                rest = after
+            }
             _ => return rest,
         }
     }
@@ -114,7 +116,8 @@ pub fn is_enabled(contents: &str) -> bool {
 fn quote_exec(exec: &Path) -> String {
     let text = exec.to_string_lossy();
     if text.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '\\' | '\'' | '$' | '`')) {
-        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`");
+        let escaped =
+            text.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`");
         format!("\"{escaped}\"")
     } else {
         text.into_owned()
@@ -177,7 +180,8 @@ mod tests {
 
     #[test]
     fn an_earlier_launch_env_is_replaced_rather_than_stacked() {
-        let arenas_only = "[Desktop Entry]\nExec=/usr/bin/env MALLOC_ARENA_MAX=2 /usr/bin/octosnap-app";
+        let arenas_only =
+            "[Desktop Entry]\nExec=/usr/bin/env MALLOC_ARENA_MAX=2 /usr/bin/octosnap-app";
         assert_eq!(
             refresh(arenas_only).as_deref(),
             Some(format!("[Desktop Entry]\nExec={LAUNCH_ENV} /usr/bin/octosnap-app").as_str()),

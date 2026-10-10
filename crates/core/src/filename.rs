@@ -86,6 +86,39 @@ fn is_illegal(c: char) -> bool {
     matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control()
 }
 
+/// The most of a file name a template may fill, in bytes (D174).
+///
+/// Linux takes 255 bytes for a name, and a name's bytes are UTF-8: a hundred characters of
+/// Japanese are three hundred of them. What follows the stem is `unique_path`'s at most:
+/// a space, a 26-character id and `.webp`. 200 leaves room for that and to spare.
+pub const NAME_BYTES: usize = 200;
+
+/// The most bytes `{app}` and `{window}` bring into a name (D174), so a long title leaves
+/// room for what the template puts after it, the date or the counter that tells two
+/// captures apart. 120 characters of a Latin title, 40 of a Japanese one. A cut title ends
+/// in an ellipsis, which counts.
+pub const NAME_TOKEN_BYTES: usize = 120;
+
+fn shorten(value: &str, bytes: usize) -> String {
+    if value.len() <= bytes {
+        return value.to_owned();
+    }
+    let ellipsis = '\u{2026}';
+    format!("{}{ellipsis}", cut_to_bytes(value, bytes - ellipsis.len_utf8()))
+}
+
+/// The longest start of `value` that fits in `bytes`, cut between characters.
+fn cut_to_bytes(value: &str, bytes: usize) -> String {
+    if value.len() <= bytes {
+        return value.to_owned();
+    }
+    let mut end = bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].trim_end().to_owned()
+}
+
 /// Strips illegal characters and collapses the whitespace that leaves behind.
 ///
 /// Also trims leading dots, so a title beginning with one cannot produce a hidden file.
@@ -113,7 +146,9 @@ pub fn sanitize(value: &str) -> String {
         out.push(c);
     }
 
-    out.trim().trim_start_matches('.').trim().to_owned()
+    // Dots and spaces in any order: one pass of each left `. . a` as `. a`, a hidden file,
+    // until D174.
+    out.trim_start_matches(|c: char| c == '.' || c.is_whitespace()).trim_end().to_owned()
 }
 
 /// Renders a template.
@@ -152,7 +187,7 @@ pub fn render(template: &str, context: &Context) -> String {
         out.push_str("@2x");
     }
 
-    let cleaned = sanitize(&out);
+    let cleaned = cut_to_bytes(&sanitize(&out), NAME_BYTES);
     if cleaned.is_empty() {
         // A template that renders to nothing would produce a file called ".png".
         context.capture_type.as_str().to_owned()
@@ -209,8 +244,8 @@ fn substitute(token: &str, context: &Context) -> Option<String> {
             let width = context.counter_width.clamp(1, 4) as usize;
             Some(format!("{:0width$}", context.counter, width = width))
         }
-        "app" => Some(sanitize(&context.app)),
-        "window" => Some(sanitize(&context.window)),
+        "app" => Some(shorten(&sanitize(&context.app), NAME_TOKEN_BYTES)),
+        "window" => Some(shorten(&sanitize(&context.window), NAME_TOKEN_BYTES)),
         "type" => Some(context.capture_type.as_str().to_owned()),
         "w" => Some(context.width.to_string()),
         "h" => Some(context.height.to_string()),
@@ -240,6 +275,24 @@ mod tests {
             height: 1200,
             retina_suffix: false,
         }
+    }
+
+    /// D174: a long title cannot push the name past what Linux allows, and it leaves the
+    /// date after it in place.
+    #[test]
+    fn a_long_window_title_is_cut_and_the_date_after_it_kept() {
+        let long = Context { window: "\u{65e5}\u{672c}\u{8a9e}".repeat(60), ..ctx() };
+        let name = render("{window} {yyyy}-{MM}-{dd}", &long);
+        assert!(name.len() <= NAME_BYTES, "{} bytes", name.len());
+        assert!(name.ends_with("\u{2026} 2026-09-07"), "{name}");
+        assert!(name.len() - " 2026-09-07".len() <= NAME_TOKEN_BYTES, "{name}");
+    }
+
+    #[test]
+    fn a_name_that_is_long_by_itself_is_cut_between_characters() {
+        let name = render(&"\u{e9}".repeat(300), &ctx());
+        assert_eq!(name.len(), NAME_BYTES);
+        assert!(name.chars().all(|c| c == '\u{e9}'));
     }
 
     #[test]
@@ -414,10 +467,7 @@ mod tests {
         let rendered_local = render("{yyyy}{MM}{dd}{HH}{mm}", &local);
 
         assert_eq!(rendered_utc, "202609071304");
-        let offset = Local
-            .from_utc_datetime(&utc.timestamp.naive_utc())
-            .offset()
-            .local_minus_utc();
+        let offset = Local.from_utc_datetime(&utc.timestamp.naive_utc()).offset().local_minus_utc();
         if offset == 0 {
             assert_eq!(rendered_local, rendered_utc);
         } else {

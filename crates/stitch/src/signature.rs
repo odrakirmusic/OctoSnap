@@ -130,8 +130,7 @@ impl Signatures {
         let totals = (y as usize) * (self.segments + 1);
         let (from, to) = (totals + run.start, totals + run.end.min(self.segments));
         let first = self.inward.get((y as usize) * self.segments + run.start).copied();
-        let (Some(&start), Some(&end)) = (self.luminance.get(from), self.luminance.get(to))
-        else {
+        let (Some(&start), Some(&end)) = (self.luminance.get(from), self.luminance.get(to)) else {
             return (0.0, 0.0);
         };
         let steps = self.energy[to] - self.energy[from] - first.unwrap_or(0.0);
@@ -287,7 +286,13 @@ mod tests {
         for x in 0..width {
             // Bright up to the second segment, then stripes: an edge right at the start of
             // the run, which is not the run's.
-            let tone = if x < SEGMENT { 240u8 } else if (x / 3) % 2 == 0 { 20 } else { 140 };
+            let tone = if x < SEGMENT {
+                240u8
+            } else if (x / 3) % 2 == 0 {
+                20
+            } else {
+                140
+            };
             pixels.extend_from_slice(&[tone, tone, tone, 255]);
         }
         let frame = Frame::new(width, 1, pixels).expect("a row");

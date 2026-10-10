@@ -16,6 +16,7 @@
 
 use crate::geometry::{Bounds, Point};
 use crate::object::{Geometry, Object, TextAlign};
+use crate::shape::Shape;
 use crate::style::{
     ArrowHead, ArrowStyle, CounterStyle, RedactStyle, SpotlightShape, Style, TextStyle,
 };
@@ -28,6 +29,10 @@ use crate::style::{
 /// Measured on the drag's diagonal rather than per axis, so a deliberately thin shape --
 /// a 200x1 underline is a real thing to draw -- still counts.
 pub const MIN_DRAG: f64 = 8.0;
+
+/// How far a drag with the counter tool has to go, against the badge's radius, before it
+/// pulls a tail out of the badge (`ANN-29`): half a radius past the disc's edge.
+pub const TAIL_PULL: f64 = 1.5;
 
 /// `spec/05` §4.6: "input points are resampled to >= 2 units spacing".
 pub const RESAMPLE_SPACING: f64 = 2.0;
@@ -83,14 +88,19 @@ pub enum Tool {
     Pencil,
     Highlighter,
     Spotlight,
+    /// `ANN-32`: a lens that shows part of the picture enlarged (`crate::magnifier`).
+    Magnifier,
     Counter,
     Pixelate,
     Crop,
+    /// `ANN-31`: a band dragged across or down the picture is cut out and the gap closed
+    /// (`crate::slice`).
+    CutOut,
 }
 
 impl Tool {
     /// The strip's order, which is `spec/05` §2's table order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::Select,
         Self::Arrow,
         Self::Line,
@@ -101,9 +111,11 @@ impl Tool {
         Self::Pencil,
         Self::Highlighter,
         Self::Spotlight,
+        Self::Magnifier,
         Self::Counter,
         Self::Pixelate,
         Self::Crop,
+        Self::CutOut,
     ];
 
     /// The strip's groups, in the strip's order (`spec/13` #5, Miller's law).
@@ -118,8 +130,8 @@ impl Tool {
         &[Self::Arrow, Self::Line, Self::Rect, Self::FilledRect, Self::Ellipse],
         &[Self::Text],
         &[Self::Pencil, Self::Highlighter],
-        &[Self::Spotlight, Self::Counter, Self::Pixelate],
-        &[Self::Crop],
+        &[Self::Spotlight, Self::Magnifier, Self::Counter, Self::Pixelate],
+        &[Self::Crop, Self::CutOut],
     ];
 
     /// `spec/05` §2's Key column.
@@ -140,9 +152,13 @@ impl Tool {
             Self::Pencil => "p",
             Self::Highlighter => "h",
             Self::Spotlight => "s",
+            Self::Magnifier => "m",
             Self::Counter => "c",
             Self::Pixelate => "b",
             Self::Crop => "x",
+            // Crop's key with Shift, as the filled rectangle is the rectangle's: the two
+            // that change the picture's extent, side by side.
+            Self::CutOut => "<Shift>X",
         }
     }
 
@@ -159,9 +175,11 @@ impl Tool {
             Self::Pencil => "Pencil",
             Self::Highlighter => "Highlighter",
             Self::Spotlight => "Spotlight",
+            Self::Magnifier => "Magnifier",
             Self::Counter => "Counter",
             Self::Pixelate => "Pixelate",
             Self::Crop => "Crop",
+            Self::CutOut => "Cut Out",
         }
     }
 
@@ -193,9 +211,11 @@ impl Tool {
             Self::Pencil => "document-edit-symbolic",
             Self::Highlighter => "tool-highlighter-symbolic",
             Self::Spotlight => "tool-spotlight-symbolic",
+            Self::Magnifier => "tool-magnifier-symbolic",
             Self::Counter => "tool-counter-symbolic",
             Self::Pixelate => "tool-pixelate-symbolic",
             Self::Crop => "tool-crop-symbolic",
+            Self::CutOut => "tool-cut-out-symbolic",
         }
     }
 
@@ -205,7 +225,7 @@ impl Tool {
     /// and neither goes through [`Draft`].
     #[must_use]
     pub const fn creates(self) -> bool {
-        !matches!(self, Self::Select | Self::Crop)
+        !matches!(self, Self::Select | Self::Crop | Self::CutOut)
     }
 
     /// Whether one click is the whole gesture (`spec/05` §4.9, §4.5).
@@ -215,7 +235,7 @@ impl Tool {
     /// wiggle to work.
     #[must_use]
     pub const fn placed_by_click(self) -> bool {
-        matches!(self, Self::Counter | Self::Text)
+        matches!(self, Self::Counter | Self::Text | Self::Magnifier)
     }
 
     /// Whether the gesture accumulates a path rather than two corners.
@@ -243,6 +263,7 @@ impl Tool {
             Geometry::Path { .. } => Self::Pencil,
             Geometry::Spotlight { .. } => Self::Spotlight,
             Geometry::Counter { .. } => Self::Counter,
+            Geometry::Magnifier { .. } => Self::Magnifier,
             Geometry::Redact { .. } => Self::Pixelate,
             Geometry::Image { .. } | Geometry::Background { .. } | Geometry::Crop { .. } => {
                 return None;
@@ -304,6 +325,9 @@ pub enum Control {
     RedactStyle,
     /// §4.10's intensity, "a slider in the toolbar, alongside the style menu".
     RedactIntensity,
+    /// `ANN-32`'s magnification: a menu of [`crate::magnifier::ZOOMS`], a few steps a
+    /// person can tell apart rather than a slider.
+    Magnification,
     CropAspect,
     CropSnapping,
     /// §4.11's "expand-canvas colour", for the area a crop adds beyond the image (D52).
@@ -325,9 +349,7 @@ impl Tool {
                 Control::Shadow,
             ],
             Self::Line => &[Control::Color, Control::Size, Control::Shadow],
-            Self::Rect => {
-                &[Control::Color, Control::Size, Control::CornerRadius, Control::Shadow]
-            }
+            Self::Rect => &[Control::Color, Control::Size, Control::CornerRadius, Control::Shadow],
             // No size and no shadow: a fill has no stroke to widen, and §2's row for this
             // tool lists neither.
             Self::FilledRect => &[Control::ColorWithAlpha, Control::CornerRadius],
@@ -339,11 +361,16 @@ impl Tool {
             Self::Highlighter => &[Control::Color, Control::Size, Control::SmartMode],
             // No colour: the spotlight paints a scrim, not a stroke.
             Self::Spotlight => &[Control::SpotlightShape, Control::SpotlightOpacity],
+            // `ANN-32`: the ring's colour and width, how much the lens enlarges, and the
+            // shadow of a lens lifted off the picture.
+            Self::Magnifier => {
+                &[Control::Color, Control::Size, Control::Magnification, Control::Shadow]
+            }
             Self::Counter => &[Control::Color, Control::CounterSettings],
             Self::Pixelate => &[Control::RedactStyle, Control::RedactIntensity],
-            Self::Crop => {
-                &[Control::CropAspect, Control::CropSnapping, Control::CropExpandColor]
-            }
+            Self::Crop => &[Control::CropAspect, Control::CropSnapping, Control::CropExpandColor],
+            // Nothing to set: the drag is the whole of it.
+            Self::CutOut => &[],
         }
     }
 }
@@ -461,6 +488,11 @@ impl Control {
                     *intensity = settings.redact_intensity;
                 }
             }
+            Self::Magnification => {
+                if let Geometry::Magnifier { zoom, .. } = &mut object.geometry {
+                    *zoom = settings.magnifier_zoom;
+                }
+            }
             // §4.7's smart mode is a gesture-time behaviour (`ANN-24`), and the crop
             // controls act on the canvas rect, never on an object.
             Self::SmartMode | Self::CropAspect | Self::CropSnapping | Self::CropExpandColor => {}
@@ -502,6 +534,9 @@ pub struct ToolSettings {
     /// under it. The snap itself is `crate::highlight`, asked by the editor because it is
     /// the only side that has the base image's pixels.
     pub smart_highlighter: bool,
+    /// `ANN-32`: how many times a new lens enlarges, and what the row sets on a selected
+    /// one.
+    pub magnifier_zoom: f64,
 }
 
 impl ToolSettings {
@@ -537,6 +572,7 @@ impl ToolSettings {
                 settings.redact = *style;
                 settings.redact_intensity = *intensity;
             }
+            Geometry::Magnifier { zoom, .. } => settings.magnifier_zoom = *zoom,
             Geometry::Line { .. }
             | Geometry::Ellipse { .. }
             | Geometry::Image { .. }
@@ -571,6 +607,7 @@ impl Default for ToolSettings {
             // the line rather than the hand -- and because it degrades to the freehand
             // stroke wherever there is no line to find. Ctrl turns it off for one stroke.
             smart_highlighter: true,
+            magnifier_zoom: crate::magnifier::DEFAULT_ZOOM,
         }
     }
 }
@@ -627,12 +664,23 @@ pub struct Draft {
     /// thousand points before anyone looks at it.
     points: Vec<Point>,
     modifiers: Modifiers,
+    /// `ANN-28` (D177): what a pencil stroke held still became, which it stays until the
+    /// button comes up.
+    held: Option<Shape>,
+    /// `ANN-34` (D185): a pen's pressure at each kept point, while every event of the
+    /// stroke has had one. A pencil's only, and empty until the first is felt.
+    pressure: Option<Vec<f32>>,
 }
 
 impl Draft {
     /// Starts a gesture, or answers `None` for a tool that does not create objects.
     #[must_use]
-    pub fn begin(tool: Tool, settings: ToolSettings, at: Point, modifiers: Modifiers) -> Option<Self> {
+    pub fn begin(
+        tool: Tool,
+        settings: ToolSettings,
+        at: Point,
+        modifiers: Modifiers,
+    ) -> Option<Self> {
         if !tool.creates() {
             return None;
         }
@@ -643,6 +691,8 @@ impl Draft {
             current: at,
             points: if tool.is_freehand() { vec![at] } else { Vec::new() },
             modifiers,
+            held: None,
+            pressure: (tool == Tool::Pencil).then(Vec::new),
         })
     }
 
@@ -676,7 +726,8 @@ impl Draft {
     pub fn extend(&mut self, to: Point, modifiers: Modifiers) {
         self.current = to;
         self.modifiers = modifiers;
-        if !self.tool.is_freehand() {
+        // A held stroke is its shape now, wherever the pointer goes before it comes up.
+        if !self.tool.is_freehand() || self.held.is_some() {
             return;
         }
         // `spec/05` §4.6's Shift: "constrains to a straight line". A constrained stroke
@@ -688,13 +739,57 @@ impl Draft {
             self.points.push(to);
             return;
         }
-        let far_enough = self
-            .points
-            .last()
-            .is_none_or(|last| last.distance_to(to) >= RESAMPLE_SPACING);
+        let far_enough =
+            self.points.last().is_none_or(|last| last.distance_to(to) >= RESAMPLE_SPACING);
         if far_enough {
             self.points.push(to);
         }
+    }
+
+    /// The pen's pressure on the event the gesture was last begun or fed with (`ANN-34`),
+    /// 0 to 1, or `None` from a device that has none -- a mouse, a finger -- which makes
+    /// the whole stroke one width. A reading of 0 is the tip leaving the surface, as the
+    /// button comes up, and is not a pressure anything was drawn with.
+    pub fn feel(&mut self, pressure: Option<f64>) {
+        let Some(felt) = self.pressure.as_mut() else { return };
+        let Some(pressure) = pressure else {
+            self.pressure = None;
+            return;
+        };
+        if pressure <= 0.0 {
+            return;
+        }
+        let pressure = crate::pressure::stored(pressure);
+        // One for each kept point: the point this event added, or the last one pressed
+        // again where the pen stayed within the spacing.
+        felt.truncate(self.points.len());
+        if felt.len() < self.points.len() {
+            felt.resize(self.points.len(), pressure);
+        } else if let Some(last) = felt.last_mut() {
+            *last = pressure;
+        }
+    }
+
+    /// The pressure at each point, when the stroke was pressed throughout.
+    fn pressed(&self) -> Option<Vec<f32>> {
+        self.pressure.clone().filter(|p| !p.is_empty() && p.len() == self.points.len())
+    }
+
+    /// `ANN-28` (D177): the pencil has been held still, so the stroke is asked what it was
+    /// meant to be. The shape it became, if it became one; a stroke that is no shape stays
+    /// a stroke and can be held again later. Shift's straight line is a line already.
+    pub fn hold(&mut self) -> Option<Shape> {
+        if self.tool != Tool::Pencil || self.held.is_some() || self.modifiers.shift {
+            return None;
+        }
+        self.held = crate::shape::recognise(&self.points);
+        self.held
+    }
+
+    /// The shape a held stroke became (`ANN-28`).
+    #[must_use]
+    pub const fn held(&self) -> Option<Shape> {
+        self.held
     }
 
     /// How far the gesture has travelled, on the diagonal.
@@ -756,13 +851,26 @@ impl Draft {
                     font_size: self.settings.font_size,
                     align: self.settings.align,
                     width,
+                    tail: None,
                 }
             }
-            Tool::Pencil => Geometry::Path {
-                points: self.points.clone(),
-                smoothing: self.settings.smoothing,
-                highlighter: false,
-                band: None,
+            // A held stroke is the shape it became (`ANN-28`), drawn with the pencil's own
+            // colour and width, and from then on edited as that shape is.
+            Tool::Pencil => match self.held {
+                Some(Shape::Line { start, end }) => Geometry::Line { start, end },
+                Some(Shape::Rect { bounds }) => Geometry::Rect {
+                    bounds,
+                    filled: false,
+                    radius: corner_radius(self.settings.rounded_corners, &self.settings.style),
+                },
+                Some(Shape::Ellipse { bounds }) => Geometry::Ellipse { bounds },
+                None => Geometry::Path {
+                    points: self.points.clone(),
+                    smoothing: self.settings.smoothing,
+                    highlighter: false,
+                    band: None,
+                    pressure: self.pressed(),
+                },
             },
             // The freehand stroke, always. `spec/05` §4.7's snap needs the base image's
             // pixels, which this crate does not have and should not: the editor asks
@@ -772,17 +880,23 @@ impl Draft {
                 smoothing: self.settings.smoothing,
                 highlighter: true,
                 band: None,
+                pressure: None,
             },
             Tool::Spotlight => Geometry::Spotlight {
                 shape: self.settings.spotlight,
                 bounds,
                 opacity: self.settings.spotlight_opacity,
             },
+            // A click places a badge; a drag out of it pulls a tail to where the pointer
+            // comes up (`ANN-29`), once the tip is clear of the disc -- so a click's own
+            // jitter is still a click. Shift snaps the tail to 45°, as it does an arrow.
             Tool::Counter => Geometry::Counter {
                 center: self.start,
                 number: next_number,
                 style: self.settings.counter,
                 radius: self.settings.counter_radius,
+                tail: (self.length() >= self.settings.counter_radius * TAIL_PULL)
+                    .then(|| self.constrained_end()),
             },
             Tool::Pixelate => Geometry::Redact {
                 bounds,
@@ -795,7 +909,16 @@ impl Draft {
                 // never bit-identical, and the value is fixed the moment it is stored.
                 seed: seed_from(self.start, self.current),
             },
-            Tool::Select | Tool::Crop => return None,
+            // A drag pulls the lens off the spot it pressed on, to where the pointer comes
+            // up, and a click puts it over the spot, a loupe (`ANN-32`). Shift keeps the
+            // line to 45°, as an arrow's.
+            Tool::Magnifier => Geometry::Magnifier {
+                center: if self.length() >= MIN_DRAG { self.constrained_end() } else { self.start },
+                radius: crate::magnifier::RADIUS,
+                source: self.start,
+                zoom: self.settings.magnifier_zoom,
+            },
+            Tool::Select | Tool::Crop | Tool::CutOut => return None,
         })
     }
 
@@ -841,10 +964,7 @@ impl Draft {
             // "Alt draws from the centre": the anchor becomes the middle, so the drag
             // extends the shape in both directions at once.
             let (dx, dy) = (end.x - self.start.x, end.y - self.start.y);
-            Bounds::from_corners(
-                Point::new(self.start.x - dx, self.start.y - dy),
-                end,
-            )
+            Bounds::from_corners(Point::new(self.start.x - dx, self.start.y - dy), end)
         } else {
             Bounds::from_corners(self.start, end)
         }
@@ -962,8 +1082,13 @@ mod tests {
     /// A click places an auto-width text box; a drag draws one out with a width.
     #[test]
     fn a_text_click_has_no_width_and_a_text_drag_has_the_dragged_one() {
-        let click = Draft::begin(Tool::Text, ToolSettings::default(), Point::new(10.0, 20.0), Modifiers::none())
-            .expect("creates");
+        let click = Draft::begin(
+            Tool::Text,
+            ToolSettings::default(),
+            Point::new(10.0, 20.0),
+            Modifiers::none(),
+        )
+        .expect("creates");
         assert_eq!(click.text_box(), (Point::new(10.0, 20.0), None));
         let mut dragged = click.clone();
         dragged.extend(Point::new(210.0, 60.0), Modifiers::none());
@@ -986,8 +1111,9 @@ mod tests {
         assert_eq!(radius, 0.0);
 
         let settings = ToolSettings { rounded_corners: true, ..ToolSettings::default() };
-        let mut draft = Draft::begin(Tool::FilledRect, settings, Point::new(0.0, 0.0), Modifiers::none())
-            .expect("creates");
+        let mut draft =
+            Draft::begin(Tool::FilledRect, settings, Point::new(0.0, 0.0), Modifiers::none())
+                .expect("creates");
         draft.extend(Point::new(100.0, 100.0), Modifiers::none());
         let rounded = draft.object(0, 0, 1).expect("committable");
         let Geometry::Rect { radius, .. } = rounded.geometry else { panic!("not a rect") };
@@ -1010,10 +1136,16 @@ mod tests {
             .expect("committable");
             assert_eq!(Tool::for_object(&object), Some(tool), "{tool:?}");
         }
-        let background = Object::new(0, 0, Style::default(), Geometry::Background {
-            params: crate::background::BackgroundParams::default(),
-            source: None,
-        });
+        let background = Object::new(
+            0,
+            0,
+            Style::default(),
+            Geometry::Background {
+                params: crate::background::BackgroundParams::default(),
+                source: None,
+                fill: None,
+            },
+        );
         assert_eq!(Tool::for_object(&background), None);
     }
 
@@ -1022,8 +1154,8 @@ mod tests {
     /// with the colour.
     #[test]
     fn one_control_changes_one_thing_and_reading_then_writing_changes_nothing() {
-        let mut arrow = drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none())
-            .expect("committable");
+        let mut arrow =
+            drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none()).expect("committable");
         arrow.style.size = 5;
         arrow.style.color = crate::style::Rgba::new(0.0, 0.0, 1.0, 1.0);
 
@@ -1035,7 +1167,10 @@ mod tests {
 
         let mut copy = arrow.clone();
         for control in Tool::Arrow.controls() {
-            assert!(!control.apply(&read, &mut copy), "{control:?} changed a value it had just read");
+            assert!(
+                !control.apply(&read, &mut copy),
+                "{control:?} changed a value it had just read"
+            );
         }
 
         let mut recoloured = ToolSettings::default();
@@ -1072,8 +1207,8 @@ mod tests {
         assert_eq!((style, font_size), (read.text, read.font_size));
 
         // Nothing else has an alignment to set.
-        let mut arrow = drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none())
-            .expect("committable");
+        let mut arrow =
+            drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none()).expect("committable");
         assert!(!Control::TextAlign.apply(&right, &mut arrow));
     }
 
@@ -1081,8 +1216,8 @@ mod tests {
     /// before there was a head field reads as the triangle it was drawn with.
     #[test]
     fn the_arrowhead_is_a_separate_choice_with_the_triangle_as_its_default() {
-        let mut arrow = drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none())
-            .expect("committable");
+        let mut arrow =
+            drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none()).expect("committable");
         assert!(matches!(arrow.geometry, Geometry::Arrow { head: ArrowHead::Triangle, .. }));
         let settings = ToolSettings { head: ArrowHead::Dot, ..ToolSettings::default() };
         assert!(Control::ArrowHead.apply(&settings, &mut arrow));
@@ -1103,8 +1238,8 @@ mod tests {
 
     #[test]
     fn switching_arrow_styles_adds_drops_and_keeps_the_control_point() {
-        let mut arrow = drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none())
-            .expect("committable");
+        let mut arrow =
+            drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none()).expect("committable");
         let mut settings = ToolSettings { arrow: ArrowStyle::Curved, ..ToolSettings::default() };
         assert!(Control::ArrowStyle.apply(&settings, &mut arrow));
         let Geometry::Arrow { ctrl: Some(bowed), .. } = arrow.geometry else {
@@ -1146,9 +1281,7 @@ mod tests {
     fn shift_snaps_an_arrow_to_45_and_keeps_its_length() {
         let object = drag(Tool::Arrow, (0.0, 0.0), (100.0, 10.0), Modifiers::shift())
             .expect("a 100-unit drag is committable");
-        let Geometry::Arrow { start, end, .. } = object.geometry else {
-            panic!("not an arrow")
-        };
+        let Geometry::Arrow { start, end, .. } = object.geometry else { panic!("not an arrow") };
         // Snapped to horizontal, and the length is the drag's, not its projection.
         let dragged = Point::new(0.0, 0.0).distance_to(Point::new(100.0, 10.0));
         assert!((end.y - start.y).abs() < 1e-9, "not snapped to the axis: {end:?}");
@@ -1161,8 +1294,8 @@ mod tests {
 
     #[test]
     fn shift_makes_a_square_that_contains_the_drag() {
-        let object = drag(Tool::Rect, (10.0, 10.0), (110.0, 40.0), Modifiers::shift())
-            .expect("committable");
+        let object =
+            drag(Tool::Rect, (10.0, 10.0), (110.0, 40.0), Modifiers::shift()).expect("committable");
         let Geometry::Rect { bounds, .. } = object.geometry else { panic!("not a rect") };
         assert!((bounds.width - bounds.height).abs() < 1e-9, "not square: {bounds:?}");
         // The larger extent won, so the drag is inside the square rather than clipped by it.
@@ -1183,8 +1316,8 @@ mod tests {
 
     #[test]
     fn alt_draws_from_the_centre() {
-        let object =
-            drag(Tool::Rect, (100.0, 100.0), (150.0, 130.0), Modifiers::alt()).expect("committable");
+        let object = drag(Tool::Rect, (100.0, 100.0), (150.0, 130.0), Modifiers::alt())
+            .expect("committable");
         let Geometry::Rect { bounds, .. } = object.geometry else { panic!("not a rect") };
         let centre = bounds.center();
         assert!(
@@ -1234,6 +1367,75 @@ mod tests {
                 "points closer than the spacing survived"
             );
         }
+    }
+
+    /// A pencil draft drawn round a box from its top-left corner, almost closed.
+    fn round_a_box(tool: Tool, modifiers: Modifiers) -> Draft {
+        let mut draft =
+            Draft::begin(tool, ToolSettings::default(), Point::new(0.0, 0.0), modifiers)
+                .expect("creates");
+        let corners = [(200.0, 0.0), (200.0, 120.0), (0.0, 120.0), (0.0, 8.0)];
+        let mut from = (0.0, 0.0);
+        for to in corners {
+            for i in 1..=40 {
+                let t = f64::from(i) / 40.0;
+                let at = Point::new(from.0 + t * (to.0 - from.0), from.1 + t * (to.1 - from.1));
+                draft.extend(at, modifiers);
+            }
+            from = to;
+        }
+        draft
+    }
+
+    /// `ANN-28` (D177): held, a stroke round a box is a rectangle in the pencil's style,
+    /// and stays one whatever the pointer does before the button comes up.
+    #[test]
+    fn a_held_pencil_stroke_round_a_box_becomes_a_rectangle() {
+        let mut draft = round_a_box(Tool::Pencil, Modifiers::none());
+        assert!(matches!(draft.hold(), Some(Shape::Rect { .. })));
+        let Some(Geometry::Rect { bounds, filled: false, .. }) = draft.geometry(1) else {
+            panic!("not a rectangle: {:?}", draft.geometry(1))
+        };
+        assert_eq!((bounds.width, bounds.height), (200.0, 120.0));
+        draft.extend(Point::new(500.0, 500.0), Modifiers::none());
+        assert!(matches!(draft.geometry(1), Some(Geometry::Rect { .. })));
+        let object = draft.object(0, 0, 1).expect("committable");
+        assert_eq!(object.style, ToolSettings::default().style);
+        // Asked again, it is already a shape.
+        assert_eq!(draft.hold(), None);
+    }
+
+    /// The highlighter has its own snap (`spec/05` §4.7), and Shift's line is a line
+    /// already, so neither becomes a shape.
+    #[test]
+    fn only_the_pencil_without_shift_becomes_a_shape() {
+        let mut highlighter = round_a_box(Tool::Highlighter, Modifiers::none());
+        assert_eq!(highlighter.hold(), None);
+        assert!(matches!(highlighter.geometry(1), Some(Geometry::Path { .. })));
+        let mut ruled = round_a_box(Tool::Pencil, Modifiers::shift());
+        assert_eq!(ruled.hold(), None);
+    }
+
+    /// A stroke that is no shape stays a stroke, and goes on being drawn.
+    #[test]
+    fn a_held_scribble_stays_a_stroke_and_goes_on() {
+        let mut draft = Draft::begin(
+            Tool::Pencil,
+            ToolSettings::default(),
+            Point::new(0.0, 0.0),
+            Modifiers::none(),
+        )
+        .expect("the pencil creates");
+        for i in 1..=30 {
+            let y = if i % 2 == 0 { 0.0 } else { 40.0 };
+            draft.extend(Point::new(f64::from(i) * 6.0, y), Modifiers::none());
+        }
+        assert_eq!(draft.hold(), None);
+        let Some(Geometry::Path { points, .. }) = draft.geometry(1) else { panic!("not a path") };
+        let before = points.len();
+        draft.extend(Point::new(400.0, 10.0), Modifiers::none());
+        let Some(Geometry::Path { points, .. }) = draft.geometry(1) else { panic!("not a path") };
+        assert_eq!(points.len(), before + 1);
     }
 
     #[test]
@@ -1316,8 +1518,13 @@ mod tests {
     fn select_and_crop_do_not_draft() {
         for tool in [Tool::Select, Tool::Crop] {
             assert!(
-                Draft::begin(tool, ToolSettings::default(), Point::new(0.0, 0.0), Modifiers::none())
-                    .is_none(),
+                Draft::begin(
+                    tool,
+                    ToolSettings::default(),
+                    Point::new(0.0, 0.0),
+                    Modifiers::none()
+                )
+                .is_none(),
                 "{tool:?} should not draft"
             );
         }
@@ -1344,6 +1551,26 @@ mod tests {
         assert_eq!(center, Point::new(50.0, 50.0), "a placed badge followed the pointer");
     }
 
+    /// `ANN-29`: a drag out of the badge pulls a tail to where the pointer is, and a
+    /// click's jitter does not.
+    #[test]
+    fn a_counter_dragged_out_of_its_badge_has_a_tail() {
+        let mut draft = Draft::begin(
+            Tool::Counter,
+            ToolSettings::default(),
+            Point::new(50.0, 50.0),
+            Modifiers::none(),
+        )
+        .expect("creates");
+        draft.extend(Point::new(54.0, 53.0), Modifiers::none());
+        let Some(Geometry::Counter { tail, .. }) = draft.geometry(1) else { panic!() };
+        assert_eq!(tail, None, "a click's jitter is a click");
+        draft.extend(Point::new(150.0, 110.0), Modifiers::none());
+        let Some(Geometry::Counter { center, tail, .. }) = draft.geometry(1) else { panic!() };
+        assert_eq!(center, Point::new(50.0, 50.0), "the badge stays where it was placed");
+        assert_eq!(tail, Some(Point::new(150.0, 110.0)));
+    }
+
     #[test]
     fn a_filled_rectangle_is_filled_and_a_plain_one_is_not() {
         let filled = drag(Tool::FilledRect, (0.0, 0.0), (100.0, 50.0), Modifiers::none())
@@ -1361,6 +1588,32 @@ mod tests {
         assert!(radius.abs() < 1e-9, "corners are square unless the option is on");
     }
 
+    /// `ANN-32`: a drag pulls the lens to where the pointer came up, its spot left where
+    /// the press was; a click is a loupe over the spot; the row's magnification is the one
+    /// control that reaches the zoom.
+    #[test]
+    fn a_magnifier_is_pulled_off_the_spot_it_was_pressed_on() {
+        let pulled = drag(Tool::Magnifier, (20.0, 20.0), (300.0, 100.0), Modifiers::none())
+            .expect("committable");
+        let Geometry::Magnifier { center, radius, source, zoom } = pulled.geometry else {
+            panic!("not a magnifier")
+        };
+        assert_eq!(source, Point::new(20.0, 20.0));
+        assert_eq!(center, Point::new(300.0, 100.0));
+        assert!((zoom - crate::magnifier::DEFAULT_ZOOM).abs() < 1e-9);
+        assert!((radius - crate::magnifier::RADIUS).abs() < 1e-9);
+        let loupe = drag(Tool::Magnifier, (50.0, 50.0), (51.0, 50.0), Modifiers::none())
+            .expect("committable");
+        let Geometry::Magnifier { center, source, .. } = loupe.geometry else { panic!() };
+        assert_eq!(center, source, "a click is a loupe");
+        let settings = ToolSettings { magnifier_zoom: 3.0, ..ToolSettings::default() };
+        let mut object = pulled;
+        assert!(Control::Magnification.apply(&settings, &mut object));
+        let read = ToolSettings::from_object(&object, ToolSettings::default());
+        assert!((read.magnifier_zoom - 3.0).abs() < 1e-9);
+        assert!(!Control::Magnification.apply(&settings, &mut object), "it is 3 already");
+    }
+
     #[test]
     fn every_creating_tool_produces_the_kind_it_is_named_after() {
         let expected = [
@@ -1373,6 +1626,7 @@ mod tests {
             (Tool::Pencil, ObjectKind::Path),
             (Tool::Highlighter, ObjectKind::Path),
             (Tool::Spotlight, ObjectKind::Spotlight),
+            (Tool::Magnifier, ObjectKind::Magnifier),
             (Tool::Counter, ObjectKind::Counter),
             (Tool::Pixelate, ObjectKind::Redact),
         ];
@@ -1402,7 +1656,7 @@ mod options_row_tests {
     #[test]
     fn every_tools_row_is_the_one_the_spec_lists() {
         use Control as C;
-        let table: [(Tool, &[Control]); 13] = [
+        let table: [(Tool, &[Control]); 15] = [
             (Tool::Select, &[]),
             // §2's four, plus the arrowhead menu the user asked for (D57).
             (Tool::Arrow, &[C::Color, C::Size, C::ArrowStyle, C::ArrowHead, C::Shadow]),
@@ -1415,9 +1669,13 @@ mod options_row_tests {
             (Tool::Pencil, &[C::Color, C::Size, C::Smoothing]),
             (Tool::Highlighter, &[C::Color, C::Size, C::SmartMode]),
             (Tool::Spotlight, &[C::SpotlightShape, C::SpotlightOpacity]),
+            // `ANN-32` (D187).
+            (Tool::Magnifier, &[C::Color, C::Size, C::Magnification, C::Shadow]),
             (Tool::Counter, &[C::Color, C::CounterSettings]),
             (Tool::Pixelate, &[C::RedactStyle, C::RedactIntensity]),
             (Tool::Crop, &[C::CropAspect, C::CropSnapping, C::CropExpandColor]),
+            // `ANN-31`: the drag is the whole of it (D183).
+            (Tool::CutOut, &[]),
         ];
         for (tool, expected) in table {
             assert_eq!(tool.controls(), expected, "{tool:?}");
@@ -1450,10 +1708,9 @@ mod options_row_tests {
     }
 
     #[test]
-    fn select_is_the_only_tool_with_no_options() {
-        let bare: Vec<Tool> =
-            Tool::ALL.into_iter().filter(|t| t.controls().is_empty()).collect();
-        assert_eq!(bare, [Tool::Select]);
+    fn select_and_cut_out_are_the_only_tools_with_no_options() {
+        let bare: Vec<Tool> = Tool::ALL.into_iter().filter(|t| t.controls().is_empty()).collect();
+        assert_eq!(bare, [Tool::Select, Tool::CutOut]);
     }
 
     #[test]
@@ -1498,10 +1755,25 @@ mod options_row_tests {
         // no arm for it -- which is a silent hole rather than a compile error.
         use Control as C;
         let all = [
-            C::Color, C::ColorWithAlpha, C::Size, C::Shadow, C::ArrowStyle, C::TextStyle,
-            C::FontSize, C::CornerRadius, C::Smoothing, C::SmartMode, C::SpotlightShape,
-            C::SpotlightOpacity, C::CounterSettings, C::RedactStyle, C::RedactIntensity,
-            C::CropAspect, C::CropSnapping, C::CropExpandColor,
+            C::Color,
+            C::ColorWithAlpha,
+            C::Size,
+            C::Shadow,
+            C::ArrowStyle,
+            C::TextStyle,
+            C::FontSize,
+            C::CornerRadius,
+            C::Smoothing,
+            C::SmartMode,
+            C::SpotlightShape,
+            C::SpotlightOpacity,
+            C::CounterSettings,
+            C::RedactStyle,
+            C::RedactIntensity,
+            C::Magnification,
+            C::CropAspect,
+            C::CropSnapping,
+            C::CropExpandColor,
         ];
         for control in all {
             assert!(

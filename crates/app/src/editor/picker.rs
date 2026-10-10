@@ -117,11 +117,7 @@ mod square {
                 ] {
                     let builder = gsk::PathBuilder::new();
                     builder.add_circle(&graphene::Point::new(cx, cy), radius);
-                    snapshot.append_stroke(
-                        &builder.to_path(),
-                        &gsk::Stroke::new(width),
-                        &color,
-                    );
+                    snapshot.append_stroke(&builder.to_path(), &gsk::Stroke::new(width), &color);
                 }
             }
         }
@@ -174,7 +170,6 @@ mod bar {
         /// §2: "an alpha slider **over a checkerboard**", so the colour is needed too.
         Alpha(Rgba),
     }
-
 
     mod imp {
         use super::*;
@@ -502,11 +497,8 @@ impl Picker {
     fn swatch_button(self: &Rc<Self>, color: Rgba, name: &str, with_alpha: bool) -> gtk::Widget {
         let chip = Preview::new(Kind::Color(color));
         chip.set_active(same_hue(color, self.color.get()));
-        let button = gtk::Button::builder()
-            .child(&chip)
-            .tooltip_text(name)
-            .has_frame(false)
-            .build();
+        let button =
+            gtk::Button::builder().child(&chip).tooltip_text(name).has_frame(false).build();
         let picker = Rc::downgrade(self);
         button.connect_clicked(move |_| {
             let Some(picker) = picker.upgrade() else { return };
@@ -718,8 +710,8 @@ impl Picker {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let channel = |i: usize| self.fields[i].value().round() as u8;
         let alpha = self.fields[3].value() / 100.0;
-        let color = Rgba { a: alpha, ..self.color.get() }
-            .with_rgb8(channel(0), channel(1), channel(2));
+        let color =
+            Rgba { a: alpha, ..self.color.get() }.with_rgb8(channel(0), channel(1), channel(2));
         // Typed channels are a colour arriving from elsewhere, so the hue is re-read --
         // but only if it has one, which is what `set_color` decides.
         self.set_color(color);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `spec/05` §4.13's background, as arithmetic: what the parameters mean, what canvas
-//! they imply, and what auto-balance trims.
+//! they imply, what auto-balance trims, and the edit the panel makes ([`apply`]).
 //!
 //! The parameter names are appendix A.7's, read out of a real preset file -- `background`,
 //! `padding`, `inset`, `cornerRadius`, `ratio`, `alignment`, `autoBalance`,
@@ -22,9 +22,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::command::Command;
 use crate::geometry::Bounds;
+use crate::object::{Geometry, Object};
 use crate::redact::Pixels;
-use crate::style::Rgba;
+use crate::scene::Scene;
+use crate::style::{Rgba, Style};
 
 /// How many gradients ship with the app. Appendix A.7's `bg1…bg20`, and `spec/05` §4.13's
 /// "4 × 5 grid of twenty gradient swatches [V]".
@@ -156,8 +159,7 @@ impl Ratio {
     /// Width over height, or `None` for a ratio with a zero in it.
     #[must_use]
     pub fn value(self) -> Option<f64> {
-        (self.width > 0 && self.height > 0)
-            .then(|| f64::from(self.width) / f64::from(self.height))
+        (self.width > 0 && self.height > 0).then(|| f64::from(self.width) / f64::from(self.height))
     }
 
     #[must_use]
@@ -416,10 +418,7 @@ pub const GRADIENT_SET: [Gradient; GRADIENTS as usize] = [
         name: "Aurora",
         angle: 145.0,
         stops: &[(0.0, 0x0E_2A_3A), (1.0, 0x07_12_1C)],
-        blobs: &[
-            blob(0.25, 0.75, 0.65, 0x2E_D9_A0, 0.45),
-            blob(0.75, 0.3, 0.6, 0x5B_6B_E8, 0.35),
-        ],
+        blobs: &[blob(0.25, 0.75, 0.65, 0x2E_D9_A0, 0.45), blob(0.75, 0.3, 0.6, 0x5B_6B_E8, 0.35)],
     },
     Gradient {
         id: 13,
@@ -544,11 +543,7 @@ impl Preset {
     /// carrying a timestamp beside it.
     #[must_use]
     pub fn new(name: impl Into<String>, params: BackgroundParams) -> Self {
-        Self {
-            id: crate::object::ObjectId::new().to_string(),
-            name: name.into(),
-            params,
-        }
+        Self { id: crate::object::ObjectId::new().to_string(), name: name.into(), params }
     }
 
     /// Reads one back, or `None` when the text is not a preset this build understands.
@@ -557,10 +552,9 @@ impl Preset {
     /// written: one unreadable entry must cost the user that preset, not all of them.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
-        serde_json::from_str::<Self>(text).ok().map(|preset| Self {
-            params: preset.params.clamped(),
-            ..preset
-        })
+        serde_json::from_str::<Self>(text)
+            .ok()
+            .map(|preset| Self { params: preset.params.clamped(), ..preset })
     }
 
     /// Writes one out, or `None` if it somehow will not serialise.
@@ -691,12 +685,8 @@ pub fn content(pixels: &Pixels) -> Option<Bounds> {
     let left = (0..width).find(|x| !column_is_border(*x))?;
     let right = (0..width).rev().find(|x| !column_is_border(*x))?;
 
-    let trimmed = Bounds::new(
-        left as f64,
-        top as f64,
-        (right - left + 1) as f64,
-        (bottom - top + 1) as f64,
-    );
+    let trimmed =
+        Bounds::new(left as f64, top as f64, (right - left + 1) as f64, (bottom - top + 1) as f64);
     // Nothing was trimmed: say so, rather than answering with the whole image and making
     // every caller compare it against what it already had.
     (trimmed.width < width as f64 || trimmed.height < height as f64).then_some(trimmed)
@@ -795,6 +785,115 @@ pub fn balance_shift(source: Bounds, content: Bounds) -> (f64, f64) {
     (source.x - moved.x, source.y - moved.y)
 }
 
+/// `spec/05` §4.13's one edit, as the commands that make it: the panel's background with
+/// `params`, laid out over `source`, and the canvas that implies. The panel works out
+/// `source`, Auto Balance's shift and all, from [`Scene::picture_rect`], and commits what this
+/// answers as one step; `created` is a new background's `spec/05` §5.1 time.
+///
+/// An empty parameter set takes the background away and gives the canvas back to `source`
+/// (D166). Otherwise the background is changed, or put below everything.
+///
+/// The crop's own fill ([`Object::is_crop_fill`]) is not the panel's: a crop past the image
+/// left it, and the area it fills is the picture's. The panel's background takes its slot,
+/// lays out the canvas the crop widened, and keeps the fill's colour under the picture,
+/// inside the frame; None gives the fill back (D192).
+#[must_use]
+pub fn apply(
+    scene: &Scene,
+    params: &BackgroundParams,
+    source: Bounds,
+    created: u64,
+) -> Vec<Command> {
+    let before = scene.canvas;
+    let existing = scene.background().and_then(|(id, _)| scene.get(id));
+    let mut commands = Vec::new();
+    let change = |was: &Object, now: Object| Command::Change {
+        id: was.id,
+        before: Box::new(was.clone()),
+        after: Box::new(now),
+    };
+
+    if params.is_empty() {
+        let Some(was) = existing else { return commands };
+        match kept_fill(was) {
+            // The crop's fill again, in the slot it lent the panel.
+            Some(color) => {
+                let mut now = was.clone();
+                now.geometry = Geometry::Background {
+                    params: BackgroundParams::plain(color),
+                    source: None,
+                    fill: None,
+                };
+                now.style.color = color;
+                commands.push(change(was, now));
+            }
+            None => commands.push(Command::Remove(was.clone())),
+        }
+        // Back to what the background was laid out over, which is the crop if there was
+        // one and the capture if there was not.
+        if before != source {
+            commands.push(Command::CanvasChange { before, after: source });
+        }
+        return commands;
+    }
+
+    let after = layout(source, params).canvas;
+    let crop_fill = scene.objects().iter().find(|o| o.is_crop_fill());
+    match existing.or(crop_fill) {
+        Some(was) => {
+            let fill = if was.is_crop_fill() { crop_fill_color(was) } else { kept_fill(was) };
+            let mut now = was.clone();
+            now.geometry =
+                Geometry::Background { params: params.clone(), source: Some(source), fill };
+            // Kept in step so a project written by this build still opens as the right flat
+            // colour in one written before it (`nodes.rs`).
+            if let Background::Color { color } = params.background {
+                now.style.color = color;
+            }
+            commands.push(change(was, now));
+        }
+        None => {
+            let lowest = scene.objects().iter().map(|o| o.z).min().unwrap_or(0);
+            let color = match params.background {
+                Background::Color { color } => color,
+                _ => Style::default().color,
+            };
+            let geometry =
+                Geometry::Background { params: params.clone(), source: Some(source), fill: None };
+            let style = Style::new(color, 1, false);
+            commands.push(Command::Add(Object::new(
+                lowest.saturating_sub(1),
+                created,
+                style,
+                geometry,
+            )));
+        }
+    }
+    if before != after {
+        commands.push(Command::CanvasChange { before, after });
+    }
+    commands
+}
+
+/// The crop's fill a panel's background keeps in its slot.
+fn kept_fill(object: &Object) -> Option<Rgba> {
+    match object.geometry {
+        Geometry::Background { fill, .. } => fill,
+        _ => None,
+    }
+}
+
+/// The colour of the crop's own fill: a plain colour, or nothing when it is transparent.
+fn crop_fill_color(object: &Object) -> Option<Rgba> {
+    match &object.geometry {
+        Geometry::Background { params, .. } => match params.background {
+            Background::Color { color } => Some(color),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn at(pixels: &Pixels, x: usize, y: usize) -> [u8; 4] {
     pixels.at(x, y)
 }
@@ -850,7 +949,12 @@ mod tests {
         };
         let json = serde_json::to_string(&params).expect("serialises");
         let names = [
-            "padding", "inset", "cornerRadius", "ratio", "alignment", "autoBalance",
+            "padding",
+            "inset",
+            "cornerRadius",
+            "ratio",
+            "alignment",
+            "autoBalance",
             "shadowIntensity",
         ];
         for key in names {
@@ -883,15 +987,12 @@ mod tests {
     /// picture in the same export. The two sliders are not one slider twice.
     #[test]
     fn inset_shrinks_the_picture_rather_than_the_canvas() {
-        let padded = layout(image(), &BackgroundParams {
-            padding: 50.0,
-            ..BackgroundParams::default()
-        });
-        let inset = layout(image(), &BackgroundParams {
-            padding: 50.0,
-            inset: 30.0,
-            ..BackgroundParams::default()
-        });
+        let padded =
+            layout(image(), &BackgroundParams { padding: 50.0, ..BackgroundParams::default() });
+        let inset = layout(
+            image(),
+            &BackgroundParams { padding: 50.0, inset: 30.0, ..BackgroundParams::default() },
+        );
         // The export is the one padding chose, whatever the inset does inside it.
         assert_eq!(inset.canvas, padded.canvas);
         // 800 x 600 losing 30 a side on the short axis is a tenth off both.
@@ -910,10 +1011,7 @@ mod tests {
     fn an_inset_never_changes_the_pictures_aspect() {
         let aspect = image().width / image().height;
         for inset in [0.0, 1.0, 17.5, 100.0, 299.0, MAX_INSET] {
-            let out = layout(image(), &BackgroundParams {
-                inset,
-                ..BackgroundParams::default()
-            });
+            let out = layout(image(), &BackgroundParams { inset, ..BackgroundParams::default() });
             assert!(out.image.width > 0.0 && out.image.height > 0.0, "{out:?} at {inset}");
             let had = out.image.width / out.image.height;
             assert!((had - aspect).abs() < 1e-9, "{had} != {aspect} at {inset}");
@@ -970,11 +1068,8 @@ mod tests {
     fn with_no_ratio_every_alignment_is_the_same() {
         let out: Vec<_> = (0..9)
             .map(|alignment| {
-                layout(image(), &BackgroundParams {
-                    alignment,
-                    ..BackgroundParams::default()
-                })
-                .image
+                layout(image(), &BackgroundParams { alignment, ..BackgroundParams::default() })
+                    .image
             })
             .collect();
         assert!(out.windows(2).all(|pair| pair[0] == pair[1]), "{out:?}");
@@ -1012,10 +1107,8 @@ mod tests {
     /// An inset past half the image would turn the picture inside out.
     #[test]
     fn an_inset_larger_than_the_image_still_leaves_a_picture() {
-        let out = layout(image(), &BackgroundParams {
-            inset: MAX_INSET,
-            ..BackgroundParams::default()
-        });
+        let out =
+            layout(image(), &BackgroundParams { inset: MAX_INSET, ..BackgroundParams::default() });
         assert!(out.image.width > 0.0 && out.image.height > 0.0, "{out:?}");
     }
 
@@ -1229,12 +1322,15 @@ mod tests {
     /// `spec/05` §4.13's presets, through the list they are stored in.
     #[test]
     fn a_preset_survives_being_written_and_read() {
-        let preset = Preset::new("Dark 16:9", BackgroundParams {
-            background: Background::Color { color: Rgba::new(0.1, 0.1, 0.12, 1.0) },
-            ratio: Some(Ratio::new(16, 9)),
-            padding: 160.0,
-            ..BackgroundParams::default()
-        });
+        let preset = Preset::new(
+            "Dark 16:9",
+            BackgroundParams {
+                background: Background::Color { color: Rgba::new(0.1, 0.1, 0.12, 1.0) },
+                ratio: Some(Ratio::new(16, 9)),
+                padding: 160.0,
+                ..BackgroundParams::default()
+            },
+        );
         let text = preset.to_json().expect("serialises");
         let back = Preset::parse(&text).expect("parses");
         assert_eq!(back, preset);
@@ -1253,11 +1349,15 @@ mod tests {
     /// A preset written by a build with wider sliders opens to its nearest legal shape.
     #[test]
     fn a_preset_from_the_future_is_clamped_on_the_way_in() {
-        let wild = Preset { id: "x".to_owned(), name: "Wild".to_owned(), params: BackgroundParams {
-            padding: 4_000.0,
-            corner_radius: 9.0,
-            ..BackgroundParams::default()
-        }};
+        let wild = Preset {
+            id: "x".to_owned(),
+            name: "Wild".to_owned(),
+            params: BackgroundParams {
+                padding: 4_000.0,
+                corner_radius: 9.0,
+                ..BackgroundParams::default()
+            },
+        };
         let text = wild.to_json().expect("serialises");
         let back = Preset::parse(&text).expect("parses");
         assert_eq!(back.params.padding, MAX_PADDING);
@@ -1358,5 +1458,123 @@ mod tests {
     fn the_blurred_swatches_get_stronger_in_order() {
         let radii: Vec<f64> = Blur::ALL.iter().map(|b| b.radius()).collect();
         assert!(radii.windows(2).all(|pair| pair[0] < pair[1]), "{radii:?}");
+    }
+
+    const GREY: Rgba = Rgba { r: 0.5, g: 0.5, b: 0.5, a: 1.0 };
+
+    /// What the panel's None sends: nothing behind, no margin, no inset (D166).
+    fn none() -> BackgroundParams {
+        BackgroundParams {
+            background: Background::None,
+            padding: 0.0,
+            inset: 0.0,
+            ..Default::default()
+        }
+    }
+
+    fn margin(padding: f64) -> BackgroundParams {
+        BackgroundParams { padding, ..Default::default() }
+    }
+
+    /// The panel's edit, as one step, laid out over what the panel lays out.
+    fn step(scene: &mut Scene, history: &mut crate::History, params: &BackgroundParams) {
+        let commands = apply(scene, params, scene.picture_rect(), 0);
+        assert!(history.apply(scene, Command::Batch(commands)), "the edit was refused");
+        history.end_gesture();
+    }
+
+    /// A capture 400 by 300 with its canvas set to `canvas` by a crop, filled grey when it
+    /// reaches past the capture, and a picture pasted at `pasted`.
+    fn cropped(canvas: Bounds, pasted: Bounds) -> Scene {
+        let mut scene = Scene::new(crate::scene::Base::new("base.png", 400.0, 300.0, 1.0));
+        let mut commands = vec![Command::CanvasChange { before: scene.canvas, after: canvas }];
+        commands.extend(crate::crop::fill(&scene, canvas, Some(GREY), 0));
+        let geometry = Geometry::Image { bounds: pasted, file: "assets/pasted.png".into() };
+        commands.push(Command::Add(Object::new(1, 0, Style::default(), geometry)));
+        assert!(crate::History::new().apply(&mut scene, Command::Batch(commands)));
+        scene
+    }
+
+    fn backgrounds(scene: &Scene) -> Vec<&Object> {
+        scene.objects().iter().filter(|o| o.kind() == crate::ObjectKind::Background).collect()
+    }
+
+    /// D192: the panel applied after a crop 200 past the capture's right edge lays out the
+    /// canvas, so the picture pasted on the area the crop added is inside the frame, and its
+    /// background takes the crop's fill's slot, keeping the fill under the picture.
+    #[test]
+    fn over_the_crop_s_fill_the_panel_lays_out_the_canvas_and_keeps_the_fill() {
+        let wider = Bounds::new(0.0, 0.0, 600.0, 300.0);
+        let pasted = Bounds::new(450.0, 100.0, 100.0, 100.0);
+        let mut scene = cropped(wider, pasted);
+        let fill = backgrounds(&scene)[0].id;
+        step(&mut scene, &mut crate::History::new(), &margin(100.0));
+        let after = backgrounds(&scene);
+        assert_eq!(after.len(), 1, "a second background beside the fill");
+        assert_eq!(after[0].id, fill, "the panel's background is not in the fill's slot");
+        assert_eq!(scene.canvas, Bounds::new(0.0, 0.0, 800.0, 500.0));
+        let (frame, _) = scene.frame().expect("no frame");
+        assert!(frame.holds(pasted), "the frame {frame:?} leaves out the picture at {pasted:?}");
+        assert_eq!(scene.placement().apply_bounds(pasted), Bounds::new(550.0, 200.0, 100.0, 100.0));
+        assert_eq!(scene.frame_fill(), Some((wider, GREY)));
+    }
+
+    /// D192: None gives the crop's fill back, and the canvas the crop made. With nothing but
+    /// the fill, None has nothing of the panel's to take away. A second edit keeps the fill,
+    /// and one undo takes the background back off.
+    #[test]
+    fn none_gives_the_crop_s_fill_back() {
+        let wider = Bounds::new(0.0, 0.0, 600.0, 300.0);
+        let mut scene = cropped(wider, Bounds::new(450.0, 100.0, 100.0, 100.0));
+        let cropped = scene.clone();
+        assert!(apply(&scene, &none(), scene.picture_rect(), 0).is_empty());
+        let mut history = crate::History::new();
+        step(&mut scene, &mut history, &margin(100.0));
+        let gradient =
+            BackgroundParams { background: Background::Gradient { id: 3 }, ..margin(50.0) };
+        step(&mut scene, &mut history, &gradient);
+        assert_eq!(scene.frame_fill(), Some((wider, GREY)), "the second edit lost the fill");
+        assert_eq!(scene.canvas, Bounds::new(0.0, 0.0, 700.0, 400.0));
+        step(&mut scene, &mut history, &none());
+        assert_eq!(scene, cropped, "None did not give back the document the crop made");
+        assert!(history.undo(&mut scene) && history.undo(&mut scene) && history.undo(&mut scene));
+        assert_eq!(scene, cropped);
+    }
+
+    /// D192: past the capture's left edge, the canvas starts left of the picture's origin, and
+    /// the panel lays it out from there: the crop's corner at the margin, not the capture's.
+    #[test]
+    fn a_crop_past_the_left_edge_is_laid_out_from_its_own_corner() {
+        let wider = Bounds::new(-50.0, 0.0, 450.0, 300.0);
+        let mut scene = cropped(wider, Bounds::new(-40.0, 10.0, 30.0, 30.0));
+        let mut history = crate::History::new();
+        step(&mut scene, &mut history, &margin(100.0));
+        assert_eq!(scene.canvas, Bounds::new(0.0, 0.0, 650.0, 500.0));
+        let place = scene.placement();
+        assert_eq!(place.apply(crate::Point::new(-50.0, 0.0)), crate::Point::new(100.0, 100.0));
+        assert_eq!(place.apply(crate::Point::new(0.0, 0.0)), crate::Point::new(150.0, 100.0));
+        step(&mut scene, &mut history, &none());
+        assert_eq!(scene.canvas, wider);
+        assert!(backgrounds(&scene)[0].is_crop_fill());
+    }
+
+    /// With no fill, a transparent border's, or no crop at all, the panel adds its background
+    /// below everything over the canvas, and None removes it and gives the canvas back.
+    #[test]
+    fn with_no_fill_the_panel_adds_its_background_and_none_removes_it() {
+        let wider = Bounds::new(0.0, 0.0, 600.0, 300.0);
+        let mut scene = Scene::new(crate::scene::Base::new("base.png", 400.0, 300.0, 1.0));
+        scene.canvas = wider;
+        let mut history = crate::History::new();
+        step(&mut scene, &mut history, &margin(100.0));
+        let added = backgrounds(&scene);
+        assert_eq!(added.len(), 1);
+        assert!(
+            matches!(added[0].geometry, Geometry::Background { source: Some(s), fill: None, .. } if s == wider)
+        );
+        assert_eq!(scene.canvas, Bounds::new(0.0, 0.0, 800.0, 500.0));
+        step(&mut scene, &mut history, &none());
+        assert!(backgrounds(&scene).is_empty());
+        assert_eq!(scene.canvas, wider);
     }
 }

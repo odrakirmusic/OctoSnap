@@ -11,9 +11,11 @@ members = [
     "crates/stitch",
     "crates/ocr",
 ]
+# The fuzzers are a workspace of their own, built with a nightly compiler (D174).
+exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 rust-version = "1.92"
 license = "GPL-3.0-or-later"

@@ -88,10 +88,7 @@ pub struct NullBridge {
 impl Default for NullBridge {
     fn default() -> Self {
         Self {
-            version: ShellVersion {
-                version: "0.0.0-null".to_owned(),
-                protocol: PROTOCOL_VERSION,
-            },
+            version: ShellVersion { version: "0.0.0-null".to_owned(), protocol: PROTOCOL_VERSION },
             monitors: vec![Monitor {
                 index: 0,
                 connector: "eDP-1".to_owned(),
@@ -384,23 +381,17 @@ impl ShellBridge for NullBridge {
         self.animations.borrow_mut().push((object_path.to_owned(), animate_ms));
         // The size the caller declared, exactly as the extension prefers it, falling back
         // to whatever a test registered for this window.
-        let size = match *placement {
-            Placement::Stacked { size, .. } if size.width > 0 && size.height > 0 => size,
-            _ => self
-                .window_sizes
-                .borrow()
-                .get(object_path)
-                .copied()
-                .unwrap_or(Size::new(
+        let size =
+            match *placement {
+                Placement::Stacked { size, .. } if size.width > 0 && size.height > 0 => size,
+                _ => self.window_sizes.borrow().get(object_path).copied().unwrap_or(Size::new(
                     207 + 2 * qao::SHADOW_MARGIN,
                     129 + 2 * qao::SHADOW_MARGIN,
                 )),
-        };
+            };
 
-        let work = self
-            .monitors
-            .first()
-            .map_or_else(|| Rect::new(0, 0, 1920, 1080), |m| m.work_area);
+        let work =
+            self.monitors.first().map_or_else(|| Rect::new(0, 0, 1920, 1080), |m| m.work_area);
 
         let landed = match *placement {
             Placement::At { x, y } => Rect::new(x, y, size.width, size.height),
@@ -416,9 +407,12 @@ impl ShellBridge for NullBridge {
             }
         };
 
-        self.placements
-            .borrow_mut()
-            .push((object_path.to_owned(), role.to_owned(), *placement, landed));
+        self.placements.borrow_mut().push((
+            object_path.to_owned(),
+            role.to_owned(),
+            *placement,
+            landed,
+        ));
         Ok(landed)
     }
 
@@ -439,7 +433,12 @@ impl ShellBridge for NullBridge {
             .map(|(_, _, _, rect)| *rect)
             .unwrap_or_else(|| Rect::new(0, 0, 0, 0));
         let moved = Rect::new(last.x + dx, last.y + dy, last.width, last.height);
-        placements.push((object_path.to_owned(), "move".to_owned(), Placement::At { x: moved.x, y: moved.y }, moved));
+        placements.push((
+            object_path.to_owned(),
+            "move".to_owned(),
+            Placement::At { x: moved.x, y: moved.y },
+            moved,
+        ));
         Ok(moved)
     }
 
@@ -503,7 +502,11 @@ impl ShellBridge for NullBridge {
         Ok(())
     }
 
-    async fn start_scroll_assist(&self, rect: Rect, direction: ScrollDirection) -> Result<String, BridgeError> {
+    async fn start_scroll_assist(
+        &self,
+        rect: Rect,
+        direction: ScrollDirection,
+    ) -> Result<String, BridgeError> {
         self.guard()?;
         self.scroll_sessions.borrow_mut().push((rect, direction));
         *self.scroll_grabs.borrow_mut() = 0;

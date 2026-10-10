@@ -231,9 +231,9 @@ impl Editor {
     /// and is not `width * 4`.
     pub(crate) fn encode_png(texture: &gtk::gdk::Texture, path: &std::path::Path) -> bool {
         let (width, height) = (texture.width(), texture.height());
-        let Ok((usable_w, usable_h)) = usize::try_from(width).and_then(|w| {
-            usize::try_from(height).map(|h| (w, h))
-        }) else {
+        let Ok((usable_w, usable_h)) =
+            usize::try_from(width).and_then(|w| usize::try_from(height).map(|h| (w, h)))
+        else {
             warn!(width, height, "a texture with no size cannot be encoded");
             return false;
         };
@@ -256,7 +256,11 @@ impl Editor {
                 return false;
             }
         };
-        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width.unsigned_abs(), height.unsigned_abs());
+        let mut encoder = png::Encoder::new(
+            std::io::BufWriter::new(file),
+            width.unsigned_abs(),
+            height.unsigned_abs(),
+        );
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_compression(png::Compression::Fast);
@@ -334,8 +338,11 @@ impl Editor {
         {
             let layout = Rc::clone(&layout);
             operation.connect_begin_print(move |operation, context| {
-                let planned =
-                    print::Layout::new((width, height), (context.width(), context.height()), scrolling);
+                let planned = print::Layout::new(
+                    (width, height),
+                    (context.width(), context.height()),
+                    scrolling,
+                );
                 operation.set_n_pages(i32::try_from(planned.pages).unwrap_or(i32::MAX));
                 layout.set(Some(planned));
             });
@@ -591,6 +598,28 @@ impl Editor {
         });
         self.window.add_action(&export);
 
+        // `ANN-33`'s SVG or PDF, by the path's extension, for `editor-test.sh`: the same
+        // call Save As makes once the chooser has answered.
+        let vector = gio::SimpleAction::new("export-vector", Some(glib::VariantTy::STRING));
+        {
+            let editor = Rc::downgrade(self);
+            vector.connect_activate(move |_, parameter| {
+                let Some(editor) = editor.upgrade() else { return };
+                let Some(path) = parameter.and_then(|p| p.get::<String>()) else {
+                    warn!("export-vector needs a path");
+                    return;
+                };
+                let path = std::path::PathBuf::from(path);
+                match super::vector::Vector::of(&path) {
+                    Some(format) => {
+                        editor.export_vector(&path, format);
+                    }
+                    None => warn!(path = %path.display(), "export-vector takes .svg or .pdf"),
+                }
+            });
+        }
+        self.window.add_action(&vector);
+
         // `spec/05` §11 item 1 is "open a 5120x2880 capture; add 30 objects including two
         // blurs and a spotlight; drag any object at 60 fps", and it cannot be checked
         // without a thirty-object scene arriving from outside -- exactly the argument
@@ -662,8 +691,7 @@ impl Editor {
         // `spec/05` §8's project, saved to a path the caller names. Same argument as
         // `export`: §11 item 8 is "save as project -> reopen -> all objects editable;
         // thumbnail present", and neither half is reachable without a path from outside.
-        let save_project =
-            gio::SimpleAction::new("save-project", Some(glib::VariantTy::STRING));
+        let save_project = gio::SimpleAction::new("save-project", Some(glib::VariantTy::STRING));
         {
             let editor = Rc::downgrade(self);
             save_project.connect_activate(move |_, parameter| {
@@ -788,8 +816,7 @@ impl Editor {
                     warn!(argument, "highlight needs four numbers");
                     return;
                 };
-                let modifiers =
-                    Modifiers { ctrl: held.contains("ctrl"), ..Modifiers::default() };
+                let modifiers = Modifiers { ctrl: held.contains("ctrl"), ..Modifiers::default() };
                 editor.highlight_between(Point::new(x0, y0), Point::new(x1, y1), modifiers);
             });
         }
@@ -893,7 +920,9 @@ impl Editor {
                     Ok(Some(color)) => info!(color = color.to_hex(), "pipette sampled screen"),
                     Ok(None) => info!("pipette cancelled"),
                     Err(PickFailure::Unsupported) => {
-                        warn!("the shell has no PickColor yet; log out once to load the new extension");
+                        warn!(
+                            "the shell has no PickColor yet; log out once to load the new extension"
+                        );
                     }
                     Err(PickFailure::Other(reason)) => warn!(reason, "pipette failed"),
                 }));
@@ -979,6 +1008,8 @@ impl Editor {
 
         let start = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         start.append(&self.build_zoom_menu());
+        // `ANN-30`'s list of the marks, beside the zoom: both are about seeing the document.
+        start.append(&self.build_layers_toggle());
         // The document's size in physical pixels, which used to be the window's subtitle
         // and is more use beside the zoom it is the 100 % of.
         let (w, h) = self.capture.rect.to_physical(self.capture.scale);
@@ -1031,7 +1062,9 @@ impl Editor {
         end.append(&print);
 
         let pin = gtk::Button::with_label("Pin");
-        pin.set_tooltip_text(Some("Pin the rendered result and close (Ctrl+Shift+P); Alt keeps the editor"));
+        pin.set_tooltip_text(Some(
+            "Pin the rendered result and close (Ctrl+Shift+P); Alt keeps the editor",
+        ));
         {
             let editor = Rc::downgrade(self);
             pin.connect_clicked(move |_| {
@@ -1176,8 +1209,7 @@ impl Editor {
                 let file = gio::File::for_path(&path);
                 // Order is the contract, as it is for a card: a file first, so a file
                 // manager gets a file, and the texture second for apps that want pixels.
-                let mut providers =
-                    vec![gtk::gdk::ContentProvider::for_value(&file.to_value())];
+                let mut providers = vec![gtk::gdk::ContentProvider::for_value(&file.to_value())];
                 if let Some(texture) = editor.canvas.render_texture(editor.export_scale()) {
                     providers.push(gtk::gdk::ContentProvider::for_value(&texture.to_value()));
                 }
@@ -1324,6 +1356,13 @@ impl Editor {
         images.add_mime_type("image/png");
         images.add_mime_type("image/jpeg");
         images.add_mime_type("image/webp");
+        // `ANN-33`'s two (D184): the marks as vectors over the picture.
+        let vectors = gtk::FileFilter::new();
+        vectors.set_name(Some("Vector image (SVG or PDF)"));
+        vectors.add_mime_type("image/svg+xml");
+        vectors.add_mime_type("application/pdf");
+        vectors.add_suffix("svg");
+        vectors.add_suffix("pdf");
         let projects = gtk::FileFilter::new();
         projects.set_name(Some("OctoSnap project"));
         projects.add_pattern(&format!("*.{}", project::EXTENSION));
@@ -1332,6 +1371,7 @@ impl Editor {
 
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&images);
+        filters.append(&vectors);
         filters.append(&projects);
 
         let stem = self
@@ -1370,13 +1410,30 @@ impl Editor {
                 }
             };
 
+            if let Some(format) = super::vector::Vector::of(&path) {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                let scene = editor.canvas.scene();
+                if editor.export_vector(&path, format) {
+                    // The marks have left the editor, as a Copy's have; but the card a close
+                    // leaves behind does not take the file for its picture (D184).
+                    if let Some(scene) = scene {
+                        editor.mark_saved(scene);
+                    }
+                    editor.toast(&format!("Saved as {}", name.unwrap_or_default()), None);
+                } else {
+                    crate::notify::action_failed(
+                        &editor.app,
+                        "Save as",
+                        &format!("the {} could not be written", format.name()),
+                    );
+                }
+                return;
+            }
             if project::is_project(&path) {
                 if editor.save_project(&path) {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-                    editor.toast(
-                        &format!("Saved the project as {}", name.unwrap_or_default()),
-                        None,
-                    );
+                    editor
+                        .toast(&format!("Saved the project as {}", name.unwrap_or_default()), None);
                 }
                 return;
             }
@@ -1626,10 +1683,7 @@ fn zoom_label(zoom: f64) -> String {
 
 /// One of `spec/05` §4.12's transforms by name, with `resize` reading its size from the
 /// name itself: `resize:1280x720`, or `resize:50%`.
-fn named_transform(
-    name: &str,
-    editor: &Editor,
-) -> Option<octosnap_scene::transform::Transform> {
+fn named_transform(name: &str, editor: &Editor) -> Option<octosnap_scene::transform::Transform> {
     use octosnap_scene::transform::Transform;
     if let Some(size) = name.strip_prefix("resize:") {
         let base = editor.canvas.scene()?.base;

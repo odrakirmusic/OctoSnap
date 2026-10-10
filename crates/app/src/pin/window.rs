@@ -306,12 +306,7 @@ impl Pin {
         self.base_size.set(base);
         self.zoom.set(1.0);
         let size = self.resize_to(base);
-        info!(
-            id = self.id,
-            width = size.width,
-            height = size.height,
-            "pin image replaced"
-        );
+        info!(id = self.id, width = size.width, height = size.height, "pin image replaced");
         true
     }
 
@@ -627,17 +622,7 @@ impl Pin {
         let controller = gtk::ShortcutController::new();
         controller.set_scope(gtk::ShortcutScope::Local);
 
-        let moves: [(&str, i32, i32, bool); 8] = [
-            ("Left", -1, 0, false),
-            ("Right", 1, 0, false),
-            ("Up", 0, -1, false),
-            ("Down", 0, 1, false),
-            ("<Shift>Left", -1, 0, true),
-            ("<Shift>Right", 1, 0, true),
-            ("<Shift>Up", 0, -1, true),
-            ("<Shift>Down", 0, 1, true),
-        ];
-        for (accel, sx, sy, fast) in moves {
+        for (accel, sx, sy, fast) in MOVES {
             let Some(trigger) = gtk::ShortcutTrigger::parse_string(accel) else { continue };
             let pin = Rc::downgrade(self);
             let callback = gtk::CallbackAction::new(move |_, _| {
@@ -654,30 +639,7 @@ impl Pin {
             controller.add_shortcut(gtk::Shortcut::new(Some(trigger), Some(callback)));
         }
 
-        // `spec/07` §3.1 has lock mode "toggled with a shortcut or the hover control", and
-        // Ctrl+L is ours. It matters more than a convenience: it is the one way out that
-        // does not depend on a button being drawn in the right place.
-        //
-        // The rest of `spec/07` §3.1 by key, for hands that are already on the keyboard
-        // and for the harness, which cannot scroll: `[` and `]` are the opacity, `-`, `+`
-        // and `0` the size, Ctrl+E the editor.
-        let actions: [(&str, PinAction); 14] = [
-            ("Escape", |p| p.ask(|h, id| h.close(id))),
-            ("<Control>w", |p| p.ask(|h, id| h.close(id))),
-            ("<Control>c", |p| p.ask(|h, id| h.copy(id))),
-            ("<Control>s", |p| p.ask(|h, id| h.save(id))),
-            ("<Control>e", |p| p.ask(|h, id| h.annotate(id))),
-            ("<Control>l", |p| p.set_locked(!p.locked.get())),
-            ("bracketleft", |p| p.set_pin_opacity(pin::adjust_opacity(p.opacity.get(), -1.0))),
-            ("bracketright", |p| p.set_pin_opacity(pin::adjust_opacity(p.opacity.get(), 1.0))),
-            ("minus", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), -1.0))),
-            ("KP_Subtract", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), -1.0))),
-            ("plus", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), 1.0))),
-            ("equal", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), 1.0))),
-            ("KP_Add", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), 1.0))),
-            ("0", |p| p.set_zoom(1.0)),
-        ];
-        for (accel, action) in actions {
+        for (accel, _, action) in actions() {
             let Some(trigger) = gtk::ShortcutTrigger::parse_string(accel) else { continue };
             let pin = Rc::downgrade(self);
             let callback = gtk::CallbackAction::new(move |_, _| {
@@ -934,10 +896,7 @@ impl Pin {
         menu.append_section(None, &first);
 
         let second = gio::Menu::new();
-        second.append(
-            Some(if self.locked.get() { "Unlock" } else { "Lock" }),
-            Some("pin.lock"),
-        );
+        second.append(Some(if self.locked.get() { "Unlock" } else { "Lock" }), Some("pin.lock"));
         // `spec/07` §3.1's "Opacity ▸": the five stops a menu can offer; the wheel and
         // the bracket keys have the ten in between.
         let opacity = gio::Menu::new();
@@ -1105,9 +1064,66 @@ fn build_grip() -> gtk::Box {
     grip.set_valign(gtk::Align::End);
     grip.set_margin_start(pin::CHROME_MARGIN + 2);
     grip.set_margin_bottom(pin::CHROME_MARGIN + 2);
-    grip.set_tooltip_text(Some("Drag the picture into another application; hold Alt to keep the pin"));
+    grip.set_tooltip_text(Some(
+        "Drag the picture into another application; hold Alt to keep the pin",
+    ));
     grip.add_css_class("octosnap-pin-grip");
     grip
+}
+
+/// `spec/07` §3.1's arrows: the key, which way, and whether it is the further step.
+const MOVES: [(&str, i32, i32, bool); 8] = [
+    ("Left", -1, 0, false),
+    ("Right", 1, 0, false),
+    ("Up", 0, -1, false),
+    ("Down", 0, 1, false),
+    ("<Shift>Left", -1, 0, true),
+    ("<Shift>Right", 1, 0, true),
+    ("<Shift>Up", 0, -1, true),
+    ("<Shift>Down", 0, 1, true),
+];
+
+/// The rest of a pin's keys, what they do in the shortcuts dialog's words (`SYS-12`,
+/// D179), and what they run.
+///
+/// `spec/07` §3.1 has lock mode "toggled with a shortcut or the hover control", and Ctrl+L
+/// is ours. It matters more than a convenience: it is the one way out that does not depend
+/// on a button being drawn in the right place.
+///
+/// The rest of `spec/07` §3.1 by key, for hands that are already on the keyboard and for
+/// the harness, which cannot scroll: `[` and `]` are the opacity, `-`, `+` and `0` the
+/// size, Ctrl+E the editor.
+fn actions() -> [(&'static str, &'static str, PinAction); 14] {
+    [
+        ("Escape", "Close", |p| p.ask(|h, id| h.close(id))),
+        ("<Control>w", "Close", |p| p.ask(|h, id| h.close(id))),
+        ("<Control>c", "Copy", |p| p.ask(|h, id| h.copy(id))),
+        ("<Control>s", "Save", |p| p.ask(|h, id| h.save(id))),
+        ("<Control>e", "Annotate", |p| p.ask(|h, id| h.annotate(id))),
+        ("<Control>l", "Lock or Unlock", |p| p.set_locked(!p.locked.get())),
+        ("bracketleft", "More Transparent", |p| {
+            p.set_pin_opacity(pin::adjust_opacity(p.opacity.get(), -1.0));
+        }),
+        ("bracketright", "Less Transparent", |p| {
+            p.set_pin_opacity(pin::adjust_opacity(p.opacity.get(), 1.0));
+        }),
+        ("minus", "Smaller", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), -1.0))),
+        ("KP_Subtract", "Smaller", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), -1.0))),
+        ("plus", "Larger", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), 1.0))),
+        ("equal", "Larger", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), 1.0))),
+        ("KP_Add", "Larger", |p| p.set_zoom(pin::adjust_zoom(p.zoom.get(), 1.0))),
+        ("0", "Actual Size", |p| p.set_zoom(1.0)),
+    ]
+}
+
+/// A pin's keys for the shortcuts dialog (`SYS-12`, D179), from the lists it binds.
+pub(crate) fn shortcut_rows() -> Vec<(String, String)> {
+    MOVES
+        .iter()
+        .map(|&(accel, _, _, fast)| (accel, if fast { "Move Further" } else { "Move" }))
+        .chain(actions().iter().map(|&(accel, title, _)| (accel, title)))
+        .map(|(accel, title)| (accel.to_owned(), title.to_owned()))
+        .collect()
 }
 
 /// Whether Alt is held on the window's seat, read at the moment of a drop.
@@ -1180,9 +1196,7 @@ fn work_area(capture: Rect) -> Rect {
             }
         }
     }
-    best.map(|(rect, _)| rect)
-        .or(fallback)
-        .unwrap_or_else(|| Rect::new(0, 0, 1920, 1080))
+    best.map(|(rect, _)| rect).or(fallback).unwrap_or_else(|| Rect::new(0, 0, 1920, 1080))
 }
 
 /// The class a pin arrives out of: `spec/09` §3's "Pin | appear | 200 ms | ease-out-cubic |

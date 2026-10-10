@@ -27,6 +27,8 @@ tracing = "0.1.44"
 # The examples read a PNG, which the application already does for itself -- `spec/05` §6
 # picked `png` for the editor's export and `crates/stitch` decodes frames with it.
 [dev-dependencies]
+# The links' properties (ENG-03, D173).
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 png = "0.18.1"
 # So the QR tests are a round trip rather than a fixture nobody can regenerate.
 qrcode = { version = "0.14", default-features = false }

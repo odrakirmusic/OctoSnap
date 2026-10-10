@@ -46,12 +46,7 @@ pub struct GifSettings {
 impl Default for GifSettings {
     /// `spec/08` §5's defaults: 15 fps, 1280 px, quality 80, cursor shown (D69).
     fn default() -> Self {
-        Self {
-            fps: 15,
-            max_width: 1280,
-            quality: 80,
-            cursor: true,
-        }
+        Self { fps: 15, max_width: 1280, quality: 80, cursor: true }
     }
 }
 
@@ -172,10 +167,7 @@ impl GifPlan {
             return Err(PlanError::EmptySelection);
         }
         let (stream_w, stream_h) = source.rect.to_physical(source.scale);
-        let stream = Size {
-            width: stream_w,
-            height: stream_h,
-        };
+        let stream = Size { width: stream_w, height: stream_h };
 
         // The offset rounds the way the size does (`Rect::to_physical`, D23): to nearest,
         // because the compositor does and because Mutter's float32 scales carry an error
@@ -194,10 +186,7 @@ impl GifPlan {
         if width <= 0 || height <= 0 {
             return Err(PlanError::OutsideMonitor);
         }
-        let region = Size {
-            width: width as u32,
-            height: height as u32,
-        };
+        let region = Size { width: width as u32, height: height as u32 };
         let crop = Crop {
             left: left as u32,
             top: top as u32,
@@ -248,10 +237,7 @@ pub fn capped(region: Size, max_width: u32) -> Size {
     }
     let height =
         (f64::from(region.height) * f64::from(max_width) / f64::from(region.width)).round();
-    Size {
-        width: max_width,
-        height: (height as u32).max(1),
-    }
+    Size { width: max_width, height: (height as u32).max(1) }
 }
 
 /// How many frames a recording of `duration_ms` should hold at `fps`, to the nearest
@@ -337,42 +323,13 @@ mod tests {
     /// and the stream is the 1920x1200 panel, not the 1536x960 stage.
     #[test]
     fn crops_the_physical_stream_at_one_point_two_five() {
-        let plan = GifPlan::new(
-            Rect::new(512, 240, 512, 320),
-            &monitor(1.25),
-            GifSettings::default(),
-        )
-        .expect("plan");
-        assert_eq!(
-            plan.stream,
-            Size {
-                width: 1920,
-                height: 1200
-            }
-        );
-        assert_eq!(
-            plan.region,
-            Size {
-                width: 640,
-                height: 400
-            }
-        );
-        assert_eq!(
-            plan.crop,
-            Crop {
-                left: 640,
-                top: 300,
-                right: 640,
-                bottom: 500
-            }
-        );
-        assert_eq!(
-            plan.output,
-            Size {
-                width: 640,
-                height: 400
-            }
-        );
+        let plan =
+            GifPlan::new(Rect::new(512, 240, 512, 320), &monitor(1.25), GifSettings::default())
+                .expect("plan");
+        assert_eq!(plan.stream, Size { width: 1920, height: 1200 });
+        assert_eq!(plan.region, Size { width: 640, height: 400 });
+        assert_eq!(plan.crop, Crop { left: 640, top: 300, right: 640, bottom: 500 });
+        assert_eq!(plan.output, Size { width: 640, height: 400 });
         assert_eq!(plan.connector, "Meta-0");
         assert!(!plan.is_whole_monitor());
     }
@@ -423,40 +380,18 @@ mod tests {
         let whole = GifSettings { max_width: 0, ..GifSettings::default() };
         let scroll = GifPlan::new(Rect::new(847, 1870, 1081, 328), &panel, whole).expect("plan");
         assert_eq!((scroll.crop.left, scroll.crop.top), (505, 538));
-        assert_eq!(
-            scroll.region,
-            Size {
-                width: 1351,
-                height: 410
-            }
-        );
+        assert_eq!(scroll.region, Size { width: 1351, height: 410 });
         let gif = GifPlan::new(Rect::new(783, 1555, 1090, 669), &panel, whole).expect("plan");
         assert_eq!((gif.crop.left, gif.crop.top), (425, 144));
-        assert_eq!(
-            gif.region,
-            Size {
-                width: 1363,
-                height: 836
-            }
-        );
+        assert_eq!(gif.region, Size { width: 1363, height: 836 });
     }
 
     #[test]
     fn a_selection_off_the_monitor_is_clamped_to_it() {
         let source = monitor(1.0);
-        let plan = GifPlan::new(
-            Rect::new(1800, 1100, 400, 300),
-            &source,
-            GifSettings::default(),
-        )
-        .expect("plan");
-        assert_eq!(
-            plan.region,
-            Size {
-                width: 120,
-                height: 100
-            }
-        );
+        let plan = GifPlan::new(Rect::new(1800, 1100, 400, 300), &source, GifSettings::default())
+            .expect("plan");
+        assert_eq!(plan.region, Size { width: 120, height: 100 });
         assert_eq!(plan.crop.right, 0);
         assert_eq!(plan.crop.bottom, 0);
         assert_eq!(
@@ -470,79 +405,20 @@ mod tests {
         let source = monitor(2.0);
         let plan = GifPlan::new(source.rect, &source, GifSettings::default()).expect("plan");
         assert!(plan.is_whole_monitor());
-        assert_eq!(
-            plan.crop,
-            Crop {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0
-            }
-        );
+        assert_eq!(plan.crop, Crop { left: 0, top: 0, right: 0, bottom: 0 });
         // 3840 physical pixels wide capped to 1280: the height follows.
-        assert_eq!(
-            plan.output,
-            Size {
-                width: 1280,
-                height: 800
-            }
-        );
+        assert_eq!(plan.output, Size { width: 1280, height: 800 });
     }
 
     #[test]
     fn the_width_cap_keeps_the_aspect_and_zero_means_none() {
         assert_eq!(
-            capped(
-                Size {
-                    width: 1600,
-                    height: 900
-                },
-                800
-            ),
-            Size {
-                width: 800,
-                height: 450
-            }
+            capped(Size { width: 1600, height: 900 }, 800),
+            Size { width: 800, height: 450 }
         );
-        assert_eq!(
-            capped(
-                Size {
-                    width: 640,
-                    height: 400
-                },
-                800
-            ),
-            Size {
-                width: 640,
-                height: 400
-            }
-        );
-        assert_eq!(
-            capped(
-                Size {
-                    width: 1600,
-                    height: 900
-                },
-                0
-            ),
-            Size {
-                width: 1600,
-                height: 900
-            }
-        );
-        assert_eq!(
-            capped(
-                Size {
-                    width: 3000,
-                    height: 1
-                },
-                800
-            ),
-            Size {
-                width: 800,
-                height: 1
-            }
-        );
+        assert_eq!(capped(Size { width: 640, height: 400 }, 800), Size { width: 640, height: 400 });
+        assert_eq!(capped(Size { width: 1600, height: 900 }, 0), Size { width: 1600, height: 900 });
+        assert_eq!(capped(Size { width: 3000, height: 1 }, 800), Size { width: 800, height: 1 });
     }
 
     /// The spike's 34 ms at 30 fps, and one interval rounded up at the other rates.
@@ -561,10 +437,7 @@ mod tests {
     #[test]
     fn settings_are_checked_before_the_bus_is_touched() {
         let source = monitor(1.0);
-        let bad_quality = GifSettings {
-            quality: 0,
-            ..GifSettings::default()
-        };
+        let bad_quality = GifSettings { quality: 0, ..GifSettings::default() };
         assert_eq!(
             GifPlan::new(Rect::new(0, 0, 10, 10), &source, bad_quality),
             Err(PlanError::BadQuality(0))
@@ -581,14 +454,9 @@ mod tests {
         let shown =
             GifPlan::new(Rect::new(0, 0, 10, 10), &source, GifSettings::default()).expect("plan");
         assert_eq!(shown.cursor_mode, 1);
-        let hidden = GifSettings {
-            cursor: false,
-            ..GifSettings::default()
-        };
+        let hidden = GifSettings { cursor: false, ..GifSettings::default() };
         assert_eq!(
-            GifPlan::new(Rect::new(0, 0, 10, 10), &source, hidden)
-                .expect("plan")
-                .cursor_mode,
+            GifPlan::new(Rect::new(0, 0, 10, 10), &source, hidden).expect("plan").cursor_mode,
             0
         );
     }

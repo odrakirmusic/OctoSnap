@@ -29,7 +29,8 @@ const BACKGROUND: &str = "org.freedesktop.portal.Background";
 const REQUEST: &str = "org.freedesktop.portal.Request";
 
 /// What the dialog says the request is for, if the portal shows one.
-const REASON: &str = "OctoSnap starts with your session, so that the first capture is not a cold start";
+const REASON: &str =
+    "OctoSnap starts with your session, so that the first capture is not a cold start";
 
 /// The portal's answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,7 +152,11 @@ fn parse(params: &glib::Variant) -> Result<Answer, String> {
     }
     let response = params.child_value(0).get::<u32>().ok_or("a response of the wrong type")?;
     if response != 0 {
-        return Err(if response == 1 { "cancelled".into() } else { format!("the portal failed ({response})") });
+        return Err(if response == 1 {
+            "cancelled".into()
+        } else {
+            format!("the portal failed ({response})")
+        });
     }
     let results = glib::VariantDict::new(Some(&params.child_value(1)));
     let flag = |key: &str| results.lookup::<bool>(key).ok().flatten().unwrap_or(false);
@@ -211,9 +216,15 @@ mod tests {
         let params = request_params("", "octosnap7", true);
         assert_eq!(params.type_().as_str(), "(sa{sv})");
         let options = glib::VariantDict::new(Some(&params.child_value(1)));
-        assert_eq!(options.lookup::<String>("handle_token").ok().flatten().as_deref(), Some("octosnap7"));
+        assert_eq!(
+            options.lookup::<String>("handle_token").ok().flatten().as_deref(),
+            Some("octosnap7")
+        );
         assert_eq!(options.lookup::<bool>("autostart").ok().flatten(), Some(true));
-        assert_eq!(options.lookup::<Vec<String>>("commandline").ok().flatten(), Some(vec!["octosnap-app".to_owned()]));
+        assert_eq!(
+            options.lookup::<Vec<String>>("commandline").ok().flatten(),
+            Some(vec!["octosnap-app".to_owned()])
+        );
     }
 
     #[test]

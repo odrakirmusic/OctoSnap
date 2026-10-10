@@ -58,7 +58,10 @@ pub struct Session {
 
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Session").field("path", &self.path).field("closed", &self.closed.get()).finish()
+        f.debug_struct("Session")
+            .field("path", &self.path)
+            .field("closed", &self.closed.get())
+            .finish()
     }
 }
 
@@ -248,8 +251,7 @@ async fn call(
     params: Option<glib::Variant>,
     reply_type: &str,
 ) -> Result<glib::Variant, ScreenCastError> {
-    let ty = glib::VariantTy::new(reply_type)
-        .map_err(|_| ScreenCastError::Malformed { method })?;
+    let ty = glib::VariantTy::new(reply_type).map_err(|_| ScreenCastError::Malformed { method })?;
     connection
         .call_future(
             Some(DEST),
@@ -266,11 +268,7 @@ async fn call(
 }
 
 fn object_path(reply: &glib::Variant, method: &'static str) -> Result<String, ScreenCastError> {
-    reply
-        .child_value(0)
-        .str()
-        .map(str::to_owned)
-        .ok_or(ScreenCastError::Malformed { method })
+    reply.child_value(0).str().map(str::to_owned).ok_or(ScreenCastError::Malformed { method })
 }
 
 /// "Object does not exist": the session is already gone, which is what Stop wanted.

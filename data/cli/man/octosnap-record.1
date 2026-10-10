@@ -1,0 +1,43 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH octosnap-record 1  OctoSnap 
+.SH NAME
+octosnap\-record \- Record a GIF of a rectangle for a fixed time, in this process rather than the app
+.SH SYNOPSIS
+\fBoctosnap record\fR [\fB\-\-gif\fR] [\fB\-\-rect\fR] [\fB\-\-display\fR] [\fB\-\-seconds\fR] [\fB\-\-fps\fR] [\fB\-\-max\-width\fR] [\fB\-\-quality\fR] [\fB\-\-no\-cursor\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-\-mark\-recording\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Record a GIF of a rectangle for a fixed time, in this process rather than the app
+.SH OPTIONS
+.TP
+\fB\-\-gif\fR
+The output is a GIF, the only format there is; accepted so scripts read right
+.TP
+\fB\-\-rect\fR \fI<X,Y,W,H>\fR
+Record exactly this region, as logical x,y,width,height. Default: the whole monitor under the pointer
+.TP
+\fB\-\-display\fR \fI<CONNECTOR>\fR
+Which monitor, by connector name. See `octosnap monitors`
+.TP
+\fB\-\-seconds\fR \fI<SECONDS>\fR [default: 5]
+How long to record
+.TP
+\fB\-\-fps\fR \fI<FPS>\fR [default: 15]
+Frames per second; 0 is the screen\*(Aqs own rate, and nothing above 50 is honoured, because a GIF cannot play faster
+.TP
+\fB\-\-max\-width\fR \fI<PIXELS>\fR [default: 800]
+The widest the GIF may be, in pixels; 0 for no cap
+.TP
+\fB\-\-quality\fR \fI<QUALITY>\fR [default: 80]
+The encoder\*(Aqs quality, from 1 to 100
+.TP
+\fB\-\-no\-cursor\fR
+Leave the pointer out of the recording
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fI<FILE>\fR
+Where to write the GIF. Default: `octosnap\-<date>.gif` in the current directory
+.TP
+\fB\-\-mark\-recording\fR
+Tell the compositor this is a recording, so it shows its own indicator too
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

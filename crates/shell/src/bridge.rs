@@ -321,7 +321,11 @@ pub trait ShellBridge {
     ///
     /// Nothing scrolls the page but the user. `ScrollStep`, which did, went with
     /// auto-scroll (D153), and the step a session was started with went with it.
-    async fn start_scroll_assist(&self, rect: Rect, direction: ScrollDirection) -> Result<String, BridgeError>;
+    async fn start_scroll_assist(
+        &self,
+        rect: Rect,
+        direction: ScrollDirection,
+    ) -> Result<String, BridgeError>;
 
     /// `spec/07` §1.3's `GrabFrame(handle) -> path`: one PNG of the selection, written
     /// where the app can read it. The app deletes the frames when it ends the session.
@@ -339,7 +343,8 @@ mod tests {
     use super::Cue;
 
     /// The extension's table of cues, which is where each name turns into a sound.
-    const CUES: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../extension/src/soundCues.ts"));
+    const CUES: &str =
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../extension/src/soundCues.ts"));
 
     fn listed(name: &str) -> bool {
         CUES.contains(&format!("'{name}':")) || CUES.contains(&format!("\n    {name}:"))

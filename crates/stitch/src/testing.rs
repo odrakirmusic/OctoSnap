@@ -221,9 +221,10 @@ pub fn with_banner(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> Fr
             let edge = dx == 0 || dy == 0 || dx + 1 == width || dy + 1 == height;
             let icon = (12..36).contains(&dx) && (12..36).contains(&dy);
             let close = dx + 26 >= width && dx + 14 < width && (12..24).contains(&dy);
-            let text = lines.iter().any(|&(top, end)| {
-                (top..top + 10).contains(&dy) && (48..end).contains(&dx)
-            }) && hash(dx / 3, dy / 4) & 1 == 1;
+            let text = lines
+                .iter()
+                .any(|&(top, end)| (top..top + 10).contains(&dy) && (48..end).contains(&dx))
+                && hash(dx / 3, dy / 4) & 1 == 1;
             let tone = if edge {
                 140u8
             } else if icon || close || text {
@@ -264,7 +265,13 @@ pub fn with_toolbar(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> F
             let edge = dx == 0 || dx + 1 == width;
             let icon = (8..width.saturating_sub(8)).contains(&dx) && (8..32).contains(&(dy % 40));
             let glyph = icon && hash(dx / 2, dy / 3 + dy / 40 * 7) & 1 == 1;
-            let tone = if edge { 150u8 } else if glyph { 225 } else { 72 };
+            let tone = if edge {
+                150u8
+            } else if glyph {
+                225
+            } else {
+                72
+            };
             let at = (((y + dy) * columns + x + dx) * 4) as usize;
             pixels[at..at + 4].copy_from_slice(&[tone, tone, tone, 255]);
         }
@@ -331,7 +338,10 @@ fn type_set(out: &mut Vec<u8>, width: u32, row: u32, seed: u32, dark_mode: bool,
 /// finaliser, which spreads single-bit differences across the whole word -- so row 40 and
 /// row 41 look nothing like each other, which is the property the matcher is tested on.
 fn hash(row: u32, seed: u32) -> u32 {
-    let mut x = row.wrapping_mul(0x9E37_79B1).wrapping_add(seed.wrapping_mul(0x85EB_CA6B)).wrapping_add(0x1234_5678);
+    let mut x = row
+        .wrapping_mul(0x9E37_79B1)
+        .wrapping_add(seed.wrapping_mul(0x85EB_CA6B))
+        .wrapping_add(0x1234_5678);
     x ^= x >> 16;
     x = x.wrapping_mul(0x7FEB_352D);
     x ^= x >> 15;

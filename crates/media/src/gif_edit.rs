@@ -17,6 +17,7 @@
 
 use std::fs::File;
 use std::io::BufReader;
+use std::num::NonZeroU64;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -43,6 +44,8 @@ pub enum GifEditError {
         #[source]
         source: gif::DecodingError,
     },
+    #[error("{path} is {width}x{height} pixels, larger than the GIF editor opens")]
+    TooLarge { path: PathBuf, width: u32, height: u32 },
     #[error("frames {start}..{end} are not inside the {frames} the GIF has")]
     Range { start: usize, end: usize, frames: usize },
     #[error("the range holds no frames")]
@@ -52,6 +55,14 @@ pub enum GifEditError {
     #[error(transparent)]
     Reel(#[from] ReelError),
 }
+
+/// The most a GIF's canvas, or one of its frames, may take at four bytes a pixel (D174).
+///
+/// A GIF's header says how big its canvas is, up to 65,535 pixels a side, and a file of
+/// thirty bytes can say that: composing it would take 17 GB. 256 MiB is past anything
+/// OctoSnap records. A recording of an 8K monitor without `gif-max-width`'s cap is 133 MB,
+/// which the decoder's own default of 50 MB for a frame refused.
+const MAX_CANVAS_BYTES: u64 = 256 << 20;
 
 /// When one frame shows and for how long, in milliseconds from the first frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,11 +151,15 @@ fn delay_ms(centiseconds: u16) -> u64 {
 }
 
 fn open_decoder(path: &Path) -> Result<gif::Decoder<BufReader<File>>, GifEditError> {
-    let file = File::open(path).map_err(|source| GifEditError::Open { path: path.to_path_buf(), source })?;
+    let file = File::open(path)
+        .map_err(|source| GifEditError::Open { path: path.to_path_buf(), source })?;
     let mut options = gif::DecodeOptions::new();
     // RGBA out, so a transparent index is an alpha of zero and the compositor never has
     // to look a palette up.
     options.set_color_output(gif::ColorOutput::RGBA);
+    if let Some(limit) = NonZeroU64::new(MAX_CANVAS_BYTES) {
+        options.set_memory_limit(gif::MemoryLimit::Bytes(limit));
+    }
     options
         .read_info(BufReader::new(file))
         .map_err(|source| GifEditError::Decode { path: path.to_path_buf(), source })
@@ -225,6 +240,13 @@ impl std::fmt::Debug for GifFrames {
 impl GifFrames {
     fn open(path: &Path) -> Result<Self, GifEditError> {
         let decoder = open_decoder(path)?;
+        if u64::from(decoder.width()) * u64::from(decoder.height()) * 4 > MAX_CANVAS_BYTES {
+            return Err(GifEditError::TooLarge {
+                path: path.to_path_buf(),
+                width: u32::from(decoder.width()),
+                height: u32::from(decoder.height()),
+            });
+        }
         let width = usize::from(decoder.width());
         let height = usize::from(decoder.height());
         Ok(Self {
@@ -288,7 +310,8 @@ impl GifFrames {
             left: usize::from(frame.left).min(self.width),
             top: usize::from(frame.top).min(self.height),
             width: usize::from(frame.width).min(self.width.saturating_sub(usize::from(frame.left))),
-            height: usize::from(frame.height).min(self.height.saturating_sub(usize::from(frame.top))),
+            height: usize::from(frame.height)
+                .min(self.height.saturating_sub(usize::from(frame.top))),
         };
         let dispose = frame.dispose;
         if dispose == gif::DisposalMethod::Previous {
@@ -573,7 +596,11 @@ pub fn trim_reporting(
         return Err(GifEditError::Empty);
     }
     if range.end > timeline.len() {
-        return Err(GifEditError::Range { start: range.start, end: range.end, frames: timeline.len() });
+        return Err(GifEditError::Range {
+            start: range.start,
+            end: range.end,
+            frames: timeline.len(),
+        });
     }
     let length = timeline.duration_of(range.clone());
     let planned = plan(&timeline, range.clone(), options.fps);
@@ -704,7 +731,12 @@ mod tests {
         let encoder = Encoder::start_with(80, fps, path, rx, Progress::new()).unwrap();
         for index in 0..frames {
             let pixels = vec![RGBA8::new(shade(index), 0, 255 - shade(index), 255); W * H];
-            tx.send(Frame { index, pts: index as f64 / f64::from(fps), image: ImgVec::new(pixels, W, H) }).unwrap();
+            tx.send(Frame {
+                index,
+                pts: index as f64 / f64::from(fps),
+                image: ImgVec::new(pixels, W, H),
+            })
+            .unwrap();
         }
         drop(tx);
         encoder.finish().unwrap();
@@ -735,7 +767,8 @@ mod tests {
     /// The editor's progress bar reads this, so it has to move and it has to arrive.
     #[test]
     fn a_trim_reports_every_frame_it_writes() {
-        let dir = std::env::temp_dir().join(format!("octosnap-gif-progress-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("octosnap-gif-progress-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("eight.gif");
         write_gif_raw(&source, &(0..8).map(|i| (i, 7)).collect::<Vec<_>>());
@@ -808,7 +841,8 @@ mod tests {
 
     #[test]
     fn a_trim_keeps_every_delay_the_last_frames_included() {
-        let dir = std::env::temp_dir().join(format!("octosnap-gif-trim-delays-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("octosnap-gif-trim-delays-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Irregular holds, as a deduplicated screen recording has. Frames 1..3 end on the
         // short hold; the interval before it is the long one, which is what gifski would
@@ -915,8 +949,14 @@ mod tests {
         let path = scratch("trim-bad.gif");
         let out = scratch("trim-bad-out.gif");
         write_gif(&path, 4, 10);
-        assert!(matches!(trim(&path, 3..3, TrimOptions::default(), &out), Err(GifEditError::Empty)));
-        assert!(matches!(trim(&path, 2..9, TrimOptions::default(), &out), Err(GifEditError::Range { frames: 4, .. })));
+        assert!(matches!(
+            trim(&path, 3..3, TrimOptions::default(), &out),
+            Err(GifEditError::Empty)
+        ));
+        assert!(matches!(
+            trim(&path, 2..9, TrimOptions::default(), &out),
+            Err(GifEditError::Range { frames: 4, .. })
+        ));
         assert!(!out.exists(), "nothing is written for a refused range");
     }
 
@@ -1004,5 +1044,46 @@ mod tests {
         assert!(matches!(scan(&path), Err(GifEditError::Decode { .. })));
         assert!(matches!(Frames::open(&path), Err(GifEditError::Decode { .. })));
         assert!(matches!(scan(Path::new("/nonexistent/x.gif")), Err(GifEditError::Open { .. })));
+    }
+
+    /// One frame of one colour at `width` x `height`, on a canvas the header says is
+    /// `canvas`: written as indices, so a big frame costs no colour quantising.
+    fn write_gif_sized(path: &Path, canvas: (u16, u16), width: u16, height: u16) {
+        let mut file = std::fs::File::create(path).unwrap();
+        let mut encoder = gif::Encoder::new(&mut file, canvas.0, canvas.1, &[255, 0, 0]).unwrap();
+        let frame = gif::Frame {
+            width,
+            height,
+            buffer: std::borrow::Cow::Owned(vec![0; usize::from(width) * usize::from(height)]),
+            ..gif::Frame::default()
+        };
+        encoder.write_frame(&frame).unwrap();
+    }
+
+    /// D174: a recording made without `gif-max-width`'s cap can be bigger than the 50 MB a
+    /// frame the decoder allows by default. 3,700 pixels square is 55 MB.
+    #[test]
+    fn a_recording_bigger_than_the_decoders_default_opens() {
+        let path = scratch("big.gif");
+        write_gif_sized(&path, (3700, 3700), 3700, 3700);
+        let mut frames = Frames::open(&path).unwrap();
+        frames.next_frame().unwrap().unwrap();
+        assert_eq!(frames.pixels()[3700 * 3700 - 1], RGBA8::new(255, 0, 0, 255));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// D174: a canvas of 65,535 pixels a side is refused before anything is composed,
+    /// where it asked for 17 GB. Its timing is still read, so it can be a card.
+    #[test]
+    fn a_canvas_past_the_limit_is_refused_before_it_is_allocated() {
+        let path = scratch("huge-canvas.gif");
+        write_gif_sized(&path, (u16::MAX, u16::MAX), 1, 1);
+        assert!(std::fs::metadata(&path).unwrap().len() < 100, "a few bytes say it");
+        match Frames::open(&path) {
+            Err(GifEditError::TooLarge { width: 65_535, height: 65_535, .. }) => {}
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+        assert_eq!(scan(&path).unwrap().len(), 1);
+        std::fs::remove_file(&path).unwrap();
     }
 }

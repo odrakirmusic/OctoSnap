@@ -49,6 +49,17 @@ thread_local! {
     static OPEN: RefCell<Option<Rc<Results>>> = const { RefCell::new(None) };
 }
 
+/// The text window's keys in the shortcuts dialog's words (`SYS-12`, D179). The window
+/// takes them in a `match` where it is built, which this follows: a key added there
+/// belongs here.
+pub(crate) const KEYS: &[(&str, &str)] = &[
+    ("<Control>f", "Find"),
+    ("Return", "Next Match"),
+    ("<Shift>Return", "Previous Match"),
+    ("<Control><Shift>c", "Copy All the Text"),
+    ("Escape", "Close the Find Bar, Then the Window"),
+];
+
 /// One open result window.
 pub struct Results {
     window: adw::ApplicationWindow,
@@ -262,11 +273,8 @@ impl Results {
     /// The link under a point in the view, if there is one.
     fn at(&self, x: f64, y: f64) -> Option<String> {
         #[allow(clippy::cast_possible_truncation)]
-        let (bx, by) = self.view.window_to_buffer_coords(
-            gtk::TextWindowType::Widget,
-            x as i32,
-            y as i32,
-        );
+        let (bx, by) =
+            self.view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
         let iter = self.view.iter_at_location(bx, by)?;
         let offset = iter.offset();
         self.links
@@ -480,8 +488,8 @@ fn wire(results: &Rc<Results>, find: &gtk::ToggleButton, copy: &gtk::Button, ope
     });
     results.view.add_controller(motion);
 
-    // Ctrl+F and Ctrl+Shift+C. Ctrl+C is left alone: it is the text view's own, and a
-    // window whose Ctrl+C ignored the selection would be the surprising one.
+    // Ctrl+F and Ctrl+Shift+C ([`KEYS`]). Ctrl+C is left alone: it is the text view's own,
+    // and a window whose Ctrl+C ignored the selection would be the surprising one.
     let keys = gtk::EventControllerKey::new();
     let weak = Rc::downgrade(results);
     keys.connect_key_pressed(move |_, key, _code, state| {

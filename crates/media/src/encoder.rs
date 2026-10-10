@@ -5,8 +5,8 @@
 //! few frames, so a long recording costs no more memory than a short one.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -139,7 +139,11 @@ pub struct Encoder {
 impl Encoder {
     /// Starts encoding `frames` into `path` with `plan`'s quality. The graph has already
     /// scaled every frame to `plan.output`, so gifski is asked for no resize.
-    pub fn start(plan: &GifPlan, path: &Path, frames: Receiver<Frame>) -> Result<Self, EncodeError> {
+    pub fn start(
+        plan: &GifPlan,
+        path: &Path,
+        frames: Receiver<Frame>,
+    ) -> Result<Self, EncodeError> {
         Self::start_with(plan.quality, plan.fps, path, frames, Progress::new())
     }
 
@@ -179,13 +183,11 @@ impl Encoder {
         let kept = progress.clone();
         let writer = std::thread::Builder::new().name("gif-write".into()).spawn(move || {
             let mut reporter = Reporter(progress);
-            writer
-                .write(std::io::BufWriter::new(file), &mut reporter)
-                .map_err(|e| match e {
-                    gifski::Error::NoFrames => EncodeError::NoFrames(e),
-                    gifski::Error::Io(source) => EncodeError::Write { path: out, source },
-                    other => EncodeError::Encode(other),
-                })
+            writer.write(std::io::BufWriter::new(file), &mut reporter).map_err(|e| match e {
+                gifski::Error::NoFrames => EncodeError::NoFrames(e),
+                gifski::Error::Io(source) => EncodeError::Write { path: out, source },
+                other => EncodeError::Encode(other),
+            })
         })?;
         let collector =
             std::thread::Builder::new().name("gif-collect".into()).spawn(move || {
@@ -219,7 +221,11 @@ impl Encoder {
             .join()
             .map_err(|_| EncodeError::Panicked)?
             .map_err(EncodeError::Encode)?;
-        self.writer.take().ok_or(EncodeError::Panicked)?.join().map_err(|_| EncodeError::Panicked)??;
+        self.writer
+            .take()
+            .ok_or(EncodeError::Panicked)?
+            .join()
+            .map_err(|_| EncodeError::Panicked)??;
         let bytes = std::fs::metadata(&self.path)
             .map_err(|source| EncodeError::Write { path: self.path.clone(), source })?
             .len();
@@ -281,7 +287,12 @@ mod tests {
             scale: 1.0,
             refresh: None,
         };
-        GifPlan::new(Rect::new(0, 0, 64, 40), &source, GifSettings { fps: 10, ..GifSettings::default() }).unwrap()
+        GifPlan::new(
+            Rect::new(0, 0, 64, 40),
+            &source,
+            GifSettings { fps: 10, ..GifSettings::default() },
+        )
+        .unwrap()
     }
 
     fn frame(index: usize, fps: u32, shade: u8) -> Frame {
@@ -316,8 +327,8 @@ mod tests {
     /// halved anything over about 0.7 Mpx, so a 1363 x 836 recording came out 681 x 418.
     #[test]
     fn a_large_frame_is_written_at_its_own_size() {
-        let dir = std::env::temp_dir()
-            .join(format!("octosnap-encoder-large-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("octosnap-encoder-large-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("large.gif");
         let (tx, rx) = std::sync::mpsc::sync_channel(2);
@@ -366,7 +377,8 @@ mod tests {
 
     #[test]
     fn abort_removes_the_file() {
-        let dir = std::env::temp_dir().join(format!("octosnap-encoder-abort-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("octosnap-encoder-abort-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("trashed.gif");
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
@@ -381,7 +393,8 @@ mod tests {
     /// No frame at all is an error the recorder can name, not an empty file.
     #[test]
     fn no_frames_is_an_error() {
-        let dir = std::env::temp_dir().join(format!("octosnap-encoder-empty-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("octosnap-encoder-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("empty.gif");
         let (tx, rx) = std::sync::mpsc::sync_channel::<Frame>(1);

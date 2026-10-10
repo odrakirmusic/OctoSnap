@@ -248,7 +248,8 @@ async fn run_with<B: ShellBridge, S: Stream>(
     control: &Control,
     mut progress: impl FnMut(Progress, Option<Frame>),
 ) -> Result<Shot, String> {
-    let step = options.step.unwrap_or_else(|| octosnap_stitch::step_for(along(rect, options.direction)));
+    let step =
+        options.step.unwrap_or_else(|| octosnap_stitch::step_for(along(rect, options.direction)));
     let handle = bridge
         .start_scroll_assist(rect, options.direction)
         .await
@@ -544,7 +545,8 @@ async fn read(path: PathBuf) -> Result<Frame, String> {
             // So there is a way to keep them, off by default because of what the doc
             // comment above says about tmpfs.
             let name = path.file_name().unwrap_or(std::ffi::OsStr::new("frame.png"));
-            match std::fs::create_dir_all(&into).and_then(|()| std::fs::copy(&path, into.join(name)))
+            match std::fs::create_dir_all(&into)
+                .and_then(|()| std::fs::copy(&path, into.join(name)))
             {
                 Ok(_) => info!(path = %into.join(name).display(), "kept a scroll frame"),
                 Err(e) => warn!(into = %into.display(), "could not keep a scroll frame: {e}"),
@@ -565,7 +567,9 @@ async fn read(path: PathBuf) -> Result<Frame, String> {
 /// user wants -- it is the one way to answer "why would it not place this page", and the
 /// only honest answer to that question is the pixels the matcher saw.
 fn keep_frames() -> Option<PathBuf> {
-    std::env::var_os("OCTOSNAP_KEEP_FRAMES").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
+    std::env::var_os("OCTOSNAP_KEEP_FRAMES")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
 }
 
 /// Writes `frame` into `dir` as the `index`th frame the matcher was shown, when there is a
@@ -613,13 +617,7 @@ async fn push(
 
 fn report(stitcher: &Stitcher) -> Progress {
     let (width, height) = stitcher.size();
-    Progress {
-        width,
-        height,
-        frames: stitcher.accepted(),
-        long: stitcher.long(),
-        trouble: false,
-    }
+    Progress { width, height, frames: stitcher.accepted(), long: stitcher.long(), trouble: false }
 }
 
 /// The selection's length along the scroll, which is what the step is a fraction of.
@@ -817,7 +815,9 @@ impl Scroller {
 
     /// What the pill's buttons mean.
     pub fn ask(self: &Rc<Self>, ask: controls::Ask) {
-        let Some(active) = self.active.borrow().as_ref().map(|a| (a.control.clone(), Rc::clone(&a.pill))) else {
+        let Some(active) =
+            self.active.borrow().as_ref().map(|a| (a.control.clone(), Rc::clone(&a.pill)))
+        else {
             return;
         };
         let (control, pill) = active;
@@ -943,7 +943,13 @@ impl Scroller {
                 Err(message) if message == "cancelled" => info!("scrolling capture cancelled"),
                 Err(message) => {
                     warn!("scrolling capture failed: {message}");
-                    notify::tell(&scroller.app, "scrolling", "Scrolling capture failed", &message, true);
+                    notify::tell(
+                        &scroller.app,
+                        "scrolling",
+                        "Scrolling capture failed",
+                        &message,
+                        true,
+                    );
                 }
             }
         });
@@ -966,7 +972,13 @@ impl Scroller {
                 // A capture that stopped on its own was cut short, which the user has to
                 // hear about; one that is merely long gets the tray.
                 if let Some(reason) = ending(shot.ended, width.max(height)) {
-                    notify::tell(&self.app, "scrolling", "Scrolling capture", &reason, shot.ended.is_some());
+                    notify::tell(
+                        &self.app,
+                        "scrolling",
+                        "Scrolling capture",
+                        &reason,
+                        shot.ended.is_some(),
+                    );
                 }
                 let outcome = self.flow.handle(&capture).await;
                 // `ACT-05`, as for a screenshot: a plan with no card has nothing on screen.
@@ -1003,12 +1015,16 @@ impl Scroller {
         });
         // The direction action outlives the pill, so it still holds whatever the last
         // capture was set to; this one starts from its own request's.
-        if let Some(action) = self.app.lookup_action("scroll-direction").and_downcast::<gio::SimpleAction>() {
+        if let Some(action) =
+            self.app.lookup_action("scroll-direction").and_downcast::<gio::SimpleAction>()
+        {
             action.set_state(&request.direction.as_wire().to_variant());
         }
 
         let in_shot = if let Some(path) = pill.object_path() {
-            let (in_shot, landed) = self.perch(&path, request.rect, pill.size(), request.direction).await;
+            pill.first_frame().await;
+            let (in_shot, landed) =
+                self.perch(&path, request.rect, pill.size(), request.direction).await;
             // Help's panel opens off the selection, which needs to know where the pill is.
             if let Some((landed, work_area)) = landed {
                 pill.set_room(landed, work_area, request.rect);
@@ -1082,7 +1098,8 @@ impl Scroller {
                     info!(?landed, "scrolling controls placed");
                 }
                 let area = i64::from(landed.width) * i64::from(landed.height);
-                let work_area = screens.iter().copied().find(|screen| landed.overlap_area(*screen) == area);
+                let work_area =
+                    screens.iter().copied().find(|screen| landed.overlap_area(*screen) == area);
                 return (in_shot, work_area.map(|work_area| (landed, work_area)));
             }
             // The compositor's size is the one that is drawn. A pill it reports bigger
@@ -1119,7 +1136,6 @@ impl Scroller {
             .map(|m| m.connector.clone())
             .unwrap_or_default()
     }
-
 }
 
 /// Where the pill can sit without being in the shot, best first.
@@ -1251,7 +1267,9 @@ fn ending(ended: Option<End>, longest: u32) -> Option<String> {
         Some(End::Unmatched) => {
             Some("Stopped: the page stopped matching. Try a smaller area.".to_owned())
         }
-        _ if longest >= limits.warn_at => Some(format!("That is a very long capture: {longest} px")),
+        _ if longest >= limits.warn_at => {
+            Some(format!("That is a very long capture: {longest} px"))
+        }
         _ => None,
     }
 }
@@ -1587,7 +1605,11 @@ mod tests {
         assert_eq!(seen.get().frames, 2, "the pill was told of the two scrolls and no more");
         // Two real steps, and then nothing: every frame after the foot of the page is the
         // same rows under a different corner, and none of them reached the canvas.
-        assert_eq!(shot.frame.height(), 300 + 2 * 174, "nothing after the foot of the page was new");
+        assert_eq!(
+            shot.frame.height(),
+            300 + 2 * 174,
+            "nothing after the foot of the page was new"
+        );
         assert!(bridge.scroll_grabs() >= listed, "the stopped frames were never even offered");
         assert_eq!(bridge.scroll_ends().len(), 1, "the session is always ended");
     }

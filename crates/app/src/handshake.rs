@@ -44,7 +44,9 @@ pub fn run(app: &adw::Application) {
                 glib::spawn_future_local(async move {
                     let spool = crate::history::History::default_spool();
                     match bridge.set_spool(&spool).await {
-                        Ok(()) => info!(spool = %spool.display(), "told the extension where the spool is"),
+                        Ok(()) => {
+                            info!(spool = %spool.display(), "told the extension where the spool is")
+                        }
                         Err(e) => warn!("could not tell the extension where the spool is: {e}"),
                     }
                 });

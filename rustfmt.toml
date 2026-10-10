@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# D173: the setting closest to the hand formatting the tree had before rustfmt ran.
+use_small_heuristics = "Max"

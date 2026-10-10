@@ -185,7 +185,8 @@ impl Editor {
             let (height, percent, lock, syncing) =
                 (height.downgrade(), percent.downgrade(), lock.downgrade(), Rc::clone(&syncing));
             width.connect_value_changed(move |width| {
-                let (Some(height), Some(percent), Some(lock)) = (height.upgrade(), percent.upgrade(), lock.upgrade())
+                let (Some(height), Some(percent), Some(lock)) =
+                    (height.upgrade(), percent.upgrade(), lock.upgrade())
                 else {
                     return;
                 };
@@ -205,7 +206,8 @@ impl Editor {
             let (width, percent, lock, syncing) =
                 (width.downgrade(), percent.downgrade(), lock.downgrade(), Rc::clone(&syncing));
             height.connect_value_changed(move |height| {
-                let (Some(width), Some(percent), Some(lock)) = (width.upgrade(), percent.upgrade(), lock.upgrade())
+                let (Some(width), Some(percent), Some(lock)) =
+                    (width.upgrade(), percent.upgrade(), lock.upgrade())
                 else {
                     return;
                 };
@@ -222,9 +224,12 @@ impl Editor {
             });
         }
         {
-            let (width, height, syncing) = (width.downgrade(), height.downgrade(), Rc::clone(&syncing));
+            let (width, height, syncing) =
+                (width.downgrade(), height.downgrade(), Rc::clone(&syncing));
             percent.connect_value_changed(move |percent| {
-                let (Some(width), Some(height)) = (width.upgrade(), height.upgrade()) else { return };
+                let (Some(width), Some(height)) = (width.upgrade(), height.upgrade()) else {
+                    return;
+                };
                 if syncing.get() {
                     return;
                 }

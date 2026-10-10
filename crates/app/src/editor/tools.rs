@@ -31,7 +31,9 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, glib};
 use octosnap_scene::tool::{Draft, Modifiers, Tool, ToolSettings};
-use octosnap_scene::{Bounds, Command, Grips, Handle, Object, ObjectId, Point, Scene, handle, hit};
+use octosnap_scene::{
+    Bounds, Command, Grips, Handle, Object, ObjectId, Point, Scene, callout, counters, handle, hit,
+};
 use tracing::debug;
 
 use super::cursor::Hover;
@@ -40,10 +42,19 @@ use super::window::Editor;
 /// How far a press may travel and still be a click, in **widget** pixels -- GTK's own
 /// `gtk-dnd-drag-threshold`, the distance every drag on this desktop already has to cross
 /// before it is one.
-const CLICK_SLOP: f64 = 8.0;
+pub(super) const CLICK_SLOP: f64 = 8.0;
 
 /// `spec/05` §4.1: "Ctrl+D duplicates offset by 12 units".
 const DUPLICATE_OFFSET: f64 = 12.0;
+
+/// `ANN-28` (D177): how long the pencil has to stay still, with the button down, before the
+/// stroke is asked what shape it was meant to be. Long enough that the pause at a corner
+/// is not one; short enough to be a deliberate wait rather than a test of patience.
+const HOLD: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How far the pointer may drift, in widget pixels, and still be held still: a hand on a
+/// mouse or a pen is never quite motionless.
+const HOLD_SLOP: f64 = 4.0;
 
 thread_local! {
     /// `spec/05` §4.1's internal object clipboard. One per process, not one per editor, so
@@ -151,6 +162,28 @@ pub enum Gesture {
     /// is the one gesture that *is* accumulated -- there is no object to be absolute
     /// about.
     Panning { last: (f64, f64) },
+    /// `ANN-27`'s live text: a drag selects the picture's words, from the one the press
+    /// was on or nearest to (D180). `press` and `last` are document points: the release
+    /// is a click, which opens a link, if it came up within [`CLICK_SLOP`] of the press.
+    Reading { from: octosnap_ocr::live::Pos, press: Point, last: Point },
+    /// `ANN-31`'s Cut Out: a band of the picture, from the press to the pointer (D183).
+    Slicing { from: Point, to: Point },
+}
+
+impl Gesture {
+    /// What the debug log calls it.
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Creating(_) => "creating",
+            Self::Moving { .. } => "moving",
+            Self::Marquee { .. } => "marquee",
+            Self::Resizing { .. } => "resizing",
+            Self::Ending { .. } => "ending",
+            Self::Panning { .. } => "panning",
+            Self::Reading { .. } => "reading",
+            Self::Slicing { .. } => "slicing",
+        }
+    }
 }
 
 /// The tool strip's state.
@@ -168,6 +201,9 @@ pub struct ToolState {
     pub gesture: RefCell<Option<Gesture>>,
     /// Space is held (`spec/05` §9's "Space pan"). Set by the window's key controller.
     pub space_down: Cell<bool>,
+    /// `ANN-28`: the wait for the pencil to be held still, and where it started.
+    hold: RefCell<Option<glib::SourceId>>,
+    hold_from: Cell<Option<Point>>,
     buttons: RefCell<Vec<(Tool, gtk::ToggleButton)>>,
     /// Guards the strip against its own signal.
     ///
@@ -233,7 +269,10 @@ impl Editor {
     /// because §4.11 gives Enter as the only thing that applies. Switching tools with a
     /// crop half-dragged and having it apply itself would be an edit nobody asked for.
     pub(super) fn set_tool(self: &Rc<Self>, tool: Tool) {
+        // A tool chosen is the end of live text, which is a tool of its own (D180).
+        self.leave_live_text();
         let was_cropping = self.cropping();
+        self.stop_holding();
         self.tools.active.set(tool);
         // Leaving a tool abandons anything half-drawn: a draft belongs to the tool that
         // started it, and keeping it would commit a rectangle with the ellipse tool.
@@ -307,22 +346,40 @@ impl Editor {
             let editor = Rc::downgrade(self);
             drag.connect_drag_begin(move |gesture, x, y| {
                 let Some(editor) = editor.upgrade() else { return };
-                editor.begin_gesture(x, y, modifiers_of(gesture));
+                editor.begin_gesture(x, y, modifiers_of(gesture), pressure_of(gesture));
             });
         }
         {
             let editor = Rc::downgrade(self);
             drag.connect_drag_update(move |gesture, ox, oy| {
                 let Some(editor) = editor.upgrade() else { return };
-                editor.update_gesture(ox, oy, modifiers_of(gesture));
+                editor.update_gesture(ox, oy, modifiers_of(gesture), pressure_of(gesture));
             });
         }
         {
             let editor = Rc::downgrade(self);
             drag.connect_drag_end(move |gesture, ox, oy| {
                 let Some(editor) = editor.upgrade() else { return };
-                editor.update_gesture(ox, oy, modifiers_of(gesture));
+                // `ANN-34`: a drag ends when its finger lifts, and also when a second
+                // finger comes down, which makes it a pinch's (`Editor::wire_zoom`). The
+                // second is no end the user asked for: ended, the stroke the first finger
+                // had begun would be committed under the pinch, so it is given up.
+                if ended_by_a_second_finger(gesture) {
+                    editor.cancel_gesture();
+                    return;
+                }
+                // The release is the pen's tip leaving the surface, a pressure of nothing,
+                // whatever the event carries (`Draft::feel`).
+                editor.update_gesture(ox, oy, modifiers_of(gesture), Some(0.0));
                 editor.end_gesture();
+            });
+        }
+        // And the pinch's claim, or the compositor, can cancel the drag outright.
+        {
+            let editor = Rc::downgrade(self);
+            drag.connect_cancel(move |_, _| {
+                let Some(editor) = editor.upgrade() else { return };
+                editor.cancel_gesture();
             });
         }
         self.canvas.add_controller(drag);
@@ -346,7 +403,7 @@ impl Editor {
         self.canvas.add_controller(motion);
     }
 
-    fn begin_gesture(self: &Rc<Self>, x: f64, y: f64, modifiers: Modifiers) {
+    fn begin_gesture(self: &Rc<Self>, x: f64, y: f64, modifiers: Modifiers, pressure: Option<f64>) {
         let at = self.canvas.to_document(x, y);
         // `spec/05` §2's pipette, if it is armed, takes the click before any tool sees it.
         if self.take_sample(at) {
@@ -366,12 +423,26 @@ impl Editor {
             *self.tools.gesture.borrow_mut() = Some(Gesture::Panning { last: (0.0, 0.0) });
             return;
         }
+        // `ANN-27`'s live text owns the picture while it is on: a press selects words,
+        // and nothing is drawn, moved or cropped (D180).
+        if self.live_text_on() {
+            if let Some(from) = self.live_press(at) {
+                *self.tools.gesture.borrow_mut() =
+                    Some(Gesture::Reading { from, press: at, last: at });
+            }
+            return;
+        }
         // `spec/05` §4.11's crop mode owns every pointer gesture on the canvas: there is
         // nothing else to click on while a crop frame is up.
         if self.crop_press(at) {
             return;
         }
         let tool = self.tools.active.get();
+        // `ANN-31`'s Cut Out: the drag is a band of the picture, whatever is on it.
+        if tool == Tool::CutOut {
+            *self.tools.gesture.borrow_mut() = Some(Gesture::Slicing { from: at, to: at });
+            return;
+        }
         let Some(scene) = self.canvas.scene() else { return };
 
         // A handle on the current selection wins over whatever is under it, with any
@@ -402,13 +473,26 @@ impl Editor {
             .map(|object| object.id);
 
         if under.is_none() && tool.creates() {
-            let draft = Draft::begin(tool, self.settings(), at, modifiers);
+            self.stop_holding();
+            let draft = Draft::begin(tool, self.settings(), at, modifiers).map(|mut draft| {
+                draft.feel(pressure);
+                draft
+            });
             self.preview_draft(draft.as_ref());
             *self.tools.gesture.borrow_mut() = draft.map(Gesture::Creating);
             return;
         }
 
         match under {
+            // `ANN-32`: a press on a magnifier's spot, off its lens, takes the spot -- what
+            // the lens enlarges, which a move of the lens leaves where it is.
+            Some(id) if !modifiers.alt && !modifiers.shift && self.on_spot(&scene, id, at) => {
+                if let Some(object) = scene.get(id) {
+                    self.canvas.set_selection(vec![id]);
+                    *self.tools.gesture.borrow_mut() =
+                        Some(Gesture::Ending { before: object.clone(), index: 0 });
+                }
+            }
             Some(id) => {
                 let mut selection = self.canvas.selection();
                 if modifiers.shift {
@@ -445,7 +529,13 @@ impl Editor {
         }
     }
 
-    fn update_gesture(self: &Rc<Self>, ox: f64, oy: f64, modifiers: Modifiers) {
+    fn update_gesture(
+        self: &Rc<Self>,
+        ox: f64,
+        oy: f64,
+        modifiers: Modifiers,
+        pressure: Option<f64>,
+    ) {
         if let Some(Gesture::Panning { last }) = self.tools.gesture.borrow_mut().as_mut() {
             let (px, py) = *last;
             *last = (ox, oy);
@@ -463,10 +553,15 @@ impl Editor {
         match gesture.as_mut() {
             Some(Gesture::Creating(draft)) => {
                 let from = draft_origin(draft);
-                draft.extend(from.offset(dx, dy), modifiers);
+                let at = from.offset(dx, dy);
+                draft.extend(at, modifiers);
+                draft.feel(pressure);
                 let draft = draft.clone();
                 drop(gesture);
                 self.preview_draft(Some(&draft));
+                if draft.tool() == Tool::Pencil && draft.held().is_none() {
+                    self.wait_for_hold(at, zoom);
+                }
             }
             Some(Gesture::Moving { before, from, .. }) => {
                 // "Shift locks to the dominant axis" -- decided from the whole travel, so
@@ -510,12 +605,57 @@ impl Editor {
                 let to = was.offset(dx, dy);
                 self.preview_end(&before, index, to);
             }
+            Some(Gesture::Reading { from, press, last }) => {
+                let at = press.offset(dx, dy);
+                *last = at;
+                let (from, press) = (*from, *press);
+                drop(gesture);
+                self.live_drag(from, press, at);
+            }
+            Some(Gesture::Slicing { from, to }) => {
+                *to = from.offset(dx, dy);
+                let (from, to) = (*from, *to);
+                drop(gesture);
+                self.preview_slice(from, to);
+            }
             // Handled above, before the crop check.
             Some(Gesture::Panning { .. }) | None => {}
         }
     }
 
+    /// The gesture in progress given up, as if it had not begun: a pinch that takes the
+    /// fingers cancels the drag the first one started (`ANN-34`). What a move, a resize or
+    /// an end's drag changed is put back; a stroke, a band or a rubber band goes; a crop
+    /// frame returns to where the press found it.
+    pub(super) fn cancel_gesture(self: &Rc<Self>) {
+        self.stop_holding();
+        if self.cropping() {
+            self.crop_cancel_drag();
+        }
+        let Some(gesture) = self.tools.gesture.borrow_mut().take() else { return };
+        let restore = |before: &[Object]| {
+            let Some(mut scene) = self.canvas.scene() else { return };
+            for was in before {
+                scene.replace(was.clone());
+            }
+            self.canvas.update_scene(scene);
+        };
+        match &gesture {
+            Gesture::Creating(_) => self.canvas.set_draft(None),
+            Gesture::Moving { before, .. } => restore(before),
+            Gesture::Resizing { before, .. } | Gesture::Ending { before, .. } => {
+                restore(std::slice::from_ref(before));
+            }
+            Gesture::Marquee { .. } => self.canvas.set_marquee(None),
+            Gesture::Slicing { .. } => self.canvas.set_slice(None),
+            Gesture::Panning { .. } | Gesture::Reading { .. } => {}
+        }
+        self.set_hover(if self.tools.space_down.get() { Hover::Pan } else { Hover::Idle });
+        debug!(gesture = gesture.name(), "gesture cancelled");
+    }
+
     fn end_gesture(self: &Rc<Self>) {
+        self.stop_holding();
         if matches!(*self.tools.gesture.borrow(), Some(Gesture::Panning { .. })) {
             *self.tools.gesture.borrow_mut() = None;
             self.set_hover(if self.tools.space_down.get() { Hover::Pan } else { Hover::Idle });
@@ -638,6 +778,8 @@ impl Editor {
             }
             // Ended above; the arm exists so the match stays exhaustive.
             Gesture::Panning { .. } => {}
+            Gesture::Reading { press, last, .. } => self.live_release(press, last),
+            Gesture::Slicing { from, to } => self.end_slice(from, to),
             Gesture::Marquee { from, additive } => {
                 self.canvas.set_marquee(None);
                 let Some(scene) = self.canvas.scene() else { return };
@@ -655,6 +797,47 @@ impl Editor {
                 }
             }
         }
+    }
+
+    /// `ANN-28` (D177): starts the wait for the pencil to be held still at `at`, unless it
+    /// is already waiting there. Every move past [`HOLD_SLOP`] starts it again, so it ends
+    /// only when the pointer has stopped.
+    fn wait_for_hold(self: &Rc<Self>, at: Point, zoom: f64) {
+        let still =
+            self.tools.hold_from.get().is_some_and(|from| from.distance_to(at) * zoom <= HOLD_SLOP);
+        if still && self.tools.hold.borrow().is_some() {
+            return;
+        }
+        self.stop_holding();
+        self.tools.hold_from.set(Some(at));
+        let editor = Rc::downgrade(self);
+        let id = glib::timeout_add_local_once(HOLD, move || {
+            let Some(editor) = editor.upgrade() else { return };
+            // Spent, so it is forgotten rather than removed.
+            editor.tools.hold.borrow_mut().take();
+            editor.held();
+        });
+        *self.tools.hold.borrow_mut() = Some(id);
+    }
+
+    fn stop_holding(&self) {
+        if let Some(id) = self.tools.hold.borrow_mut().take() {
+            id.remove();
+        }
+        self.tools.hold_from.set(None);
+    }
+
+    /// The pencil has been held still: the stroke becomes the shape it was meant to be, if
+    /// it was meant to be one, and the preview shows it while the button is still down.
+    fn held(self: &Rc<Self>) {
+        let mut gesture = self.tools.gesture.borrow_mut();
+        let Some(Gesture::Creating(draft)) = gesture.as_mut() else { return };
+        let Some(shape) = draft.hold() else { return };
+        let draft = draft.clone();
+        drop(gesture);
+        // Read by `editor-test.sh`, which cannot see a stroke turn into a shape.
+        tracing::info!(shape = shape.name(), "a held pencil stroke became a shape");
+        self.preview_draft(Some(&draft));
     }
 
     /// The rubber band as the canvas last drew it.
@@ -741,8 +924,7 @@ impl Editor {
         // §4.7's "±(3×size)", which is the highlighter's own drawn width: the size control
         // is how far the snap looks, and a size too small for the line finds nothing.
         let reach = object.style.stroke_width() * octosnap_scene::tool::HIGHLIGHTER_WIDTH_FACTOR;
-        let Some(band) = octosnap_scene::highlight::snap(&pixels, per_unit, &stored, reach)
-        else {
+        let Some(band) = octosnap_scene::highlight::snap(&pixels, per_unit, &stored, reach) else {
             return;
         };
         let snapped: Vec<Point> =
@@ -754,6 +936,7 @@ impl Editor {
             smoothing: false,
             highlighter: true,
             band: Some(band.height),
+            pressure: None,
         };
     }
 
@@ -779,6 +962,18 @@ impl Editor {
         })
     }
 
+    /// Whether `at` is on the spot of the magnifier `id` rather than on its lens (`ANN-32`).
+    fn on_spot(&self, scene: &Scene, id: ObjectId, at: Point) -> bool {
+        let tolerance = (STROKE_GRAB / self.canvas.zoom()).max(hit::TOLERANCE);
+        scene.get(id).is_some_and(|object| match object.geometry {
+            octosnap_scene::Geometry::Magnifier { center, radius, source, zoom } => {
+                let reach = object.style.stroke_width() / 2.0 + tolerance;
+                octosnap_scene::magnifier::on_spot(center, radius, source, zoom, at, reach)
+            }
+            _ => false,
+        })
+    }
+
     /// The handle under `at`, if the selection is one object and it has any.
     ///
     /// One object, because that is what §4.1's chrome draws handles on. `GRAB` is in
@@ -797,12 +992,14 @@ impl Editor {
             .iter()
             .enumerate()
             .filter(|(_, point)| point.distance_to(at) <= tolerance)
-            .min_by(|(_, a), (_, b)| {
-                a.distance_to(at).total_cmp(&b.distance_to(at))
-            })
+            .min_by(|(_, a), (_, b)| a.distance_to(at).total_cmp(&b.distance_to(at)))
             .map(|(index, _)| index)?;
         match object.grips() {
-            Grips::Box => Some(Gesture::Resizing {
+            // `ANN-29`'s ninth handle is the tail's tip, dragged as a line's end is.
+            Grips::BoxAndTip if index == Handle::ALL.len() => {
+                Some(Gesture::Ending { before: object.clone(), index: 0 })
+            }
+            Grips::Box | Grips::BoxAndTip => Some(Gesture::Resizing {
                 before: object.clone(),
                 from: self.canvas.measured_bounds(object),
                 handle: *Handle::ALL.get(index)?,
@@ -892,20 +1089,19 @@ impl Editor {
         }
     }
 
-    /// `spec/05` §4.1: "Delete/Backspace removes".
+    /// `spec/05` §4.1: "Delete/Backspace removes". The badges left behind close the gap,
+    /// in the same step (`ANN-10`, D182).
     pub(super) fn delete_selection(self: &Rc<Self>) {
         let Some(scene) = self.canvas.scene() else { return };
-        let removals: Vec<Command> = self
-            .canvas
-            .selection()
-            .iter()
-            .filter_map(|id| scene.get(*id).cloned().map(Command::Remove))
-            .collect();
-        if removals.is_empty() {
+        let leaving = self.canvas.selection();
+        let mut commands: Vec<Command> =
+            leaving.iter().filter_map(|id| scene.get(*id).cloned().map(Command::Remove)).collect();
+        if commands.is_empty() {
             return;
         }
+        commands.extend(renumbering(&scene, counters::closed_up(&scene, &leaving)));
         self.canvas.set_selection(Vec::new());
-        self.commit_batch(removals);
+        self.commit_batch(commands);
     }
 
     /// `spec/05` §4.1: "Ctrl+D duplicates offset by 12 units".
@@ -946,17 +1142,21 @@ impl Editor {
     /// pasted as a picture of nothing.
     pub(super) fn paste_objects(self: &Rc<Self>) -> bool {
         let Some(scene) = self.canvas.scene() else { return false };
-        let pasted: Vec<Object> = OBJECTS
+        let mut pasted: Vec<Object> = OBJECTS
             .with_borrow_mut(|clipboard| clipboard.paste(&scene))
             .into_iter()
             .filter(|object| match &object.geometry {
-                octosnap_scene::Geometry::Image { file, .. } => std::path::Path::new(file).is_file(),
+                octosnap_scene::Geometry::Image { file, .. } => {
+                    std::path::Path::new(file).is_file()
+                }
                 _ => true,
             })
             .collect();
         if pasted.is_empty() {
             return false;
         }
+        // A pasted badge is another badge: it takes the next number (`ANN-10`).
+        counters::appended(&scene, &mut pasted);
         let ids: Vec<ObjectId> = pasted.iter().map(|object| object.id).collect();
         tracing::info!(count = ids.len(), "pasted objects");
         self.commit_batch(pasted.into_iter().map(Command::Add).collect());
@@ -970,8 +1170,7 @@ impl Editor {
     fn duplicate(self: &Rc<Self>, ids: &[ObjectId], offset: f64) -> Vec<ObjectId> {
         let Some(scene) = self.canvas.scene() else { return Vec::new() };
         let mut z = scene.top_z();
-        let mut adds = Vec::new();
-        let mut new_ids = Vec::new();
+        let mut copies = Vec::new();
         for id in ids {
             let Some(original) = scene.get(*id) else { continue };
             let mut copy = original.clone();
@@ -981,10 +1180,12 @@ impl Editor {
             copy.translate(offset, offset);
             z = z.saturating_add(1);
             copy.z = z;
-            new_ids.push(copy.id);
-            adds.push(Command::Add(copy));
+            copies.push(copy);
         }
-        self.commit_batch(adds);
+        // A copy of a badge is another badge: it takes the next number (`ANN-10`).
+        counters::appended(&scene, &mut copies);
+        let new_ids = copies.iter().map(|copy| copy.id).collect();
+        self.commit_batch(copies.into_iter().map(Command::Add).collect());
         new_ids
     }
 
@@ -992,10 +1193,8 @@ impl Editor {
     ///
     /// A popover on the badge with one spin button. Enter commits and closes; closing by
     /// any other route commits whatever the field holds, because a value typed and then
-    /// clicked away from is a value the user chose. The badge keeps its place in the
-    /// sequence -- `Scene::next_counter_number` counts badges, not numbers -- so the next
-    /// one placed continues from the *count*, which is what makes renumbering one badge
-    /// a local edit rather than a change to the document's numbering.
+    /// clicked away from is a value the user chose. The badge moves to that number's place
+    /// in the sequence and the others make room (`ANN-10`, D182).
     pub(super) fn edit_counter_under(self: &Rc<Self>, at: Point) -> bool {
         let Some(scene) = self.canvas.scene() else { return false };
         let Some(id) = self.object_at(&scene, at) else { return false };
@@ -1009,7 +1208,8 @@ impl Editor {
         // Parented to the canvas's own parent -- an `Overlay`, which has a layout manager
         // and so presents popover children by itself. The canvas is a custom widget with
         // its own `size_allocate` and would have to call `present` for each one by hand.
-        let host: gtk::Widget = self.canvas.parent().unwrap_or_else(|| self.canvas.clone().upcast());
+        let host: gtk::Widget =
+            self.canvas.parent().unwrap_or_else(|| self.canvas.clone().upcast());
         let popover = gtk::Popover::new();
         popover.set_parent(&host);
         popover.set_autohide(true);
@@ -1090,22 +1290,38 @@ impl Editor {
         true
     }
 
-    /// One badge's number, as one undo step.
+    /// One badge's number, as one undo step: it moves to that place in the sequence, and
+    /// the badges between make room (`counters::moved`).
     fn renumber(self: &Rc<Self>, before: &Object, number: u32) {
         let octosnap_scene::Geometry::Counter { number: was, .. } = before.geometry else { return };
         if was == number {
             return;
         }
+        let Some(scene) = self.canvas.scene() else { return };
+        let changes = renumbering(&scene, counters::moved(&scene, before.id, number));
+        let badges = changes.len();
+        self.commit_batch(changes);
+        tracing::info!(from = was, to = number, badges, "counter renumbered");
+    }
+
+    /// `ANN-29` (D182): Add Pointer gives the one selected counter or text a tail, down and
+    /// away from it, and Remove Pointer takes it away. One step either way; the tip is then
+    /// the selection's ninth handle.
+    pub(super) fn toggle_pointer(self: &Rc<Self>) {
+        let Some(scene) = self.canvas.scene() else { return };
+        let [id] = self.canvas.selection()[..] else { return };
+        let Some(before) = scene.get(id).cloned() else { return };
+        let tip = match before.tail() {
+            Some(_) => None,
+            None => Some(callout::default_tip(self.canvas.measured_bounds(&before), scene.canvas)),
+        };
         let mut after = before.clone();
-        if let octosnap_scene::Geometry::Counter { number: n, .. } = &mut after.geometry {
-            *n = number;
+        if !after.set_tail(tip) {
+            return;
         }
-        self.commit(Command::Change {
-            id: before.id,
-            before: Box::new(before.clone()),
-            after: Box::new(after),
-        });
-        tracing::info!(from = was, to = number, "counter renumbered");
+        self.commit(Command::Change { id, before: Box::new(before), after: Box::new(after) });
+        tracing::info!(pointer = tip.is_some(), "callout pointer");
+        self.canvas.report_selection();
     }
 
     /// `spec/05` §4.1: "arrow keys nudge 1 unit, Shift+arrows 10".
@@ -1166,7 +1382,11 @@ impl Editor {
         }
         self.canvas.set_selection(Vec::new());
         tracing::info!(count, "locked");
-        let how = if count == 1 { "Locked · Right-click it to unlock" } else { "Locked · Right-click one to unlock it" };
+        let how = if count == 1 {
+            "Locked · Right-click it to unlock"
+        } else {
+            "Locked · Right-click one to unlock it"
+        };
         self.toast(how, None);
     }
 
@@ -1177,7 +1397,8 @@ impl Editor {
             return;
         }
         let Some(scene) = self.canvas.scene() else { return };
-        let live: Vec<ObjectId> = ids.iter().copied().filter(|id| scene.get(*id).is_some()).collect();
+        let live: Vec<ObjectId> =
+            ids.iter().copied().filter(|id| scene.get(*id).is_some()).collect();
         self.canvas.set_selection(live);
         tracing::info!(count, "unlocked");
     }
@@ -1198,7 +1419,7 @@ impl Editor {
 
     /// Sets `locked` on every one of `ids` that has handles and is not already so, as one
     /// step. Answers how many changed.
-    fn set_locked(&self, ids: &[ObjectId], locked: bool) -> usize {
+    pub(super) fn set_locked(&self, ids: &[ObjectId], locked: bool) -> usize {
         let Some(scene) = self.canvas.scene() else { return 0 };
         let changes: Vec<Command> = ids
             .iter()
@@ -1209,7 +1430,11 @@ impl Editor {
                 }
                 let mut now = was.clone();
                 now.locked = locked;
-                Some(Command::Change { id: *id, before: Box::new(was.clone()), after: Box::new(now) })
+                Some(Command::Change {
+                    id: *id,
+                    before: Box::new(was.clone()),
+                    after: Box::new(now),
+                })
             })
             .collect();
         let count = changes.len();
@@ -1217,13 +1442,14 @@ impl Editor {
         count
     }
 
-    /// The selection without what an undo or redo removed or locked: a locked object is
-    /// never the selection, or a key could move what a click cannot (D162).
+    /// The selection without what an undo or redo removed, locked or hid: a locked object
+    /// is never the selection, or a key could move what a click cannot (D162), and a hidden
+    /// one would be handles around nothing (`ANN-30`).
     fn pruned_selection(&self, scene: &Scene) -> Vec<ObjectId> {
         self.canvas
             .selection()
             .into_iter()
-            .filter(|id| scene.get(*id).is_some_and(|o| !o.locked))
+            .filter(|id| scene.get(*id).is_some_and(|o| !o.locked && o.shown()))
             .collect()
     }
 
@@ -1273,11 +1499,13 @@ impl Editor {
         if scene.starting_number() == number {
             return;
         }
+        // The stored number is for the badges placed when there are none, a preference
+        // and not an edit. The badges there are move with it as one step (`ANN-10`), so
+        // Ctrl+Z puts their numbers back.
         scene.set_next_number(number);
-        // Not a `Command`: this is a document *preference* rather than an edit to an
-        // object, and putting it on the undo stack would make Ctrl+Z renumber badges the
-        // user had not touched.
+        let changes = renumbering(&scene, counters::started_at(&scene, number));
         self.canvas.update_scene(scene);
+        self.commit_batch(changes);
     }
 
     /// The cursor says what a press would do here.
@@ -1300,7 +1528,16 @@ impl Editor {
         }
         let Some(scene) = self.canvas.scene() else { return };
         let at = self.canvas.to_document(x, y);
+        if let Some(hover) = self.live_hover(at) {
+            self.set_hover(hover);
+            return;
+        }
         let tool = self.tools.active.get();
+        // Cut Out cuts whatever is under it, so nothing here is grabbed or selected.
+        if tool == Tool::CutOut {
+            self.set_hover(Hover::Draw(tool));
+            return;
+        }
         let hover = match self.grab_handle(&scene, at) {
             Some(Gesture::Resizing { handle, .. }) => Hover::Resize(handle),
             // A line's end or an arrow's curve handle: it goes anywhere, so no direction
@@ -1334,17 +1571,37 @@ impl Editor {
 
     /// Ctrl+A: every object that has handles (`spec/13` #3). The background and the crop
     /// *are* the canvas -- `Grips::None` -- and selecting them would offer nothing to move.
+    /// Not a hidden mark (`ANN-30`): a Delete after Ctrl+A takes what can be seen.
     pub(super) fn select_all(self: &Rc<Self>) {
+        if self.live_select_all() {
+            return;
+        }
         let Some(scene) = self.canvas.scene() else { return };
         let all: Vec<ObjectId> = scene
             .objects()
             .iter()
-            .filter(|o| o.grips() != Grips::None && !o.locked)
+            .filter(|o| o.grips() != Grips::None && !o.locked && o.shown())
             .map(|o| o.id)
             .collect();
         tracing::info!(selected = all.len(), "select all");
         self.canvas.set_selection(all);
     }
+}
+
+/// `ANN-10`'s renumbered badges as changes, from what each badge is now to what it
+/// becomes. Logged by how many, which `editor-test.sh` reads.
+fn renumbering(scene: &Scene, badges: Vec<Object>) -> Vec<Command> {
+    let changes: Vec<Command> = badges
+        .into_iter()
+        .filter_map(|after| {
+            let before = scene.get(after.id)?.clone();
+            Some(Command::Change { id: after.id, before: Box::new(before), after: Box::new(after) })
+        })
+        .collect();
+    if !changes.is_empty() {
+        tracing::info!(badges = changes.len(), "badges renumbered");
+    }
+    changes
 }
 
 fn objects_of(scene: &Scene, ids: &[ObjectId]) -> Vec<Object> {
@@ -1354,6 +1611,30 @@ fn objects_of(scene: &Scene, ids: &[ObjectId]) -> Vec<Object> {
 /// A draft's own starting point, so an update can be absolute.
 fn draft_origin(draft: &Draft) -> Point {
     draft.start()
+}
+
+/// `ANN-34` (D185): the pen's pressure on the gesture's event, 0 to 1. A mouse, a finger
+/// and a pen's eraser end have none, and a pen without the axis has none to give.
+fn pressure_of(gesture: &gtk::GestureDrag) -> Option<f64> {
+    let event = gesture.current_event()?;
+    let tool = event.device_tool()?;
+    matches!(
+        tool.tool_type(),
+        gdk::DeviceToolType::Pen
+            | gdk::DeviceToolType::Pencil
+            | gdk::DeviceToolType::Brush
+            | gdk::DeviceToolType::Airbrush
+    )
+    .then(|| event.axis(gdk::AxisUse::Pressure))
+    .flatten()
+}
+
+/// Whether the event a drag ended on is another finger touching down, or the touch being
+/// cancelled, rather than the drag's own finger or button coming up (`ANN-34`).
+fn ended_by_a_second_finger(gesture: &gtk::GestureDrag) -> bool {
+    gesture.current_event().is_some_and(|event| {
+        matches!(event.event_type(), gdk::EventType::TouchBegin | gdk::EventType::TouchCancel)
+    })
 }
 
 fn modifiers_of(gesture: &gtk::GestureDrag) -> Modifiers {

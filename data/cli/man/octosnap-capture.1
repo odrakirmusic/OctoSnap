@@ -1,0 +1,77 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH octosnap-capture 1  OctoSnap 
+.SH NAME
+octosnap\-capture \- Take a screenshot
+.SH SYNOPSIS
+\fBoctosnap capture\fR [\fB\-m\fR|\fB\-\-mode\fR] [\fB\-a\fR|\fB\-\-action\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-\-rect\fR] [\fB\-\-display\fR] [\fB\-\-freeze\fR] [\fB\-\-no\-freeze\fR] [\fB\-\-cursor\fR] [\fB\-\-no\-cursor\fR] [\fB\-\-timer\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Take a screenshot
+.SH OPTIONS
+.TP
+\fB\-m\fR, \fB\-\-mode\fR \fI<MODE>\fR [default: area]
+What to capture
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+all\-in\-one: The overlay with its toolbar and the last selection restored
+.IP \(bu 2
+area: Drag out a region
+.IP \(bu 2
+window: Pick a window
+.IP \(bu 2
+fullscreen: The whole monitor under the pointer
+.IP \(bu 2
+previous\-area: The last selection again, with no overlay
+.IP \(bu 2
+self\-timer: Select a region, then capture after a countdown
+.RE
+.TP
+\fB\-a\fR, \fB\-\-action\fR \fI<ACTION>\fR
+What to do with it, overriding the configured after\-capture actions
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+copy
+.IP \(bu 2
+save
+.IP \(bu 2
+annotate
+.IP \(bu 2
+upload
+.IP \(bu 2
+pin
+.RE
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fI<FILE>\fR
+Write the capture to this file as a PNG, or to standard output with `\-`, once it is taken, and do nothing else with it: no card, no copy, no save
+.TP
+\fB\-\-rect\fR \fI<X,Y,W,H>\fR
+Skip the overlay and capture exactly this region, as logical x,y,width,height
+.TP
+\fB\-\-display\fR \fI<CONNECTOR>\fR
+Which monitor, by connector name. See `octosnap monitors`
+.TP
+\fB\-\-freeze\fR
+Freeze the screen while selecting, overriding the setting
+.TP
+\fB\-\-no\-freeze\fR
+Do not freeze the screen, overriding the setting
+.TP
+\fB\-\-cursor\fR
+Include the pointer, overriding the setting
+.TP
+\fB\-\-no\-cursor\fR
+Exclude the pointer, overriding the setting
+.TP
+\fB\-\-timer\fR \fI<SECONDS>\fR
+Countdown in seconds. Implies \-\-mode self\-timer
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

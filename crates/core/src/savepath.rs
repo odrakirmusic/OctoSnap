@@ -150,7 +150,8 @@ pub fn save_as_target(
             SaveAsTarget { path: chosen.to_path_buf(), format, chosen: true }
         }
         Some(_) => {
-            let stem = chosen.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let stem =
+                chosen.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             let format = ImageFormat::Png;
             let path = unique_path(dir, &stem, format.extension(), exists);
             SaveAsTarget { path, format, chosen: false }
@@ -237,10 +238,7 @@ mod tests {
     #[test]
     fn an_unset_folder_falls_back_to_the_xdg_default() {
         let pictures = Path::new("/home/u/Pictures");
-        assert_eq!(
-            screenshot_dir(None, pictures),
-            PathBuf::from("/home/u/Pictures/Screenshots")
-        );
+        assert_eq!(screenshot_dir(None, pictures), PathBuf::from("/home/u/Pictures/Screenshots"));
         assert_eq!(
             recording_dir(None, Path::new("/home/u/Videos")),
             PathBuf::from("/home/u/Videos/Screencasts")
@@ -393,7 +391,12 @@ mod tests {
 
     // --- save as -------------------------------------------------------------
 
-    fn target(chosen: &str, configured: ImageFormat, fits: &[ImageFormat], exists: &[&str]) -> SaveAsTarget {
+    fn target(
+        chosen: &str,
+        configured: ImageFormat,
+        fits: &[ImageFormat],
+        exists: &[&str],
+    ) -> SaveAsTarget {
         save_as_target(Path::new(chosen), configured, |f| fits.contains(&f), taken(exists))
     }
 
@@ -402,26 +405,56 @@ mod tests {
     #[test]
     fn the_chosen_name_decides_the_format() {
         let t = target("/s/Shot.webp", ImageFormat::Jpg, &ALL, &["/s/Shot.webp"]);
-        assert_eq!(t, SaveAsTarget { path: "/s/Shot.webp".into(), format: ImageFormat::Webp, chosen: true });
+        assert_eq!(
+            t,
+            SaveAsTarget { path: "/s/Shot.webp".into(), format: ImageFormat::Webp, chosen: true }
+        );
         let t = target("/s/Shot.JPEG", ImageFormat::Png, &ALL, &[]);
-        assert_eq!(t, SaveAsTarget { path: "/s/Shot.JPEG".into(), format: ImageFormat::Jpg, chosen: true });
+        assert_eq!(
+            t,
+            SaveAsTarget { path: "/s/Shot.JPEG".into(), format: ImageFormat::Jpg, chosen: true }
+        );
     }
 
     #[test]
     fn a_name_without_a_format_keeps_every_character_and_gains_one() {
         let t = target("/s/v1.2 notes", ImageFormat::Jpg, &ALL, &[]);
-        assert_eq!(t, SaveAsTarget { path: "/s/v1.2 notes.jpg".into(), format: ImageFormat::Jpg, chosen: false });
+        assert_eq!(
+            t,
+            SaveAsTarget {
+                path: "/s/v1.2 notes.jpg".into(),
+                format: ImageFormat::Jpg,
+                chosen: false
+            }
+        );
         // Not the user's name, so not the user's to overwrite.
         let t = target("/s/Shot.tiff", ImageFormat::Png, &ALL, &["/s/Shot.tiff.png"]);
-        assert_eq!(t, SaveAsTarget { path: "/s/Shot.tiff (2).png".into(), format: ImageFormat::Png, chosen: false });
+        assert_eq!(
+            t,
+            SaveAsTarget {
+                path: "/s/Shot.tiff (2).png".into(),
+                format: ImageFormat::Png,
+                chosen: false
+            }
+        );
     }
 
     #[test]
     fn a_format_too_small_saves_as_png_beside_the_chosen_name() {
         let png = [ImageFormat::Png];
         let t = target("/s/Long.webp", ImageFormat::Webp, &png, &["/s/Long.png"]);
-        assert_eq!(t, SaveAsTarget { path: "/s/Long (2).png".into(), format: ImageFormat::Png, chosen: false });
+        assert_eq!(
+            t,
+            SaveAsTarget {
+                path: "/s/Long (2).png".into(),
+                format: ImageFormat::Png,
+                chosen: false
+            }
+        );
         let t = target("/s/Long", ImageFormat::Webp, &png, &[]);
-        assert_eq!(t, SaveAsTarget { path: "/s/Long.png".into(), format: ImageFormat::Png, chosen: false });
+        assert_eq!(
+            t,
+            SaveAsTarget { path: "/s/Long.png".into(), format: ImageFormat::Png, chosen: false }
+        );
     }
 }

@@ -8,11 +8,14 @@
 //!
 //! Needs ONNX Runtime and at least one pack installed -- `$XDG_DATA_HOME/octosnap/ocr`,
 //! or wherever `OCTOSNAP_OCR_HOME` points. It prints the two shortcuts' texts and every
-//! link found in them, which between them is the whole of `spec/07` §2.1 except the window.
+//! link found in them, which between them is the whole of `spec/07` §2.1 except the window,
+//! then what the editor's Redact Sensitive Info would cover (`ANN-26`) and the links its
+//! live text would follow (`ANN-27`), from the same boxes.
 
 // A spike, not a service: a fixture that cannot be opened is a broken measurement.
 #![allow(clippy::expect_used)]
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use octosnap_ocr::{Breaks, Engine, Gray, Read, Reader, Script, engine::Null, rapid::Rapid};
@@ -42,12 +45,7 @@ fn main() {
     if let Some(rect) = rect {
         image = image.crop(rect).expect("a crop inside the image");
     }
-    println!(
-        "{path}: {}x{}, mean luminance {:.3}",
-        image.width(),
-        image.height(),
-        image.mean()
-    );
+    println!("{path}: {}x{}, mean luminance {:.3}", image.width(), image.height(), image.mean());
 
     let home = std::env::var_os("OCTOSNAP_OCR_HOME")
         .map(std::path::PathBuf::from)
@@ -60,7 +58,9 @@ fn main() {
                 let size = pack.bytes as f64 / 1e6;
                 println!("  {:<28} {size:>5.1} MB  {state}", pack.script.name());
             }
-            run(&Reader::new(engine), &image, script);
+            let engine = Arc::new(engine);
+            run(&Reader::new(Arc::clone(&engine)), &image, script);
+            boxes(&*engine, &image, script);
         }
         Err(why) => {
             println!("  no engine: {why}");
@@ -97,6 +97,34 @@ fn run<E: Engine>(reader: &Reader<E>, image: &Gray, script: Option<Script>) {
             println!("  [{:?}] {} -> {}", link.kind, &text[link.range.clone()], link.target);
         }
         println!();
+    }
+}
+
+/// The editor's two readings of the same boxes: what Redact Sensitive Info covers, and the
+/// links live text follows.
+fn boxes<E: Engine>(engine: &E, image: &Gray, script: Option<Script>) {
+    let start = Instant::now();
+    let words = engine.read(image, script).expect("a read");
+    println!("--- the boxes, {} in {:?} ---", words.len(), start.elapsed());
+    for word in &words {
+        let b = word.bounds;
+        println!(
+            "  {:>4},{:>4} {:>4}x{:<3} {:.2} {}",
+            b.x, b.y, b.width, b.height, word.confidence, word.text
+        );
+    }
+    println!("--- Redact Sensitive Info ---");
+    for found in octosnap_ocr::sensitive::find(&words) {
+        let b = found.bounds;
+        println!("  {:<15} at {},{} {}x{}", found.kind.label(), b.x, b.y, b.width, b.height);
+    }
+    let page = octosnap_ocr::live::Page::new(&words);
+    println!("--- live text: {} lines, {} links ---", page.lines.len(), page.links.len());
+    for link in &page.links {
+        println!(
+            "  {} (line {}, words {} to {})",
+            link.target, link.from.line, link.from.word, link.to.word
+        );
     }
 }
 

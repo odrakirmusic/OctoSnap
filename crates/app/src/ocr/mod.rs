@@ -40,8 +40,8 @@ fn slot() -> &'static Mutex<Option<Arc<dyn Engine>>> {
 /// **Only ever called from a worker thread.** Opening it is loading ONNX Runtime and a
 /// 4.8 MB detection model, measured at 105–220 ms, and that is a tenth to a fifth of a
 /// second of frozen shell wherever it happens on the main loop (D97). [`ready`] and
-/// [`packs`] used to reach it and no longer do; [`read`] is the one caller left, from
-/// inside its `spawn_blocking`.
+/// [`packs`] used to reach it and no longer do; [`read`] and [`words`] are the callers
+/// left, each from inside its `spawn_blocking`.
 ///
 /// Behind a lock rather than a `OnceLock`, and that is [`reopen`]'s doing. The first pack
 /// a user installs brings the first detection model on the machine with it, so a process
@@ -227,6 +227,35 @@ pub async fn read(path: &Path, script: Option<Script>) -> Result<Read, String> {
     .await;
     match joined {
         Ok(read) => read,
+        Err(_) => Err("the reader stopped unexpectedly".to_owned()),
+    }
+}
+
+/// The words in a picture already in memory, each with its box, on a worker thread.
+///
+/// The editor's Redact Sensitive Info (`ANN-26`, D178) reads the picture it has open,
+/// which may never have been a file, and wants the boxes rather than the text: so no
+/// codes, and no shaping into lines.
+///
+/// # Errors
+/// The message to show the user, already phrased for them.
+pub async fn words(
+    width: usize,
+    height: usize,
+    rgba: Vec<u8>,
+    script: Option<Script>,
+) -> Result<Vec<octosnap_ocr::Word>, String> {
+    let joined = gio::spawn_blocking(move || {
+        let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
+            return Err("the picture is too large to read".to_owned());
+        };
+        let image = Gray::from_rgba(width, height, &rgba).map_err(|why| format!("{why}"))?;
+        drop(rgba);
+        engine()?.read(&image, script).map_err(|why| format!("{why}"))
+    })
+    .await;
+    match joined {
+        Ok(words) => words,
         Err(_) => Err("the reader stopped unexpectedly".to_owned()),
     }
 }

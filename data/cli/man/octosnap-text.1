@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH octosnap-text 1  OctoSnap 
+.SH NAME
+octosnap\-text \- Recognise the text in an image and copy it
+.SH SYNOPSIS
+\fBoctosnap text\fR [\fB\-\-linebreaks\fR] [\fB\-\-single\-line\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIPATH\fR] 
+.SH DESCRIPTION
+Recognise the text in an image and copy it
+.SH OPTIONS
+.TP
+\fB\-\-linebreaks\fR
+Keep the line breaks the page had, overriding the setting
+.TP
+\fB\-\-single\-line\fR
+Join each paragraph into one line, overriding the setting
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fIPATH\fR]
+The image file. Without one, select an area on screen and read that

@@ -213,7 +213,8 @@ mod tests {
             CHROME_BUTTON,
             CHROME_BUTTON,
         );
-        let inner = Rect::new(outer.x - CHROME_GAP - CHROME_BUTTON, outer.y, outer.width, outer.height);
+        let inner =
+            Rect::new(outer.x - CHROME_GAP - CHROME_BUTTON, outer.y, outer.width, outer.height);
         assert!(reachable_when_locked(size, outer));
         assert!(!reachable_when_locked(size, inner));
     }
@@ -233,7 +234,10 @@ mod tests {
     #[test]
     fn a_pin_opens_where_its_capture_was() {
         let work = Rect::new(0, 32, 1920, 1168);
-        assert_eq!(opening_rect(Rect::new(300, 200, 400, 300), work), Rect::new(300, 200, 400, 300));
+        assert_eq!(
+            opening_rect(Rect::new(300, 200, 400, 300), work),
+            Rect::new(300, 200, 400, 300)
+        );
     }
 
     /// `spec/07` §3.1's illusion is that the screen froze. A pin Mutter had to shove back

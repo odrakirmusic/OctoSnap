@@ -61,7 +61,10 @@ pub async fn import_clipboard<B: ShellBridge>(bridge: Option<&B>) -> Option<Capt
     import_clipboard_into(bridge, &crate::history::History::default_spool()).await
 }
 
-async fn import_clipboard_into<B: ShellBridge>(bridge: Option<&B>, spool: &Path) -> Option<CaptureResult> {
+async fn import_clipboard_into<B: ShellBridge>(
+    bridge: Option<&B>,
+    spool: &Path,
+) -> Option<CaptureResult> {
     if let Some(bridge) = bridge {
         match through_shell(bridge, spool).await {
             Ok(capture) => return capture,
@@ -85,7 +88,10 @@ const fn gdk_reads_instead(e: &BridgeError) -> bool {
 /// The shell's read (`ReadClipboardImage`): a file it wrote beside the spool, imported and
 /// then removed, since the spool has its copy and the clipboard's content is not the
 /// cache's to keep.
-async fn through_shell<B: ShellBridge>(bridge: &B, spool: &Path) -> Result<Option<CaptureResult>, BridgeError> {
+async fn through_shell<B: ShellBridge>(
+    bridge: &B,
+    spool: &Path,
+) -> Result<Option<CaptureResult>, BridgeError> {
     let Some(image) = bridge.read_clipboard_image().await? else {
         info!("the clipboard holds no image");
         return Ok(None);
@@ -172,7 +178,11 @@ fn import_gif(path: &Path, title: &str, spool: &Path) -> Option<CaptureResult> {
         scale: 1.0,
         display: String::new(),
         cursor_rect: None,
-        source_window: SourceWindow { app_id: String::new(), app_name: String::new(), title: title.to_owned() },
+        source_window: SourceWindow {
+            app_id: String::new(),
+            app_name: String::new(),
+            title: title.to_owned(),
+        },
         window_alpha: false,
         timestamp: glib::real_time().unsigned_abs(),
         confirmed_at: None,
@@ -215,7 +225,11 @@ fn import_texture(texture: &gdk::Texture, title: &str, spool: &Path) -> Option<C
         scale: 1.0,
         display: String::new(),
         cursor_rect: None,
-        source_window: SourceWindow { app_id: String::new(), app_name: String::new(), title: title.to_owned() },
+        source_window: SourceWindow {
+            app_id: String::new(),
+            app_name: String::new(),
+            title: title.to_owned(),
+        },
         window_alpha: false,
         timestamp: glib::real_time().unsigned_abs(),
         confirmed_at: None,
@@ -279,7 +293,10 @@ mod tests {
         std::fs::create_dir_all(read.parent().expect("parent")).expect("read dir");
         std::fs::write(&read, glib::base64_decode(GIF)).expect("write the read");
         let bridge = NullBridge::default();
-        bridge.set_clipboard_image(Some(ClipboardImage { path: read.clone(), name: Some("Shot 1.gif".to_owned()) }));
+        bridge.set_clipboard_image(Some(ClipboardImage {
+            path: read.clone(),
+            name: Some("Shot 1.gif".to_owned()),
+        }));
 
         let capture = run(import_clipboard_into(Some(&bridge), &spool)).expect("a capture");
 
@@ -288,7 +305,11 @@ mod tests {
         assert_eq!((capture.rect.width, capture.rect.height), (48, 32));
         assert_eq!(capture.source_window.title, "Shot 1.gif");
         assert!(capture.external);
-        assert!(capture.path.starts_with(&spool) && capture.path.exists(), "{}", capture.path.display());
+        assert!(
+            capture.path.starts_with(&spool) && capture.path.exists(),
+            "{}",
+            capture.path.display()
+        );
         assert_eq!(std::fs::read(&capture.path).expect("spool copy"), glib::base64_decode(GIF));
         assert!(!read.exists(), "the shell's read is removed once the spool has its copy");
     }
@@ -314,7 +335,8 @@ mod tests {
             method: "ReadClipboardImage",
             detail: "not (ss)".to_owned(),
         }));
-        let refused = glib::Error::new(gio::DBusError::Failed, "the clipboard is the app's to read");
+        let refused =
+            glib::Error::new(gio::DBusError::Failed, "the clipboard is the app's to read");
         assert!(!gdk_reads_instead(&BridgeError::Dbus(refused)));
     }
 }

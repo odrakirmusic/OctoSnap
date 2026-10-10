@@ -24,6 +24,7 @@ use tracing::info;
 use super::Canvas;
 use super::actions::EditorActions;
 use super::tools::ToolState;
+use crate::shortcuts_dialog::Rows;
 
 /// `spec/05` §9's zoom step. A ratio rather than an increment, so each press moves the
 /// same visual amount at every zoom -- an additive step is imperceptible at 800 % and a
@@ -46,6 +47,128 @@ const SMOOTH_ZOOM_PIXELS: f64 = 60.0;
 /// right-hand edge. Still under D57's "tiled to half of a 1366 px screen is 683, and
 /// that has to work" (D100).
 const MIN_CANVAS: i32 = 680;
+
+/// A key the editor binds, what it does in the shortcuts dialog's words (`SYS-12`, D179),
+/// and what it runs. Keys with the same words are one row there.
+type Binding = (&'static str, &'static str, fn(&Rc<Editor>));
+
+/// A generated binding's body. Boxed because the tool keys and the size digits each close
+/// over a value, which a plain `fn` pointer cannot.
+type Run = Box<dyn Fn(&Rc<Editor>)>;
+
+/// `spec/05` §9's keyboard map, as far as it is a list: the window binds these, and the
+/// shortcuts dialog shows them.
+fn bindings() -> Vec<Binding> {
+    vec![
+        // Each of these moves the document under the editing overlay, so each one has
+        // to move the overlay with it.
+        ("<Control>0", "Zoom to Fit", |e| e.canvas.glide_to_fit(e.follow_view())),
+        ("<Control>1", "Zoom to Actual Size", |e| e.canvas.glide_to_actual(e.follow_view())),
+        ("<Control>plus", "Zoom In", |e| e.zoom_by(ZOOM_STEP)),
+        ("<Control>equal", "Zoom In", |e| e.zoom_by(ZOOM_STEP)),
+        ("<Control>minus", "Zoom Out", |e| e.zoom_by(1.0 / ZOOM_STEP)),
+        // `spec/05` §7: "Close | Ctrl+W". Back to the stack as a card; with Shift,
+        // Final Close, which leaves none (D108).
+        ("<Control>w", "Close, Leaving a Card", Editor::close_to_preview),
+        ("<Control><Shift>w", "Close Without a Card", Editor::final_close),
+        // §7's bottom-bar keys. Copy keeps the editor open (D108).
+        ("<Control>c", "Copy", Editor::copy_shortcut),
+        ("<Control>x", "Cut", Editor::cut_shortcut),
+        ("<Control>v", "Paste", Editor::paste_shortcut),
+        ("<Control>s", "Save", Editor::save_rendered),
+        ("<Control><Shift>s", "Save As", Editor::save_rendered_as),
+        ("<Control><Shift>p", "Pin to the Screen", |e| e.pin_rendered(false)),
+        ("<Control><Shift><Alt>p", "Pin and Keep Editing", |e| e.pin_rendered(true)),
+        // §4.1's selection, all of it (`spec/13` #3).
+        ("<Control>a", "Select All", Editor::select_all),
+        ("<Control>p", "Print", Editor::print_rendered),
+        // `spec/13` #8's context menu, from the keyboard.
+        ("<Shift>F10", "Open the Context Menu", Editor::open_context_menu_at_selection),
+        ("Menu", "Open the Context Menu", Editor::open_context_menu_at_selection),
+        // `spec/05` §2's Background row: "G [P] | a full **left sidebar**".
+        ("g", "Show or Hide the Background Panel", |e| {
+            let open = e.background_panel_open();
+            e.show_background_panel(!open);
+        }),
+        // `ANN-30`'s list of the marks (D186). F9 is GNOME's key for a sidebar.
+        ("F9", "Show or Hide the Layers Panel", |e| {
+            let open = e.layers_panel_open();
+            e.show_layers_panel(!open);
+        }),
+        // `ANN-27`'s live text, which the canvas actions' button also switches (D180).
+        ("<Control><Shift>t", "Select Text in the Picture", Editor::toggle_live_text),
+        // §5.2's undo stack, §4.1's list of what it undoes.
+        ("<Control>z", "Undo", Editor::undo),
+        ("<Control><Shift>z", "Redo", Editor::redo),
+        ("<Control>y", "Redo", Editor::redo),
+        ("<Control>d", "Duplicate", Editor::duplicate_selection),
+        ("Delete", "Delete", Editor::delete_selection),
+        ("BackSpace", "Delete", Editor::delete_selection),
+        // Escape cancels and deselects, and never closes (D61).
+        ("Escape", "Cancel or Deselect", Editor::escape),
+        ("<Control>bracketright", "Bring to Front", |e| e.reorder_selection(true)),
+        ("<Control>bracketleft", "Send to Back", |e| e.reorder_selection(false)),
+        // `spec/05` §9's `[` `]` intensity and F11 fullscreen, which were not bound
+        // (D137). A field typing a bracket takes it first: these run after it. A lens's
+        // magnification steps on the same keys (`ANN-32`).
+        ("bracketleft", "Lower the Intensity or Magnification", |e| e.step_intensity(false)),
+        ("bracketright", "Raise the Intensity or Magnification", |e| e.step_intensity(true)),
+        ("F11", "Fullscreen", |e| {
+            if e.window.is_fullscreen() {
+                e.window.unfullscreen();
+            } else {
+                e.window.fullscreen();
+            }
+        }),
+        // §4.1: "arrow keys nudge 1 unit, Shift+arrows 10".
+        ("Left", "Nudge the Selection", |e| e.nudge_selection(-1.0, 0.0)),
+        ("Right", "Nudge the Selection", |e| e.nudge_selection(1.0, 0.0)),
+        ("Up", "Nudge the Selection", |e| e.nudge_selection(0.0, -1.0)),
+        ("Down", "Nudge the Selection", |e| e.nudge_selection(0.0, 1.0)),
+        ("<Shift>Left", "Nudge by 10", |e| e.nudge_selection(-10.0, 0.0)),
+    ]
+}
+
+/// The rest of the map, made from the tables it comes from rather than listed: the other
+/// three Shift+arrows, §2's Key column (`scene::tool`, where writing it out again would be
+/// a second copy to disagree with the first) and the size digits.
+fn generated() -> Vec<(String, &'static str, Run)> {
+    [("<Shift>Right", (10.0, 0.0)), ("<Shift>Up", (0.0, -10.0)), ("<Shift>Down", (0.0, 10.0))]
+        .into_iter()
+        .map(|(accel, (dx, dy))| {
+            let run: Run = Box::new(move |e: &Rc<Editor>| e.nudge_selection(dx, dy));
+            (accel.to_owned(), "Nudge by 10", run)
+        })
+        .chain(Tool::ALL.into_iter().map(|tool| {
+            let run: Run = Box::new(move |e: &Rc<Editor>| e.set_tool(tool));
+            (tool.accelerator().to_owned(), tool.label(), run)
+        }))
+        .chain((1..=octosnap_scene::SIZE_LEVELS).map(|level| {
+            let run: Run = Box::new(move |e: &Rc<Editor>| e.set_size_level(level));
+            (level.to_string(), "Set the Size", run)
+        }))
+        .collect()
+}
+
+/// The editor's keys for the shortcuts dialog (`SYS-12`, D179): the window's, then the
+/// tools' and the sizes'. Read from the lists the window binds, so the two cannot disagree.
+pub(crate) fn shortcut_rows() -> (Rows, Rows) {
+    let mut window: Rows = bindings()
+        .into_iter()
+        .map(|(accel, title, _)| (accel.to_owned(), title.to_owned()))
+        .collect();
+    let mut tools = Vec::new();
+    for (accel, title, _) in generated() {
+        if title == "Nudge by 10" {
+            window.push((accel, title.to_owned()));
+        } else {
+            tools.push((accel, title.to_owned()));
+        }
+    }
+    // §4.11's Enter, bound apart because it declines the key when it is not for it.
+    tools.push(("Return".to_owned(), "Apply the Crop".to_owned()));
+    (window, tools)
+}
 
 /// The shortcuts a focused text field has its own meaning for, which therefore yield to
 /// it while the user is typing (`spec/13` #3).
@@ -168,6 +291,10 @@ pub struct Editor {
     pub(super) size: gtk::Label,
     /// `spec/05` §4.13's left sidebar and every control on it.
     pub(super) background: super::background::BackgroundPanel,
+    /// `ANN-30`'s layers panel (D186).
+    pub(super) layers: super::layers::LayersPanel,
+    /// `ANN-27`'s live text: the picture's words, once read, and what is selected (D180).
+    pub(super) live: super::live_text::LiveText,
 }
 
 /// One line when an editor is really gone, which is the only evidence `spec/05` §11
@@ -313,11 +440,21 @@ impl Editor {
         // the bottom bar would cover the button that made it.
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&stage));
+        // `ANN-30`'s layers panel (D186): on the right, between the bars, beside the
+        // canvas -- a list of the marks wants the title bar's tools above it, where the
+        // background's panel is the window's full height. Hidden until F9 or the Layers
+        // button.
+        let layers = adw::OverlaySplitView::new();
+        layers.set_sidebar_position(gtk::PackType::End);
+        layers.set_content(Some(&toasts));
+        layers.set_show_sidebar(false);
+        layers.set_sidebar_width_fraction(0.22);
+        layers.set_max_sidebar_width(f64::from(super::layers::WIDTH));
         let view = adw::ToolbarView::new();
         view.set_top_bar_style(adw::ToolbarStyle::Raised);
         view.set_bottom_bar_style(adw::ToolbarStyle::Raised);
         view.add_top_bar(&title_bar);
-        view.set_content(Some(&toasts));
+        view.set_content(Some(&layers));
 
         // `spec/05` §4.13, [P→V]: "It is a **left** sidebar occupying the full window
         // height, not a right-hand panel or a popover." Full height means *outside* the
@@ -400,6 +537,8 @@ impl Editor {
             unsaved,
             size: gtk::Label::new(None),
             background: super::background::BackgroundPanel::default(),
+            layers: super::layers::LayersPanel::default(),
+            live: super::live_text::LiveText::default(),
         });
         {
             // What the window leaves behind (D108), while it still has a renderer to draw
@@ -425,6 +564,8 @@ impl Editor {
         // Built after the `Rc`, like everything else that needs a weak reference back.
         split.set_sidebar(Some(&editor.build_background_sidebar()));
         *editor.background.split.borrow_mut() = Some(split.clone());
+        layers.set_sidebar(Some(&editor.build_layers_sidebar()));
+        *editor.layers.split.borrow_mut() = Some(layers.clone());
         // Narrow windows get an overlay rather than a second column: `MIN_CANVAS` is
         // what the editor's own half needs, and a sidebar beside it in a window that
         // small would leave the canvas too narrow to hold the toolbar. `adw::Breakpoint`
@@ -444,6 +585,13 @@ impl Editor {
             breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
             window.add_breakpoint(breakpoint);
         }
+        // The layers panel likewise: over the canvas, not beside it, when both do not fit.
+        let narrow = format!("max-width: {}px", super::layers::WIDTH + MIN_CANVAS);
+        if let Ok(condition) = adw::BreakpointCondition::parse(&narrow) {
+            let breakpoint = adw::Breakpoint::new(condition);
+            breakpoint.add_setter(&layers, "collapsed", Some(&true.to_value()));
+            window.add_breakpoint(breakpoint);
+        }
 
         let toolbars = editor.build_toolbars();
         toolbars.set_hexpand(true);
@@ -454,6 +602,8 @@ impl Editor {
 
         editor.install_actions();
         editor.install_background_actions();
+        editor.install_auto_redact();
+        editor.install_live_text();
         // `spec/05` §4.14's drop zones, on the canvas because they are positions in the
         // document rather than in the window.
         editor.install_image_drop();
@@ -469,6 +619,7 @@ impl Editor {
             canvas.connect_selection_changed(move || {
                 if let Some(editor) = weak.upgrade() {
                     editor.options_follow_selection();
+                    editor.layers_follow_selection();
                 }
             });
         }
@@ -679,6 +830,54 @@ impl Editor {
         drag.connect_drag_begin(move |_, _, _| last.set((0.0, 0.0)));
         self.canvas.add_controller(drag);
 
+        // `ANN-34` (D185): two fingers on a touchscreen, or a pinch on a touchpad. Apart or
+        // together they zoom, anchored between them; moved together they pan, so the
+        // picture stays under the fingers. Claimed as it begins, which cancels whatever the
+        // first finger had started to draw or move (`Editor::cancel_gesture`).
+        let pinch = gtk::GestureZoom::new();
+        // The zoom the pinch began at, and where the fingers were last.
+        let held = Rc::new(std::cell::Cell::new((1.0, (0.0, 0.0))));
+        {
+            let editor = Rc::downgrade(self);
+            let held = Rc::clone(&held);
+            pinch.connect_begin(move |gesture, _| {
+                let Some(editor) = editor.upgrade() else { return };
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                editor.cancel_gesture();
+                let between =
+                    gesture.bounding_box_center().unwrap_or_else(|| editor.viewport_centre());
+                held.set((editor.canvas.zoom(), between));
+                tracing::debug!(zoom = editor.canvas.zoom(), "pinch began");
+            });
+        }
+        {
+            let editor = Rc::downgrade(self);
+            let held = Rc::clone(&held);
+            pinch.connect_update(move |gesture, _| {
+                let Some(editor) = editor.upgrade() else { return };
+                let Some(between) = gesture.bounding_box_center() else { return };
+                let (from, last) = held.get();
+                editor.canvas.pan_by(between.0 - last.0, between.1 - last.1);
+                editor.canvas.zoom_to(from * gesture.scale_delta(), between);
+                held.set((from, between));
+                editor.reposition_text_edit();
+            });
+        }
+        {
+            let editor = Rc::downgrade(self);
+            pinch.connect_end(move |_, _| {
+                let Some(editor) = editor.upgrade() else { return };
+                // The document point at the canvas's top-left: where the view is.
+                let corner = editor.canvas.to_document(0.0, 0.0);
+                tracing::debug!(
+                    zoom = format!("{:.3}", editor.canvas.zoom()),
+                    corner = format!("{:.1},{:.1}", corner.x, corner.y),
+                    "pinch ended"
+                );
+            });
+        }
+        self.canvas.add_controller(pinch);
+
         // `spec/05` §9's "Space pan": while Space is held, a primary drag pans instead of
         // drawing or selecting. A key controller in the capture phase, because Space
         // reaching a focused toggle button presses it -- and left alone whenever the
@@ -719,9 +918,8 @@ impl Editor {
         if self.text_editing() {
             return true;
         }
-        gtk::prelude::RootExt::focus(&self.window).is_some_and(|focused| {
-            focused.is::<gtk::Text>() || focused.is::<gtk::TextView>()
-        })
+        gtk::prelude::RootExt::focus(&self.window)
+            .is_some_and(|focused| focused.is::<gtk::Text>() || focused.is::<gtk::TextView>())
     }
 
     /// `spec/05` §9's keyboard map, as far as this milestone implements it.
@@ -729,93 +927,7 @@ impl Editor {
         let controller = gtk::ShortcutController::new();
         controller.set_scope(gtk::ShortcutScope::Global);
 
-        type Binding = (&'static str, fn(&Rc<Editor>));
-        /// A generated binding's body. Boxed because the tool keys and the size digits
-        /// each close over a value, which a plain `fn` pointer cannot.
-        type Run = Box<dyn Fn(&Rc<Editor>)>;
-        let bindings: &[Binding] = &[
-            // Each of these moves the document under the editing overlay, so each one has
-            // to move the overlay with it.
-            ("<Control>0", |e| e.canvas.glide_to_fit(e.follow_view())),
-            ("<Control>1", |e| e.canvas.glide_to_actual(e.follow_view())),
-            ("<Control>plus", |e| e.zoom_by(ZOOM_STEP)),
-            ("<Control>equal", |e| e.zoom_by(ZOOM_STEP)),
-            ("<Control>minus", |e| e.zoom_by(1.0 / ZOOM_STEP)),
-            // `spec/05` §7: "Close | Ctrl+W". Back to the stack as a card; with Shift,
-            // Final Close, which leaves none (D108).
-            ("<Control>w", Editor::close_to_preview),
-            ("<Control><Shift>w", Editor::final_close),
-            // §7's bottom-bar keys. Copy keeps the editor open (D108).
-            ("<Control>c", Editor::copy_shortcut),
-            ("<Control>x", Editor::cut_shortcut),
-            ("<Control>v", Editor::paste_shortcut),
-            ("<Control>s", Editor::save_rendered),
-            ("<Control><Shift>s", Editor::save_rendered_as),
-            ("<Control><Shift>p", |e| e.pin_rendered(false)),
-            ("<Control><Shift><Alt>p", |e| e.pin_rendered(true)),
-            // §4.1's selection, all of it (`spec/13` #3).
-            ("<Control>a", Editor::select_all),
-            ("<Control>p", Editor::print_rendered),
-            // `spec/13` #8's context menu, from the keyboard.
-            ("<Shift>F10", Editor::open_context_menu_at_selection),
-            ("Menu", Editor::open_context_menu_at_selection),
-            // `spec/05` §2's Background row: "G [P] | a full **left sidebar**".
-            ("g", |e| {
-                let open = e.background_panel_open();
-                e.show_background_panel(!open);
-            }),
-            // §5.2's undo stack, §4.1's list of what it undoes.
-            ("<Control>z", Editor::undo),
-            ("<Control><Shift>z", Editor::redo),
-            ("<Control>y", Editor::redo),
-            ("<Control>d", Editor::duplicate_selection),
-            ("Delete", Editor::delete_selection),
-            ("BackSpace", Editor::delete_selection),
-            // Escape cancels and deselects, and never closes (D61).
-            ("Escape", Editor::escape),
-            ("<Control>bracketright", |e| e.reorder_selection(true)),
-            ("<Control>bracketleft", |e| e.reorder_selection(false)),
-            // `spec/05` §9's `[` `]` intensity and F11 fullscreen, which were not bound
-            // (D137). A field typing a bracket takes it first: these run after it.
-            ("bracketleft", |e| e.step_intensity(false)),
-            ("bracketright", |e| e.step_intensity(true)),
-            ("F11", |e| {
-                if e.window.is_fullscreen() {
-                    e.window.unfullscreen();
-                } else {
-                    e.window.fullscreen();
-                }
-            }),
-            // §4.1: "arrow keys nudge 1 unit, Shift+arrows 10".
-            ("Left", |e| e.nudge_selection(-1.0, 0.0)),
-            ("Right", |e| e.nudge_selection(1.0, 0.0)),
-            ("Up", |e| e.nudge_selection(0.0, -1.0)),
-            ("Down", |e| e.nudge_selection(0.0, 1.0)),
-            ("<Shift>Left", |e| e.nudge_selection(-10.0, 0.0)),
-        ];
-        // The remaining nudges and the whole tool alphabet are generated rather than
-        // listed: §2's Key column is already a table in `scene::tool`, and writing it out
-        // again here is a second copy to disagree with the first.
-        let generated: Vec<(String, Run)> = [
-            ("<Shift>Right", (10.0, 0.0)),
-            ("<Shift>Up", (0.0, -10.0)),
-            ("<Shift>Down", (0.0, 10.0)),
-        ]
-        .into_iter()
-        .map(|(accel, (dx, dy))| {
-            let run: Run = Box::new(move |e: &Rc<Editor>| e.nudge_selection(dx, dy));
-            (accel.to_owned(), run)
-        })
-        .chain(Tool::ALL.into_iter().map(|tool| {
-            let run: Run = Box::new(move |e: &Rc<Editor>| e.set_tool(tool));
-            (tool.accelerator().to_owned(), run)
-        }))
-        .chain((1..=octosnap_scene::SIZE_LEVELS).map(|level| {
-            let run: Run = Box::new(move |e: &Rc<Editor>| e.set_size_level(level));
-            (level.to_string(), run)
-        }))
-        .collect();
-        for (accel, run) in generated {
+        for (accel, _, run) in generated() {
             let Some(trigger) = gtk::ShortcutTrigger::parse_string(&accel) else {
                 tracing::warn!(accel = %accel, "unparseable accelerator");
                 continue;
@@ -848,7 +960,7 @@ impl Editor {
             controller.add_shortcut(gtk::Shortcut::new(Some(trigger), Some(action)));
         }
 
-        for &(accel, run) in bindings {
+        for (accel, _, run) in bindings() {
             let Some(trigger) = gtk::ShortcutTrigger::parse_string(accel) else { continue };
             let editor = Rc::downgrade(self);
             // A key that means something inside a text field is the field's while one has
@@ -900,6 +1012,8 @@ impl Editor {
         // §4.13's panel follows the document too: an undo of a padding drag has to move
         // the slider back, and nothing else would.
         self.sync_background_panel();
+        // And `ANN-30`'s list, which is the document's marks.
+        self.refresh_layers();
     }
 
     /// `spec/05` §7's Ctrl+C, which means two different things.
@@ -910,6 +1024,10 @@ impl Editor {
     /// not copied -- the background, the crop -- is nothing to copy as objects, so it copies
     /// the image too.
     pub(super) fn copy_shortcut(self: &Rc<Self>) {
+        // `ANN-27`: with live text on and words selected, their text (D180).
+        if self.live_copy() {
+            return;
+        }
         let selection = self.canvas.selection();
         if selection.is_empty() {
             self.copy_rendered();
@@ -965,11 +1083,15 @@ impl Editor {
     fn escape(self: &Rc<Self>) {
         if self.cropping() {
             self.cancel_crop();
+        } else if self.cancel_slice() {
+            // `ANN-31`'s band, while the button is still down: nothing is cut.
         } else if self.text_editing() {
             self.commit_text_edit();
         } else if self.picking.borrow_mut().take().is_some() {
             self.canvas.set_cursor_from_name(None);
             tracing::debug!("pipette disarmed");
+        } else if self.live_escape() {
+            // `ANN-27`'s live text: the selected words, then the mode (D180).
         } else if self.canvas.selection().is_empty() {
             tracing::debug!("Escape with nothing to cancel; the window stays (D61)");
         } else {
@@ -994,10 +1116,7 @@ impl Editor {
     }
 
     fn viewport_centre(&self) -> (f64, f64) {
-        (
-            f64::from(self.canvas.width()) / 2.0,
-            f64::from(self.canvas.height()) / 2.0,
-        )
+        (f64::from(self.canvas.width()) / 2.0, f64::from(self.canvas.height()) / 2.0)
     }
 }
 
@@ -1036,9 +1155,12 @@ fn window_size_for(capture: &CaptureResult) -> (i32, i32, bool) {
             continue;
         };
         let g = monitor.geometry();
-        let held = capture
-            .rect
-            .overlap_area(octosnap_core::Rect::new(g.x(), g.y(), g.width(), g.height()));
+        let held = capture.rect.overlap_area(octosnap_core::Rect::new(
+            g.x(),
+            g.y(),
+            g.width(),
+            g.height(),
+        ));
         if best.is_none_or(|(_, most)| held > most) {
             best = Some((g, held));
         }

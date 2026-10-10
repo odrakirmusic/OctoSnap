@@ -172,7 +172,8 @@ pub enum Filter {
 
 impl Filter {
     /// In the order the chips sit, `All` first and active.
-    pub const ALL: [Self; 5] = [Self::All, Self::Screenshots, Self::Videos, Self::Gifs, Self::Projects];
+    pub const ALL: [Self; 5] =
+        [Self::All, Self::Screenshots, Self::Videos, Self::Gifs, Self::Projects];
 
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -205,10 +206,9 @@ impl Filter {
     pub const fn matches(self, kind: Kind) -> bool {
         match self {
             Self::All => true,
-            Self::Screenshots => matches!(
-                kind,
-                Kind::Screenshot | Kind::Scrolling | Kind::Ocr | Kind::External
-            ),
+            Self::Screenshots => {
+                matches!(kind, Kind::Screenshot | Kind::Scrolling | Kind::Ocr | Kind::External)
+            }
             Self::Videos => matches!(kind, Kind::Video),
             Self::Gifs => matches!(kind, Kind::Gif),
             Self::Projects => matches!(kind, Kind::Project),
@@ -353,7 +353,8 @@ pub enum Retention {
 
 impl Retention {
     /// The menu's order.
-    pub const ALL: [Self; 5] = [Self::Day, Self::ThreeDays, Self::Week, Self::TwoWeeks, Self::Month];
+    pub const ALL: [Self; 5] =
+        [Self::Day, Self::ThreeDays, Self::Week, Self::TwoWeeks, Self::Month];
 
     #[must_use]
     pub const fn days(self) -> u32 {
@@ -372,10 +373,7 @@ impl Retention {
     #[must_use]
     pub fn from_days(days: i32) -> Self {
         let days = u32::try_from(days).unwrap_or(0);
-        Self::ALL
-            .into_iter()
-            .find(|choice| choice.days() >= days)
-            .unwrap_or(Self::Month)
+        Self::ALL.into_iter().find(|choice| choice.days() >= days).unwrap_or(Self::Month)
     }
 
     #[must_use]
@@ -667,11 +665,14 @@ mod tests {
 
     #[test]
     fn the_janitor_takes_only_what_has_expired() {
-        let entries = vec![entry("01A", 1, 0), entry("01B", 2, 5 * DAY_US), entry("01C", 3, 9 * DAY_US)];
+        let entries =
+            vec![entry("01A", 1, 0), entry("01B", 2, 5 * DAY_US), entry("01C", 3, 9 * DAY_US)];
         let now = 10 * DAY_US;
-        let gone: Vec<&str> = expired(&entries, now, Retention::Week).iter().map(|e| e.id.as_str()).collect();
+        let gone: Vec<&str> =
+            expired(&entries, now, Retention::Week).iter().map(|e| e.id.as_str()).collect();
         assert_eq!(gone, vec!["01A"]);
-        let gone: Vec<&str> = expired(&entries, now, Retention::Day).iter().map(|e| e.id.as_str()).collect();
+        let gone: Vec<&str> =
+            expired(&entries, now, Retention::Day).iter().map(|e| e.id.as_str()).collect();
         assert_eq!(gone, vec!["01A", "01B", "01C"]);
         assert!(expired(&entries, now, Retention::Month).is_empty());
     }
@@ -686,7 +687,8 @@ mod tests {
 
     #[test]
     fn newest_first_by_creation_then_by_id() {
-        let mut entries = vec![entry("01A", 5, 0), entry("01C", 9, 0), entry("01B", 9, 0), entry("01D", 1, 0)];
+        let mut entries =
+            vec![entry("01A", 5, 0), entry("01C", 9, 0), entry("01B", 9, 0), entry("01D", 1, 0)];
         sort_newest_first(&mut entries);
         let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["01C", "01B", "01A", "01D"]);

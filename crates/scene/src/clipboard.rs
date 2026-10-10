@@ -142,11 +142,16 @@ mod tests {
     }
 
     fn rect(z: i32, x: f64) -> Object {
-        Object::new(z, 0, style(), Geometry::Rect {
-            bounds: Bounds::new(x, 10.0, 100.0, 50.0),
-            filled: false,
-            radius: 0.0,
-        })
+        Object::new(
+            z,
+            0,
+            style(),
+            Geometry::Rect {
+                bounds: Bounds::new(x, 10.0, 100.0, 50.0),
+                filled: false,
+                radius: 0.0,
+            },
+        )
     }
 
     fn origin(object: &Object) -> (f64, f64) {
@@ -256,10 +261,12 @@ mod tests {
     fn the_background_and_the_crop_stay_behind() {
         let mut scene = scene();
         let mark = rect(1, 0.0);
-        let background = Object::new(0, 0, style(), Geometry::Background {
-            params: BackgroundParams::default(),
-            source: None,
-        });
+        let background = Object::new(
+            0,
+            0,
+            style(),
+            Geometry::Background { params: BackgroundParams::default(), source: None, fill: None },
+        );
         scene.add(mark.clone());
         scene.add(background.clone());
         let mut clipboard = Clipboard::new();
@@ -283,10 +290,12 @@ mod tests {
     #[test]
     fn a_line_moves_by_both_ends() {
         let mut scene = scene();
-        let line = Object::new(0, 0, style(), Geometry::Line {
-            start: Point::new(10.0, 10.0),
-            end: Point::new(60.0, 90.0),
-        });
+        let line = Object::new(
+            0,
+            0,
+            style(),
+            Geometry::Line { start: Point::new(10.0, 10.0), end: Point::new(60.0, 90.0) },
+        );
         scene.add(line.clone());
         let mut clipboard = Clipboard::new();
         clipboard.copy(&scene, &[line.id]);

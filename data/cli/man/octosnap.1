@@ -1,0 +1,71 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH octosnap 1  OctoSnap 
+.SH NAME
+octosnap \- OctoSnap command line
+.SH SYNOPSIS
+\fBoctosnap\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+Screenshot, annotation and screen\-recording tool for GNOME on Wayland.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+octosnap\-capture(1)
+Take a screenshot
+.TP
+octosnap\-record(1)
+Record a GIF of a rectangle for a fixed time, in this process rather than the app
+.TP
+octosnap\-stop\-recording(1)
+Stop the recording in progress. Does nothing when nothing is recording
+.TP
+octosnap\-open(1)
+Open a .octosnap project for editing
+.TP
+octosnap\-settings(1)
+Open the settings window
+.TP
+octosnap\-copy\-last(1)
+Put the most recent capture back on the clipboard
+.TP
+octosnap\-save\-last(1)
+Write the most recent capture to the export location
+.TP
+octosnap\-pin(1)
+Pin an image to the screen
+.TP
+octosnap\-annotate(1)
+Open an image, or a .octosnap project, in the annotation editor
+.TP
+octosnap\-open\-from\-clipboard(1)
+Open the clipboard\*(Aqs image in the annotation editor
+.TP
+octosnap\-desktop\-icons(1)
+Hide, show or toggle the desktop icons
+.TP
+octosnap\-add\-overlay(1)
+Add an image file to the Quick Access Overlay as a card
+.TP
+octosnap\-text(1)
+Recognise the text in an image and copy it
+.TP
+octosnap\-history(1)
+Open the capture history
+.TP
+octosnap\-restore(1)
+Bring back the most recently closed card
+.TP
+octosnap\-ping(1)
+Check that the app answers, starting it if it is not running
+.TP
+octosnap\-shell\-version(1)
+Report the shell extension\*(Aqs version and protocol
+.TP
+octosnap\-monitors(1)
+Print the monitor layout as the extension sees it, in logical coordinates
+.TP
+octosnap\-status(1)
+Report on the app and the shell extension at once

@@ -199,11 +199,7 @@ impl Rgba {
     #[must_use]
     pub fn contrasting(self) -> Self {
         let luminance = 0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b;
-        if luminance > 0.55 {
-            Self::new(0.0, 0.0, 0.0, 1.0)
-        } else {
-            Self::new(1.0, 1.0, 1.0, 1.0)
-        }
+        if luminance > 0.55 { Self::new(0.0, 0.0, 0.0, 1.0) } else { Self::new(1.0, 1.0, 1.0, 1.0) }
     }
 
     /// The same colour at full opacity, for the far end of §2's alpha slider.
@@ -221,12 +217,7 @@ impl Rgba {
     /// From eight-bit channels, keeping the alpha.
     #[must_use]
     pub fn with_rgb8(self, r: u8, g: u8, b: u8) -> Self {
-        Self::new(
-            f64::from(r) / 255.0,
-            f64::from(g) / 255.0,
-            f64::from(b) / 255.0,
-            self.a,
-        )
+        Self::new(f64::from(r) / 255.0, f64::from(g) / 255.0, f64::from(b) / 255.0, self.a)
     }
 
     #[must_use]
@@ -535,6 +526,10 @@ impl SpotlightShape {
     /// `spec/05` §4.8: "Drag a rect, rounded rect or ellipse".
     pub const ALL: [Self; 3] = [Self::Rectangle, Self::Rounded, Self::Ellipse];
 
+    /// A rounded spotlight's corners, in document units: as the renderer draws them and as
+    /// live text reads them (D188).
+    pub const ROUNDED_RADIUS: f64 = 12.0;
+
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -621,8 +616,19 @@ fn roman(number: u32) -> Option<String> {
         return None;
     }
     const PAIRS: [(u32, &str); 13] = [
-        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
-        (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
     ];
     let mut out = String::new();
     let mut n = number;
@@ -772,8 +778,9 @@ mod tests {
         for style in plated {
             assert!(style.has_plate());
         }
-        for style in [TextStyle::Standard, TextStyle::Monospaced, TextStyle::Outline,
-                      TextStyle::Rounded] {
+        for style in
+            [TextStyle::Standard, TextStyle::Monospaced, TextStyle::Outline, TextStyle::Rounded]
+        {
             assert!(!style.has_plate());
         }
     }
@@ -820,7 +827,15 @@ mod counter_style_tests {
 
     #[test]
     fn roman_numerals_are_the_usual_ones() {
-        for (n, expected) in [(1, "I"), (4, "IV"), (9, "IX"), (14, "XIV"), (40, "XL"), (1987, "MCMLXXXVII"), (3999, "MMMCMXCIX")] {
+        for (n, expected) in [
+            (1, "I"),
+            (4, "IV"),
+            (9, "IX"),
+            (14, "XIV"),
+            (40, "XL"),
+            (1987, "MCMLXXXVII"),
+            (3999, "MMMCMXCIX"),
+        ] {
             assert_eq!(CounterStyle::UpperRoman.format(n), expected, "{n}");
         }
     }
@@ -857,7 +872,9 @@ mod hsv_tests {
         ] {
             let color = Rgba::from_hsv(hue, 1.0, 1.0, 1.0);
             assert!(
-                close(color.r, expected.0) && close(color.g, expected.1) && close(color.b, expected.2),
+                close(color.r, expected.0)
+                    && close(color.g, expected.1)
+                    && close(color.b, expected.2),
                 "hue {hue} gave {color:?}, wanted {expected:?}"
             );
             let (back, saturation, value) = color.to_hsv();
@@ -1021,11 +1038,8 @@ mod text_style_tests {
             .map(TextStyle::label)
             .collect();
         assert_eq!(mono, ["Mono", "Mono Box"]);
-        let outlined: Vec<&str> = TextStyle::ALL
-            .into_iter()
-            .filter(|s| s.is_outlined())
-            .map(TextStyle::label)
-            .collect();
+        let outlined: Vec<&str> =
+            TextStyle::ALL.into_iter().filter(|s| s.is_outlined()).map(TextStyle::label).collect();
         assert_eq!(outlined, ["Outlined"]);
     }
 }

@@ -95,7 +95,11 @@ impl Accelerator {
             modifiers.insert(Modifier::parse(name)?);
             rest = tail;
         }
-        if rest.is_empty() || rest.contains('<') || rest.contains('>') || rest.contains(char::is_whitespace) {
+        if rest.is_empty()
+            || rest.contains('<')
+            || rest.contains('>')
+            || rest.contains(char::is_whitespace)
+        {
             return None;
         }
         let key = if rest.chars().count() == 1 { rest.to_lowercase() } else { rest.to_owned() };
@@ -281,7 +285,11 @@ pub const PRINT_KEYS: [(&str, &str, &str); 3] = [
 pub fn take_over_print_keys(our_schema: &'static str) -> Vec<Write> {
     let mut writes: Vec<Write> = PRINT_KEYS
         .iter()
-        .map(|(gnome, _, _)| Write::Set { schema: GNOME_SHELL_KEYBINDINGS, key: gnome, accelerators: Vec::new() })
+        .map(|(gnome, _, _)| Write::Set {
+            schema: GNOME_SHELL_KEYBINDINGS,
+            key: gnome,
+            accelerators: Vec::new(),
+        })
         .collect();
     writes.extend(PRINT_KEYS.iter().map(|(_, ours, accel)| Write::Set {
         schema: our_schema,
@@ -300,7 +308,9 @@ pub fn give_back_print_keys(our_schema: &'static str) -> Vec<Write> {
         .map(|(_, ours, _)| Write::Reset { schema: our_schema, key: ours })
         .collect();
     writes.extend(
-        PRINT_KEYS.iter().map(|(gnome, _, _)| Write::Reset { schema: GNOME_SHELL_KEYBINDINGS, key: gnome }),
+        PRINT_KEYS
+            .iter()
+            .map(|(gnome, _, _)| Write::Reset { schema: GNOME_SHELL_KEYBINDINGS, key: gnome }),
     );
     writes
 }
@@ -373,21 +383,31 @@ mod tests {
             Binding::new(GNOME_SHELL_KEYBINDINGS, "screenshot-window", &["<Alt>Print"]),
             Binding::new(GNOME_SHELL_KEYBINDINGS, "show-screenshot-ui", &["Print"]),
             Binding::new(WM_KEYBINDINGS, "switch-applications", &["<Super>Tab", "<Alt>Tab"]),
-            Binding::new("org.gnome.shell.extensions.octosnap", "capture-area", &["<Super><Shift>4"]),
-            Binding::new("org.gnome.shell.extensions.octosnap", "capture-window", &["<Super><Shift>5"]),
+            Binding::new(
+                "org.gnome.shell.extensions.octosnap",
+                "capture-area",
+                &["<Super><Shift>4"],
+            ),
+            Binding::new(
+                "org.gnome.shell.extensions.octosnap",
+                "capture-window",
+                &["<Super><Shift>5"],
+            ),
         ]
     }
 
     #[test]
     fn a_conflict_is_found_across_schemas_and_spellings() {
         let known = known();
-        let found = conflicts("<Mod1>print", "org.gnome.shell.extensions.octosnap", "all-in-one", &known);
+        let found =
+            conflicts("<Mod1>print", "org.gnome.shell.extensions.octosnap", "all-in-one", &known);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].key, "screenshot-window");
         assert_eq!(found[0].label(), "Screenshot window");
         assert_eq!(found[0].owner(), "GNOME Shell");
 
-        let found = conflicts("<Alt>Tab", "org.gnome.shell.extensions.octosnap", "all-in-one", &known);
+        let found =
+            conflicts("<Alt>Tab", "org.gnome.shell.extensions.octosnap", "all-in-one", &known);
         assert_eq!(found[0].key, "switch-applications");
         assert_eq!(found[0].label(), "Switch applications");
         assert_eq!(found[0].owner(), "the window manager");
@@ -413,16 +433,32 @@ mod tests {
         assert_eq!(writes.len(), 6);
         assert_eq!(
             writes[0],
-            Write::Set { schema: GNOME_SHELL_KEYBINDINGS, key: "show-screenshot-ui", accelerators: vec![] }
+            Write::Set {
+                schema: GNOME_SHELL_KEYBINDINGS,
+                key: "show-screenshot-ui",
+                accelerators: vec![]
+            }
         );
-        assert_eq!(writes[3], Write::Set { schema: ours, key: "all-in-one", accelerators: vec!["Print"] });
-        assert_eq!(writes[4], Write::Set { schema: ours, key: "capture-area", accelerators: vec!["<Shift>Print"] });
-        assert_eq!(writes[5], Write::Set { schema: ours, key: "capture-window", accelerators: vec!["<Alt>Print"] });
+        assert_eq!(
+            writes[3],
+            Write::Set { schema: ours, key: "all-in-one", accelerators: vec!["Print"] }
+        );
+        assert_eq!(
+            writes[4],
+            Write::Set { schema: ours, key: "capture-area", accelerators: vec!["<Shift>Print"] }
+        );
+        assert_eq!(
+            writes[5],
+            Write::Set { schema: ours, key: "capture-window", accelerators: vec!["<Alt>Print"] }
+        );
 
         let back = give_back_print_keys(ours);
         assert_eq!(back.len(), 6);
         assert_eq!(back[0], Write::Reset { schema: ours, key: "all-in-one" });
-        assert_eq!(back[5], Write::Reset { schema: GNOME_SHELL_KEYBINDINGS, key: "screenshot-window" });
+        assert_eq!(
+            back[5],
+            Write::Reset { schema: GNOME_SHELL_KEYBINDINGS, key: "screenshot-window" }
+        );
     }
 
     #[test]

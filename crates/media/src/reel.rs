@@ -493,10 +493,8 @@ impl Reel {
 
     /// Decodes frame `index` into `canvas`, which is resized to fit it.
     pub fn read(&self, index: usize, canvas: &mut Vec<RGBA8>) -> Result<(), ReelError> {
-        let path = self
-            .files
-            .get(index)
-            .ok_or(ReelError::Range { index, frames: self.files.len() })?;
+        let path =
+            self.files.get(index).ok_or(ReelError::Range { index, frames: self.files.len() })?;
         let decode = |source| ReelError::Decode { path: path.clone(), source };
         let file = std::fs::File::open(path)
             .map_err(|source| ReelError::Read { path: path.clone(), source })?;
@@ -539,9 +537,8 @@ mod tests {
     }
 
     fn frame(index: usize, fps: u32, shade: u8) -> Frame {
-        let pixels = (0..W * H)
-            .map(|i| RGBA8::new(shade, (i % 256) as u8, 255 - shade, 255))
-            .collect();
+        let pixels =
+            (0..W * H).map(|i| RGBA8::new(shade, (i % 256) as u8, 255 - shade, 255)).collect();
         Frame { index, pts: index as f64 / f64::from(fps), image: ImgVec::new(pixels, W, H) }
     }
 

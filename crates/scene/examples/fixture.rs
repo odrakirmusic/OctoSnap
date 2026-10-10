@@ -66,16 +66,10 @@ fn main() {
         eprintln!("could not write {out}: {e}");
         std::process::exit(1);
     }
-    let redactions = scene
-        .objects()
-        .iter()
-        .filter(|o| matches!(o.geometry, Geometry::Redact { .. }))
-        .count();
-    let spotlights = scene
-        .objects()
-        .iter()
-        .filter(|o| matches!(o.geometry, Geometry::Spotlight { .. }))
-        .count();
+    let redactions =
+        scene.objects().iter().filter(|o| matches!(o.geometry, Geometry::Redact { .. })).count();
+    let spotlights =
+        scene.objects().iter().filter(|o| matches!(o.geometry, Geometry::Spotlight { .. })).count();
     println!(
         "{out}: {} objects on {width}x{height}, {redactions} redactions, {spotlights} spotlight, \
          {PATH_POINTS}-point strokes",
@@ -133,23 +127,21 @@ fn objects(width: f64, height: f64) -> Vec<Object> {
                 intensity: 0.8,
                 seed: 0x5eed_0002,
             },
-            2 => Geometry::Spotlight {
-                shape: SpotlightShape::Rounded,
-                bounds: at,
-                opacity: 0.55,
-            },
+            2 => Geometry::Spotlight { shape: SpotlightShape::Rounded, bounds: at, opacity: 0.55 },
             // The two long strokes: the worst case for node building.
             3 => Geometry::Path {
                 points: stroke(at, PATH_POINTS, false),
                 smoothing: true,
                 highlighter: false,
                 band: None,
+                pressure: None,
             },
             4 => Geometry::Path {
                 points: stroke(at, PATH_POINTS, true),
                 smoothing: false,
                 highlighter: true,
                 band: None,
+                pressure: None,
             },
             _ => match index % 7 {
                 0 => Geometry::Rect { bounds: at, filled: index % 14 == 0, radius: 12.0 },
@@ -172,6 +164,7 @@ fn objects(width: f64, height: f64) -> Vec<Object> {
                     number: (index as u32) % 40 + 1,
                     style: counter_style(index),
                     radius: 31.0,
+                    tail: None,
                 },
                 5 => Geometry::Text {
                     pos: Point::new(at.x, at.y),
@@ -180,12 +173,14 @@ fn objects(width: f64, height: f64) -> Vec<Object> {
                     font_size: 36.0,
                     align: TextAlign::Start,
                     width: None,
+                    tail: None,
                 },
                 _ => Geometry::Path {
                     points: stroke(at, 24, false),
                     smoothing: true,
                     highlighter: false,
                     band: None,
+                    pressure: None,
                 },
             },
         };
@@ -225,10 +220,7 @@ fn stroke(at: Bounds, points: usize, flat: bool) -> Vec<Point> {
             #[allow(clippy::cast_precision_loss)]
             let t = i as f64 / (points.max(2) - 1) as f64;
             let wobble = if flat { 0.0 } else { (t * 9.0).sin() * at.height * 0.35 };
-            Point::new(
-                at.x + at.width * t,
-                at.y + at.height * 0.5 + wobble,
-            )
+            Point::new(at.x + at.width * t, at.y + at.height * 0.5 + wobble)
         })
         .collect()
 }

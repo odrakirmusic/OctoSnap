@@ -121,7 +121,10 @@ pub enum Transform {
     /// The **base** and not the canvas, because §4.12 says "applies to the base image" --
     /// and because with §4.13's padding on, the canvas is a number the background tool
     /// derives rather than one the user can set directly.
-    Resize { width: f64, height: f64 },
+    Resize {
+        width: f64,
+        height: f64,
+    },
     RotateLeft,
     RotateRight,
     FlipHorizontal,
@@ -295,7 +298,10 @@ impl Mapping {
             | Geometry::Crop { canvas_rect: bounds } => move_bounds(bounds),
             // The position moves and the *box* follows it: a text run's origin is its
             // top-left corner, which is a different corner after a turn.
-            Geometry::Text { pos, font_size, width, text, .. } => {
+            Geometry::Text { pos, font_size, width, text, tail, .. } => {
+                if let Some(tip) = tail {
+                    move_point(tip);
+                }
                 let lines = text.lines().count().max(1) as f64;
                 let w = width.unwrap_or(*font_size * 0.6 * 20.0);
                 let box_before = Bounds::new(pos.x, pos.y, w, lines * *font_size * 1.2);
@@ -312,14 +318,22 @@ impl Mapping {
                     *band *= length;
                 }
             }
-            Geometry::Counter { center, radius, .. } => {
+            Geometry::Counter { center, radius, tail, .. } => {
                 move_point(center);
+                if let Some(tip) = tail {
+                    move_point(tip);
+                }
+                *radius *= length;
+            }
+            Geometry::Magnifier { center, radius, source, .. } => {
+                move_point(center);
+                move_point(source);
                 *radius *= length;
             }
             // §4.13's background is the canvas, so it has no rect of its own -- but it
             // remembers the one it laid out (D89), and that one is in the base image's
             // coordinates and moves with everything else.
-            Geometry::Background { params, source } => {
+            Geometry::Background { params, source, .. } => {
                 if let Some(source) = source {
                     move_bounds(source);
                 }
@@ -377,12 +391,13 @@ impl Mapping {
     /// canvas is *derived* -- it is whatever `background::layout` says the padded,
     /// inset, ratio-grown picture needs -- so it is recomputed from the moved parameters.
     /// Without one, or with the plain fill a crop beyond the image leaves behind (D52),
-    /// the canvas is a rect the user dragged and it simply moves.
+    /// the canvas is a rect the user dragged and it simply moves, in the picture's
+    /// coordinates, which are the canvas's then. A plain colour the panel laid out is a
+    /// background like any other: over a crop its canvas is at the origin, and moved as if it
+    /// were the picture's it left the picture (D191).
     #[must_use]
     pub fn canvas(self, scene: &Scene) -> Bounds {
-        if let Some((source, params)) = scene.background_source()
-            && !params.is_plain()
-        {
+        if let Some((source, params)) = scene.frame() {
             let moved = self.params(params);
             return crate::background::layout(self.bounds(source), &moved).canvas;
         }
@@ -541,11 +556,9 @@ mod tests {
                 let orientation = Orientation { quarter, mirrored };
                 let (tw, th) =
                     if orientation.swaps_axes() { (height, width) } else { (width, height) };
-                for point in [
-                    Point::new(0.0, 0.0),
-                    Point::new(tw, th),
-                    Point::new(tw / 4.0, th / 3.0),
-                ] {
+                for point in
+                    [Point::new(0.0, 0.0), Point::new(tw, th), Point::new(tw / 4.0, th / 3.0)]
+                {
                     let placed = orientation.place(point, width, height);
                     assert!(
                         placed.x >= -1e-9 && placed.x <= width + 1e-9,
@@ -614,7 +627,7 @@ mod tests {
             -1,
             0,
             Style::default(),
-            Geometry::Background { params, source: Some(scene.base.bounds()) },
+            Geometry::Background { params, source: Some(scene.base.bounds()), fill: None },
         );
         let id = object.id;
         scene.add(object);
@@ -631,7 +644,8 @@ mod tests {
         .canvas;
 
         apply(&mut scene, Transform::RotateRight);
-        let Geometry::Background { params, source } = &scene.get(id).expect("gone").geometry else {
+        let Geometry::Background { params, source, .. } = &scene.get(id).expect("gone").geometry
+        else {
             panic!("not a background")
         };
         assert_eq!(params.ratio, Some(crate::background::Ratio::new(9, 16)));
@@ -642,6 +656,28 @@ mod tests {
         // background tool maintains everywhere else.
         let turned = Bounds::new(0.0, 0.0, 600.0, 800.0);
         assert_eq!(scene.canvas, crate::background::layout(turned, params).canvas);
+    }
+
+    /// D191: a plain colour the panel laid out over a crop, with no margin, is laid out
+    /// again when the picture turns, like any other background. Its canvas is in the
+    /// background's coordinates, and turned as if it were in the picture's it left the
+    /// picture behind.
+    #[test]
+    fn a_plain_colour_over_a_crop_turns_with_the_picture() {
+        let mut scene = Scene::new(Base::new("base.png", 400.0, 300.0, 1.0));
+        let source = Bounds::new(100.0, 50.0, 200.0, 150.0);
+        let color = crate::style::Rgba::new(0.0, 0.5, 0.5, 1.0);
+        let params = BackgroundParams {
+            background: crate::background::Background::Color { color },
+            padding: 0.0,
+            ..BackgroundParams::default()
+        };
+        scene.canvas = crate::background::layout(source, &params).canvas;
+        let geometry = Geometry::Background { params, source: Some(source), fill: None };
+        scene.add(Object::new(-1, 0, Style::default(), geometry));
+        apply(&mut scene, Transform::RotateRight);
+        // The crop, turned, is 150 wide and 200 high, and so is the canvas.
+        assert_eq!(scene.canvas, Bounds::new(0.0, 0.0, 150.0, 200.0));
     }
 
     #[test]
@@ -664,5 +700,23 @@ mod tests {
             Transform::percent(&base, 50.0),
             Transform::Resize { width: 400.0, height: 300.0 }
         );
+    }
+
+    /// D192: a turn keeps the crop's fill a background the panel laid out over it keeps, over
+    /// the turned rect.
+    #[test]
+    fn a_turn_keeps_the_crop_s_fill_the_background_kept() {
+        let mut scene = Scene::new(Base::new("base.png", 400.0, 300.0, 1.0));
+        let source = Bounds::new(0.0, 0.0, 600.0, 300.0);
+        let grey = crate::style::Rgba::new(0.5, 0.5, 0.5, 1.0);
+        let params = BackgroundParams { padding: 100.0, ..BackgroundParams::default() };
+        scene.canvas = crate::background::layout(source, &params).canvas;
+        let geometry = Geometry::Background { params, source: Some(source), fill: Some(grey) };
+        scene.add(Object::new(-1, 0, Style::default(), geometry));
+        apply(&mut scene, Transform::RotateRight);
+        let (rect, color) = scene.frame_fill().expect("the turn lost the fill");
+        assert_eq!(color, grey);
+        assert_eq!((rect.normalised().width, rect.normalised().height), (300.0, 600.0));
+        assert_eq!(scene.canvas, Bounds::new(0.0, 0.0, 500.0, 800.0));
     }
 }

@@ -41,12 +41,15 @@ pub struct Carried {
 pub fn carried() -> Option<&'static Carried> {
     static FOUND: OnceLock<Option<Carried>> = OnceLock::new();
     FOUND
-        .get_or_init(|| glib::system_data_dirs().into_iter().find_map(|root| read(&root.join(CARRIED))))
+        .get_or_init(|| {
+            glib::system_data_dirs().into_iter().find_map(|root| read(&root.join(CARRIED)))
+        })
         .as_ref()
 }
 
 fn read(dir: &Path) -> Option<Carried> {
-    let metadata: serde_json::Value = serde_json::from_str(&fs::read_to_string(dir.join("metadata.json")).ok()?).ok()?;
+    let metadata: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("metadata.json")).ok()?).ok()?;
     if metadata.get("uuid")?.as_str()? != settings::EXTENSION_UUID {
         return None;
     }
@@ -87,7 +90,13 @@ pub fn folder(data_home: &Path) -> PathBuf {
 pub fn version_at(dir: &Path) -> Option<String> {
     let text = fs::read_to_string(dir.join("metadata.json")).ok()?;
     let metadata: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-    Some(metadata.get("version-name").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned())
+    Some(
+        metadata
+            .get("version-name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    )
 }
 
 /// Whether `carried` is a later release than `installed`, both `version-name`s ("0.1.2").
@@ -95,7 +104,8 @@ pub fn version_at(dir: &Path) -> Option<String> {
 /// place, and an extension that has one is left as it is.
 #[must_use]
 pub fn later(carried: &str, installed: &str) -> bool {
-    let parse = |name: &str| name.split('.').map(str::parse::<u64>).collect::<Result<Vec<_>, _>>().ok();
+    let parse =
+        |name: &str| name.split('.').map(str::parse::<u64>).collect::<Result<Vec<_>, _>>().ok();
     matches!((parse(carried), parse(installed)), (Some(carried), Some(installed)) if carried > installed)
 }
 
@@ -215,8 +225,10 @@ pub fn install(from: &Path, data_home: &Path) -> Result<usize, InstallError> {
     let wanted = files(from).map_err(at(from))?;
     fs::create_dir_all(&to).map_err(at(&to))?;
     let metadata = Path::new("metadata.json");
-    let (once, again): (Vec<&PathBuf>, Vec<&PathBuf>) =
-        wanted.iter().filter(|rel| rel.as_path() != metadata).partition(|rel| read_once_per_login(rel));
+    let (once, again): (Vec<&PathBuf>, Vec<&PathBuf>) = wanted
+        .iter()
+        .filter(|rel| rel.as_path() != metadata)
+        .partition(|rel| read_once_per_login(rel));
     for rel in again.into_iter().chain(once) {
         copy_into(from, &to, rel)?;
     }
@@ -295,7 +307,11 @@ mod tests {
     }
 
     fn contents(dir: &Path) -> Vec<(PathBuf, String)> {
-        files(dir).unwrap().into_iter().map(|rel| (rel.clone(), fs::read_to_string(dir.join(&rel)).unwrap())).collect()
+        files(dir)
+            .unwrap()
+            .into_iter()
+            .map(|rel| (rel.clone(), fs::read_to_string(dir.join(&rel)).unwrap()))
+            .collect()
     }
 
     #[test]
@@ -343,7 +359,10 @@ mod tests {
         std::os::unix::fs::symlink(&real, folder(&home)).unwrap();
         let refused = install(&carried_copy(root.path(), "0.1.2"), &home).unwrap_err();
         assert!(matches!(refused, InstallError::Link(ref at) if *at == folder(&home)), "{refused}");
-        assert_eq!(contents(&real), vec![(PathBuf::from("extension.js"), "// the developer's own\n".to_owned())]);
+        assert_eq!(
+            contents(&real),
+            vec![(PathBuf::from("extension.js"), "// the developer's own\n".to_owned())]
+        );
     }
 
     #[cfg(unix)]
@@ -363,7 +382,11 @@ mod tests {
         fs::create_dir_all(folder(&home)).unwrap();
         std::os::unix::fs::symlink(&elsewhere, folder(&home).join("pets")).unwrap();
         assert!(matches!(install(&from, &home), Err(InstallError::Link(_))));
-        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing was written through either link");
+        assert_eq!(
+            fs::read_dir(&elsewhere).unwrap().count(),
+            0,
+            "nothing was written through either link"
+        );
     }
 
     /// D161: a carried copy and the same release in the user's folder, with a stylesheet and
@@ -402,7 +425,8 @@ mod tests {
         write(&to.join("sounds/gone.oga"), "OggS");
         assert_eq!(
             changes_seen_before_login(&from, &to).unwrap(),
-            ["icons/pin.svg", "schemas/gschemas.compiled", "sounds/gone.oga", "stylesheet.css"].map(PathBuf::from)
+            ["icons/pin.svg", "schemas/gschemas.compiled", "sounds/gone.oga", "stylesheet.css"]
+                .map(PathBuf::from)
         );
     }
 
@@ -415,7 +439,10 @@ mod tests {
         fs::copy(from.join("stylesheet.css"), &elsewhere).unwrap();
         fs::remove_file(to.join("stylesheet.css")).unwrap();
         std::os::unix::fs::symlink(&elsewhere, to.join("stylesheet.css")).unwrap();
-        assert_eq!(changes_seen_before_login(&from, &to).unwrap(), [PathBuf::from("stylesheet.css")]);
+        assert_eq!(
+            changes_seen_before_login(&from, &to).unwrap(),
+            [PathBuf::from("stylesheet.css")]
+        );
     }
 
     /// D161: the metadata, which names the release, is written last, so a copy cut short

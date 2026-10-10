@@ -220,9 +220,8 @@ fn variance(image: &Pixels, y: usize, x0: usize, x1: usize) -> f64 {
     for x in x0..x1 {
         let [r, g, b, a] = image.at(x, y);
         let alpha = f64::from(a) / 255.0;
-        let luma = (0.2126 * f64::from(r) + 0.7152 * f64::from(g) + 0.0722 * f64::from(b))
-            / 255.0
-            * alpha;
+        let luma =
+            (0.2126 * f64::from(r) + 0.7152 * f64::from(g) + 0.0722 * f64::from(b)) / 255.0 * alpha;
         sum += luma;
         squares += luma * luma;
     }

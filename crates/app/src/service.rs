@@ -18,6 +18,9 @@ use crate::capture_window;
 
 /// Error names from `spec/10` §8.
 const ERROR_INVALID_ARGS: &str = "io.github.odrakirmusic.OctoSnap.Error.InvalidArgs";
+const ERROR_UNSUPPORTED: &str = "io.github.odrakirmusic.OctoSnap.Error.Unsupported";
+const ERROR_DISABLED: &str = "io.github.odrakirmusic.OctoSnap.Error.Disabled";
+const ERROR_FAILED: &str = "org.freedesktop.DBus.Error.Failed";
 const ERROR_UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
 
 pub fn register(app: &adw::Application) -> Result<gio::RegistrationId, glib::Error> {
@@ -62,6 +65,44 @@ pub fn register(app: &adw::Application) -> Result<gio::RegistrationId, glib::Err
                             invocation.return_dbus_error(ERROR_INVALID_ARGS, &e.to_string());
                         }
                     }
+                }
+
+                // `SYS-11` (D175): the `capture` action's work, for a caller that has to
+                // know which capture is its own. It gets the handle the extension gave and
+                // waits for that handle's `CaptureCompleted` or `CaptureCancelled`:
+                // `octosnap capture --output` does. Gated by `api-enabled`, as the action
+                // is. Like any App1 call it can be lost when it is the one that starts the
+                // app, and the caller retries (`docs/spikes/13`).
+                "Capture" => {
+                    let request = match capture::request_from_variant(&params) {
+                        Ok(request) => request,
+                        Err(e) => {
+                            invocation.return_dbus_error(ERROR_INVALID_ARGS, &e.to_string());
+                            return;
+                        }
+                    };
+                    if !crate::settings::Settings::load().api_enabled() {
+                        warn!("refused Capture: the CLI and URL scheme are disabled");
+                        invocation.return_dbus_error(
+                            ERROR_DISABLED,
+                            "the command line and octosnap:// links are disabled in \
+                             Settings > Advanced",
+                        );
+                        return;
+                    }
+                    glib::spawn_future_local(async move {
+                        let Some(flow) = crate::capture_flow() else {
+                            invocation.return_dbus_error(ERROR_FAILED, "no capture flow");
+                            return;
+                        };
+                        match flow.begin(&request).await {
+                            Ok(handle) => invocation.return_value(Some(&(handle,).to_variant())),
+                            Err(e) if e.is_extension_missing() => {
+                                invocation.return_dbus_error(ERROR_UNSUPPORTED, &e.to_string());
+                            }
+                            Err(e) => invocation.return_dbus_error(ERROR_FAILED, &e.to_string()),
+                        }
+                    });
                 }
 
                 other => invocation.return_dbus_error(

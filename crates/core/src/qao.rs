@@ -186,10 +186,7 @@ pub fn fit(source: Rect, longest: i32) -> Size {
         return Size::new(source.width.max(1), source.height.max(1));
     }
     let k = f64::from(longest) / f64::from(longest_source);
-    Size::new(
-        scale_axis(source.width, k),
-        scale_axis(source.height, k),
-    )
+    Size::new(scale_axis(source.width, k), scale_axis(source.height, k))
 }
 
 fn scale_axis(value: i32, k: f64) -> i32 {
@@ -273,12 +270,8 @@ impl AutoClose {
         if seconds == 0 {
             return Self(0);
         }
-        let nearest = Self::CHOICES
-            .iter()
-            .skip(1)
-            .copied()
-            .min_by_key(|c| c.abs_diff(seconds))
-            .unwrap_or(10);
+        let nearest =
+            Self::CHOICES.iter().skip(1).copied().min_by_key(|c| c.abs_diff(seconds)).unwrap_or(10);
         Self(nearest)
     }
 
@@ -794,7 +787,6 @@ mod tests {
         }
     }
 
-
     /// `spec/04` §9's region: the card, one shadow band in from the window's origin.
     #[test]
     fn the_input_region_is_the_card_inside_its_shadow_band() {
@@ -872,7 +864,8 @@ mod tests {
         // And the pills, which is why the card did not look misplaced. The centre of a
         // 207x125 card is 16 px from nothing.
         let pill = Rect::new(SHADOW_MARGIN + 60, SHADOW_MARGIN + 51, 88, 22);
-        let shifted = Rect::new(pill.x - SHADOW_MARGIN, pill.y - SHADOW_MARGIN, pill.width, pill.height);
+        let shifted =
+            Rect::new(pill.x - SHADOW_MARGIN, pill.y - SHADOW_MARGIN, pill.width, pill.height);
         assert!(reachable(card, shifted), "the pills survived the same shift");
     }
 
@@ -888,12 +881,8 @@ mod tests {
         assert!(!reachable(card, Rect::new(inside.x - 1, inside.y, inside.width, inside.height)));
         assert!(!reachable(card, Rect::new(inside.x, inside.y - 1, inside.width, inside.height)));
 
-        let far = Rect::new(
-            region.x + region.width - BTN,
-            region.y + region.height - BTN,
-            BTN,
-            BTN,
-        );
+        let far =
+            Rect::new(region.x + region.width - BTN, region.y + region.height - BTN, BTN, BTN);
         assert!(reachable(card, far));
         assert!(!reachable(card, Rect::new(far.x + 1, far.y, far.width, far.height)));
         assert!(!reachable(card, Rect::new(far.x, far.y + 1, far.width, far.height)));

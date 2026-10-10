@@ -25,6 +25,7 @@ use octosnap_core::{CaptureResult, Rect};
 use octosnap_shell::{Cue, ShellBridge};
 use tracing::{debug, info};
 
+pub(crate) use window::shortcut_rows;
 pub use window::{PinHost, PinId};
 
 use crate::flow::CaptureFlow;
@@ -176,7 +177,11 @@ impl<B: ShellBridge + 'static> Pins<B> {
     /// either from the card that opened the editor -- same path -- or from the editor's
     /// own Pin button, whose path is the render. Both are passed, so a second crop
     /// updates the pin the first one created.
-    pub fn refresh(self: &Rc<Self>, sources: &[&std::path::Path], updated: &CaptureResult) -> usize {
+    pub fn refresh(
+        self: &Rc<Self>,
+        sources: &[&std::path::Path],
+        updated: &CaptureResult,
+    ) -> usize {
         let matching: Vec<PinId> = self
             .ids()
             .into_iter()

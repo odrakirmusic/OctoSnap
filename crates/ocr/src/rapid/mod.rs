@@ -35,7 +35,11 @@ use ort::{
     value::Tensor,
 };
 
-use crate::{Bounds, Gray, OcrError, Word, engine::{Engine, Pack, Script}, packs};
+use crate::{
+    Bounds, Gray, OcrError, Word,
+    engine::{Engine, Pack, Script},
+    packs,
+};
 
 /// Where the model packs live, under `$XDG_DATA_HOME`.
 pub const HOME: &str = "octosnap/ocr";
@@ -237,9 +241,8 @@ fn read_lines(recogniser: &mut Recogniser, image: &Gray, boxes: &[Bounds]) -> Ve
         let Some(widest) = shaped.iter().map(|(_, _, width)| *width).max() else { continue };
         let rows = recognise::ROWS as usize;
         let mut values = vec![0.0f32; shaped.len() * 3 * rows * (widest as usize)];
-        for (slot, (_, line, width)) in values
-            .chunks_exact_mut(3 * rows * (widest as usize))
-            .zip(&shaped)
+        for (slot, (_, line, width)) in
+            values.chunks_exact_mut(3 * rows * (widest as usize)).zip(&shaped)
         {
             // Zero is mid-grey once normalised, which is what PaddleOCR pads with.
             for (plane, source) in slot
@@ -264,7 +267,8 @@ fn read_lines(recogniser: &mut Recogniser, image: &Gray, boxes: &[Bounds]) -> Ve
         let [_, steps, classes] = dimensions.as_slice() else { continue };
         let (steps, classes) = (*steps as usize, *classes as usize);
         for (slot, (index, _, _)) in shaped.iter().enumerate() {
-            let Some(rows) = logits.get(slot * steps * classes..(slot + 1) * steps * classes) else {
+            let Some(rows) = logits.get(slot * steps * classes..(slot + 1) * steps * classes)
+            else {
                 continue;
             };
             let (text, sure) = recognise::decode(rows, steps, classes, &recogniser.characters);

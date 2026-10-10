@@ -71,6 +71,22 @@ const PROGRESS_TICK: Duration = Duration::from_millis(80);
 /// GIFs `spec/06` §9 item 6 budgets for, and the most recent ones of anything longer.
 const CACHE_BYTES: usize = 192 * 1024 * 1024;
 
+/// The GIF editor's keys in the shortcuts dialog's words (`SYS-12`, D179). The window takes
+/// them in `GifEditor::wire_keys`'s `match`, which this follows: a key added there belongs
+/// here.
+pub(crate) const KEYS: &[(&str, &str)] = &[
+    ("space", "Play or Pause"),
+    ("Left Right", "Previous or Next Frame"),
+    ("Home End", "First or Last Kept Frame"),
+    ("i", "Keep From Here"),
+    ("o", "Keep Up to Here"),
+    ("<Control>c", "Copy"),
+    ("<Control>s", "Save"),
+    ("<Control><Shift>s", "Save As"),
+    ("<Control>w Escape", "Close"),
+    ("<Control><Shift>w", "Close Without a Card"),
+];
+
 /// What the editor asks of the flow: the three routes an annotated image takes, and
 /// where it goes when the window closes (D108).
 pub struct GifEditorActions {
@@ -322,14 +338,16 @@ impl GifEditor {
 
         let title = adw::WindowTitle::new(
             "GIF",
-            &format!("{w} × {h} · {} · {count} frames", text::duration_label(timeline.duration_ms())),
+            &format!(
+                "{w} × {h} · {} · {count} frames",
+                text::duration_label(timeline.duration_ms())
+            ),
         );
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&title));
 
-        let export_button = gtk::MenuButton::builder()
-            .tooltip_text("How the GIF is written out")
-            .build();
+        let export_button =
+            gtk::MenuButton::builder().tooltip_text("How the GIF is written out").build();
 
         let view = adw::ToolbarView::new();
         view.set_bottom_bar_style(adw::ToolbarStyle::Raised);
@@ -374,10 +392,7 @@ impl GifEditor {
             frame_label,
             range_label,
             export_button,
-            progress: gtk::ProgressBar::builder()
-                .show_text(true)
-                .text("Rendering\u{2026}")
-                .build(),
+            progress: gtk::ProgressBar::builder().show_text(true).text("Rendering\u{2026}").build(),
             progress_row: gtk::Revealer::builder()
                 .transition_type(gtk::RevealerTransitionType::SlideDown)
                 .transition_duration(120)
@@ -615,9 +630,8 @@ impl GifEditor {
         box_.set_margin_start(8);
         box_.set_margin_end(8);
         box_.append(&list);
-        let note = gtk::Label::new(Some(
-            "Defaults for new recordings live in Settings → Recording.",
-        ));
+        let note =
+            gtk::Label::new(Some("Defaults for new recordings live in Settings → Recording."));
         note.add_css_class("dim-label");
         note.add_css_class("caption");
         note.set_wrap(true);
@@ -630,7 +644,8 @@ impl GifEditor {
     /// How many thumbnails a strip `width` wide should hold: as many as fit at the GIF's
     /// own aspect, never more than it has frames.
     fn wanted_thumbs(&self, width: f64) -> usize {
-        let (w, h) = (f64::from(self.timeline.width.max(1)), f64::from(self.timeline.height.max(1)));
+        let (w, h) =
+            (f64::from(self.timeline.width.max(1)), f64::from(self.timeline.height.max(1)));
         let each = (f64::from(STRIP_HEIGHT) * w / h).max(8.0);
         let fits = (width / each).round().max(1.0) as usize;
         fits.clamp(*STRIP_THUMBS.start(), *STRIP_THUMBS.end()).min(self.timeline.len().max(1))
@@ -664,10 +679,8 @@ impl GifEditor {
         let width = ((u64::from(w) * u64::from(height) / u64::from(h)) as u32).clamp(8, 480);
         let editor = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let decoded = gio::spawn_blocking(move || {
-                thumbnails(&path, frames, count, width, height)
-            })
-            .await;
+            let decoded =
+                gio::spawn_blocking(move || thumbnails(&path, frames, count, width, height)).await;
             let Some(editor) = editor.upgrade() else { return };
             // A resize asked for a different number while this one was decoding: its
             // frames are the wrong ones for the places now in the strip.
@@ -791,8 +804,8 @@ impl GifEditor {
         self.strip.add_controller(drag);
     }
 
-    /// The keys, on the window in the capture phase so Space plays even when a button
-    /// has the focus -- a focused Save that took Space as a click would write a file.
+    /// The keys ([`KEYS`]), on the window in the capture phase so Space plays even when a
+    /// button has the focus -- a focused Save that took Space as a click would write a file.
     ///
     /// Except in the Quality field: its arrows, Home and End move its cursor, and Ctrl+C
     /// copies what is selected in it. Only the window's own Save, Save As and Close reach
@@ -805,13 +818,16 @@ impl GifEditor {
             let Some(editor) = editor.upgrade() else { return glib::Propagation::Proceed };
             let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
             let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
-            let typing = gtk::prelude::RootExt::focus(&editor.window).is_some_and(|f| f.is::<gtk::Text>());
+            let typing =
+                gtk::prelude::RootExt::focus(&editor.window).is_some_and(|f| f.is::<gtk::Text>());
             if typing {
                 match key {
                     gdk::Key::s | gdk::Key::S if ctrl && shift => editor.save_as(),
                     gdk::Key::s | gdk::Key::S if ctrl => editor.save(),
                     gdk::Key::w | gdk::Key::W if ctrl => editor.close(shift),
-                    gdk::Key::Escape => gtk::prelude::GtkWindowExt::set_focus(&editor.window, None::<&gtk::Widget>),
+                    gdk::Key::Escape => {
+                        gtk::prelude::GtkWindowExt::set_focus(&editor.window, None::<&gtk::Widget>)
+                    }
                     _ => return glib::Propagation::Proceed,
                 }
                 return glib::Propagation::Stop;
@@ -851,7 +867,13 @@ impl GifEditor {
         (index.max(0.0) as usize).min(count - 1)
     }
 
-    fn draw_strip(self: &Rc<Self>, area: &gtk::DrawingArea, cr: &gtk::cairo::Context, width: f64, height: f64) {
+    fn draw_strip(
+        self: &Rc<Self>,
+        area: &gtk::DrawingArea,
+        cr: &gtk::cairo::Context,
+        width: f64,
+        height: f64,
+    ) {
         // The strip's width is not known until it is drawn, and it changes with the
         // window. Refilling from an idle rather than from here: a draw callback must not
         // add and remove the widgets underneath it.
@@ -875,11 +897,8 @@ impl GifEditor {
         let _ = cr.fill();
 
         let accent = adw::StyleManager::default().accent_color_rgba();
-        let (r, g, b) = (
-            f64::from(accent.red()),
-            f64::from(accent.green()),
-            f64::from(accent.blue()),
-        );
+        let (r, g, b) =
+            (f64::from(accent.red()), f64::from(accent.green()), f64::from(accent.blue()));
         // The kept range, ringed; the two handles are the ring's ends, made grabbable.
         cr.set_line_width(2.0);
         cr.set_source_rgba(r, g, b, 1.0);
@@ -1165,8 +1184,7 @@ impl GifEditor {
     /// takes seconds over a trim.
     fn reuse_render(&self, out: &std::path::Path) -> Option<CaptureResult> {
         let (marks, options, capture) = self.rendered.borrow().clone()?;
-        if marks != self.marks.get() || options != self.options.get() || !capture.path.is_file()
-        {
+        if marks != self.marks.get() || options != self.options.get() || !capture.path.is_file() {
             return None;
         }
         if std::fs::hard_link(&capture.path, out).is_err() {
@@ -1564,8 +1582,7 @@ fn thumbnails(
 ) -> Vec<Vec<u8>> {
     let Ok(mut reader) = Frames::open(path) else { return Vec::new() };
     let (source_w, source_h) = (reader.width() as usize, reader.height() as usize);
-    let wanted: Vec<usize> =
-        (0..count).map(|i| i * frames.max(1) / count.max(1)).collect();
+    let wanted: Vec<usize> = (0..count).map(|i| i * frames.max(1) / count.max(1)).collect();
     let mut out = Vec::with_capacity(count);
     let mut next = 0;
     while next < wanted.len() {
@@ -1573,13 +1590,7 @@ fn thumbnails(
             Ok(Some(_)) => {}
             _ => break,
         }
-        out.push(box_scale(
-            reader.bytes(),
-            source_w,
-            source_h,
-            width as usize,
-            height as usize,
-        ));
+        out.push(box_scale(reader.bytes(), source_w, source_h, width as usize, height as usize));
         next += 1;
     }
     out
@@ -1626,13 +1637,18 @@ fn tenths(ms: u64) -> String {
 }
 
 fn file_name(path: &std::path::Path) -> String {
-    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "the GIF".to_owned())
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "the GIF".to_owned())
 }
 
 /// `<stem>-trim.gif` beside the original, or `-trim-2`, `-trim-3`… when that exists: a
 /// second trim of the same GIF must not overwrite the first.
 fn trimmed_path(source: &std::path::Path) -> PathBuf {
-    let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "gif".to_owned());
+    let stem = source
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "gif".to_owned());
     let first = source.with_file_name(format!("{stem}-trim.gif"));
     if !first.exists() {
         return first;

@@ -418,10 +418,12 @@ impl Canvas {
         // The base image's resolution, capped -- see `MAX_PIXELS`.
         let base_scale = scene.base.scale.max(f64::EPSILON);
         let area = bounds.normalised().width * bounds.normalised().height * base_scale * base_scale;
-        let scale = if area > MAX_PIXELS { base_scale * (MAX_PIXELS / area).sqrt() } else { base_scale };
+        let scale =
+            if area > MAX_PIXELS { base_scale * (MAX_PIXELS / area).sqrt() } else { base_scale };
 
         let region = PixelRect::snap(bounds, scale);
-        let canvas = PixelRect::snap(scene.canvas, scale);
+        // The canvas in the picture's coordinates, which the redaction's are (D189).
+        let canvas = PixelRect::snap(scene.canvas_in_picture(), scale);
         let margin = i64::try_from(ops::margin(style, intensity, scale)).unwrap_or(0);
         let source = region.inflated(margin).intersect(canvas);
         if source.is_empty() || region.is_empty() {
@@ -445,18 +447,15 @@ impl Canvas {
             }
         }
 
-        let snapshot = gtk::Snapshot::new();
-        #[allow(clippy::cast_possible_truncation)]
-        snapshot.scale(scale as f32, scale as f32);
         let origin = source.to_bounds(scale);
-        #[allow(clippy::cast_possible_truncation)]
-        snapshot.translate(&graphene::Point::new(-origin.x as f32, -origin.y as f32));
-        self.imp().append_document(&snapshot, &beneath);
+        let node = beneath_node(&beneath, origin, scale, |snapshot| {
+            self.imp().append_document(snapshot, &beneath);
+        });
 
         #[allow(clippy::cast_precision_loss)]
         let size = graphene::Rect::new(0.0, 0.0, source.width() as f32, source.height() as f32);
         let (width, height) = (clamp(source.width()), clamp(source.height()));
-        let pixels = match snapshot.to_node() {
+        let pixels = match node {
             Some(node) => {
                 let texture = renderer.render_texture(&node, Some(&size));
                 download(&texture, width, height)?
@@ -477,6 +476,27 @@ impl Canvas {
             render_ms: started.elapsed().as_secs_f64() * 1000.0,
         })
     }
+}
+
+/// What a redaction's raster is cut from: the document beneath it, drawn by `draw`, in the
+/// picture's coordinates at `scale` pixels to the unit, with `origin` at zero.
+///
+/// In the picture's coordinates, because the redaction's region is in them. Cut from the
+/// canvas's, as it was, the raster was of what lay where the redaction would be without a
+/// background: a margin up and to the left of it (D189).
+fn beneath_node(
+    beneath: &Scene,
+    origin: Bounds,
+    scale: f64,
+    draw: impl FnOnce(&gtk::Snapshot),
+) -> Option<gtk::gsk::RenderNode> {
+    let snapshot = gtk::Snapshot::new();
+    #[allow(clippy::cast_possible_truncation)]
+    snapshot.scale(scale as f32, scale as f32);
+    #[allow(clippy::cast_possible_truncation)]
+    snapshot.translate(&graphene::Point::new(-origin.x as f32, -origin.y as f32));
+    super::nodes::on_the_canvas(&snapshot, beneath.placement(), draw);
+    snapshot.to_node()
 }
 
 /// A texture's pixels as straight RGBA8 with no row padding.
@@ -500,6 +520,64 @@ fn download(texture: &gtk::gdk::Texture, width: usize, height: usize) -> Option<
 mod tests {
     use super::*;
     use octosnap_scene::{Base, Rgba, Style};
+
+    /// D189: a raster is cut from under its redaction, wherever a background has put the
+    /// picture on the canvas. The picture is red to 100 and blue from there, on a margin
+    /// of 20: a region at 105 is over the blue, and cut from the canvas's coordinates it
+    /// came from 85, in the red.
+    ///
+    /// Drawn through a `gtk::Snapshot`, which needs a display. In a nested shell, with
+    /// `nested-env.sh` sourced: `cargo test -p octosnap-app --bins -- --ignored
+    /// a_raster_is_cut`.
+    #[gtk::test]
+    #[ignore = "draws through GTK, which needs a display"]
+    fn a_raster_is_cut_from_under_its_redaction_on_a_background() {
+        use super::super::nodes::{Lens, Part, append_object, append_scene};
+        use octosnap_scene::background::{Background, BackgroundParams};
+        use octosnap_scene::layout;
+        let mut rgba = Vec::with_capacity(200 * 100 * 4);
+        for _ in 0..100 {
+            for x in 0..200 {
+                rgba.extend_from_slice(if x < 100 { &[255, 0, 0, 255] } else { &[0, 0, 255, 255] });
+            }
+        }
+        let texture: gtk::gdk::Texture = gtk::gdk::MemoryTexture::new(
+            200,
+            100,
+            gtk::gdk::MemoryFormat::R8g8b8a8,
+            &glib::Bytes::from_owned(rgba),
+            800,
+        )
+        .upcast();
+        let mut scene = Scene::new(Base::new("base.png", 200.0, 100.0, 1.0));
+        let params = BackgroundParams {
+            padding: 20.0,
+            shadow_intensity: 0.0,
+            background: Background::Color { color: Rgba::new(0.0, 1.0, 0.0, 1.0) },
+            ..BackgroundParams::default()
+        };
+        scene.canvas = layout(scene.base.bounds(), &params).canvas;
+        let geometry = Geometry::Background { params, source: None, fill: None };
+        scene.add(Object::new(0, 0, Style::default(), geometry));
+        let draw = |snapshot: &gtk::Snapshot, object: &Object| {
+            append_object(snapshot, object, &scene, Some(&texture), None, None);
+        };
+        let node = beneath_node(&scene, Bounds::new(105.0, 40.0, 10.0, 10.0), 1.0, |snapshot| {
+            append_scene(snapshot, &scene, Some(&texture), &draw, Part::All, Lens::Drawn);
+        })
+        .unwrap();
+        let mut image =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 10, 10).unwrap();
+        {
+            let cr = gtk::cairo::Context::new(&image).unwrap();
+            node.draw(&cr);
+        }
+        let stride = usize::try_from(image.stride()).unwrap();
+        let data = image.data().unwrap();
+        let at = 5 * stride + 5 * 4;
+        let pixel = u32::from_ne_bytes(data[at..at + 4].try_into().unwrap());
+        assert_eq!(pixel, 0xff00_00ff, "blue, as under the redaction, not {pixel:08x}");
+    }
 
     fn scene() -> Scene {
         Scene::new(Base::new("base.png", 800.0, 600.0, 1.0))

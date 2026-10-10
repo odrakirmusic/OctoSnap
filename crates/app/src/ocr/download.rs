@@ -227,10 +227,8 @@ fn stream(
     let mut body = response.into_body().into_reader();
 
     let mut file = std::fs::File::create(partial).map_err(Failure::why)?;
-    let mut digest =
-        glib::Checksum::new(glib::ChecksumType::Sha256).ok_or_else(|| {
-            Failure::Why("this build of GLib has no SHA-256".to_owned())
-        })?;
+    let mut digest = glib::Checksum::new(glib::ChecksumType::Sha256)
+        .ok_or_else(|| Failure::Why("this build of GLib has no SHA-256".to_owned()))?;
     let mut buffer = vec![0_u8; CHUNK];
     loop {
         if progress.cancelled() {

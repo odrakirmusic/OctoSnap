@@ -256,12 +256,17 @@ impl Recording {
         capturing: bool,
     ) -> Result<Started, RecordError> {
         let began = Instant::now();
-        let stream =
-            session.record_monitor(&plan.connector, plan.cursor_mode, options.mark_recording).await?;
+        let stream = session
+            .record_monitor(&plan.connector, plan.cursor_mode, options.mark_recording)
+            .await?;
         let streamed = began.elapsed();
         let node = session.start(&stream).await?;
         let announced = began.elapsed();
-        let mut timings = StartTimings { stream: streamed, node: announced - streamed, ..StartTimings::default() };
+        let mut timings = StartTimings {
+            stream: streamed,
+            node: announced - streamed,
+            ..StartTimings::default()
+        };
         let target = match options.targeting {
             Targeting::NodeId => Target::NodeId(node),
             Targeting::Serial => Target::Serial(resolve_serial(node)?),

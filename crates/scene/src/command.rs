@@ -242,8 +242,7 @@ impl Command {
             (Self::Change { id, .. }, Self::Change { id: next_id, .. }) => id == next_id,
             (Self::CanvasChange { .. }, Self::CanvasChange { .. }) => true,
             (Self::Batch(mine), Self::Batch(theirs)) => {
-                mine.len() == theirs.len()
-                    && mine.iter().zip(theirs).all(|(a, b)| a.folds_into(b))
+                mine.len() == theirs.len() && mine.iter().zip(theirs).all(|(a, b)| a.folds_into(b))
             }
             _ => false,
         }
@@ -294,8 +293,7 @@ impl History {
         // `absorb` needs, and splitting the question from the act makes the condition --
         // "the last command is still inside the current gesture" -- readable on its own.
         let open = self.done.len() > self.closed_at;
-        let folded = open
-            && self.done.last_mut().is_some_and(|previous| previous.absorb(&command));
+        let folded = open && self.done.last_mut().is_some_and(|previous| previous.absorb(&command));
         if !folded {
             self.done.push(command);
         }
@@ -374,22 +372,23 @@ mod tests {
     }
 
     fn rect(z: i32, x: f64) -> Object {
-        Object::new(z, 0, style(), Geometry::Rect {
-            bounds: Bounds::new(x, 0.0, 100.0, 100.0),
-            filled: false,
-            radius: 0.0,
-        })
+        Object::new(
+            z,
+            0,
+            style(),
+            Geometry::Rect {
+                bounds: Bounds::new(x, 0.0, 100.0, 100.0),
+                filled: false,
+                radius: 0.0,
+            },
+        )
     }
 
     /// Moved by `dx`, as a `Change` -- which is what one motion event of a drag produces.
     fn dragged(object: &Object, dx: f64) -> Command {
         let mut after = object.clone();
         after.translate(dx, 0.0);
-        Command::Change {
-            id: object.id,
-            before: Box::new(object.clone()),
-            after: Box::new(after),
-        }
+        Command::Change { id: object.id, before: Box::new(object.clone()), after: Box::new(after) }
     }
 
     #[test]
@@ -435,8 +434,11 @@ mod tests {
         assert_eq!(s.get(id).unwrap().bounds().normalised().x, 48.5);
 
         assert!(h.undo(&mut s));
-        assert_eq!(s.get(id).unwrap().bounds().normalised().x, -1.5,
-                   "back where the drag started, in one step");
+        assert_eq!(
+            s.get(id).unwrap().bounds().normalised().x,
+            -1.5,
+            "back where the drag started, in one step"
+        );
         assert_eq!(h.depth(), 1, "the add is still there");
     }
 
@@ -583,11 +585,14 @@ mod tests {
         let mut s = scene();
         let mut h = History::new();
         let absent = rect(0, 0.0);
-        assert!(!h.apply(&mut s, Command::Change {
-            id: absent.id,
-            before: Box::new(absent.clone()),
-            after: Box::new(absent.clone()),
-        }));
+        assert!(!h.apply(
+            &mut s,
+            Command::Change {
+                id: absent.id,
+                before: Box::new(absent.clone()),
+                after: Box::new(absent.clone()),
+            }
+        ));
         assert!(!h.can_undo());
         assert!(!h.apply(&mut s, Command::Remove(absent)));
         assert!(!h.can_undo());
@@ -600,12 +605,8 @@ mod tests {
         assert_eq!(Command::Add(object.clone()).subject(), Some(id));
         assert_eq!(Command::Remove(object.clone()).subject(), Some(id));
         assert_eq!(
-            Command::Change {
-                id,
-                before: Box::new(object.clone()),
-                after: Box::new(object),
-            }
-            .subject(),
+            Command::Change { id, before: Box::new(object.clone()), after: Box::new(object) }
+                .subject(),
             Some(id)
         );
         assert_eq!(Command::Reorder { id, before: 0, after: 1 }.subject(), Some(id));
@@ -652,11 +653,7 @@ mod batch_tests {
     }
 
     fn change(before: &Object, after: Object) -> Command {
-        Command::Change {
-            id: before.id,
-            before: Box::new(before.clone()),
-            after: Box::new(after),
-        }
+        Command::Change { id: before.id, before: Box::new(before.clone()), after: Box::new(after) }
     }
 
     #[test]
@@ -752,10 +749,13 @@ mod batch_tests {
         for step in 1..=40 {
             let grown = Bounds::new(0.0, 0.0, 100.0 + f64::from(step), 100.0);
             let was = s.canvas;
-            h.apply(&mut s, Command::Batch(vec![
-                change(&object, moved(&object, f64::from(step), 0.0)),
-                Command::CanvasChange { before: was, after: grown },
-            ]));
+            h.apply(
+                &mut s,
+                Command::Batch(vec![
+                    change(&object, moved(&object, f64::from(step), 0.0)),
+                    Command::CanvasChange { before: was, after: grown },
+                ]),
+            );
         }
         h.end_gesture();
         assert_eq!(h.depth(), 1, "the drag did not fold");
@@ -776,26 +776,30 @@ mod batch_tests {
         let mut h = History::new();
         let object = objects[0].clone();
         let was = s.canvas;
-        h.apply(&mut s, Command::Batch(vec![
-            Command::Remove(object.clone()),
-            Command::CanvasChange { before: was, after: Bounds::new(0.0, 0.0, 9.0, 9.0) },
-        ]));
-        h.apply(&mut s, Command::Batch(vec![
-            Command::Add(object.clone()),
-            Command::CanvasChange {
-                before: Bounds::new(0.0, 0.0, 9.0, 9.0),
-                after: Bounds::new(0.0, 0.0, 10.0, 10.0),
-            },
-        ]));
+        h.apply(
+            &mut s,
+            Command::Batch(vec![
+                Command::Remove(object.clone()),
+                Command::CanvasChange { before: was, after: Bounds::new(0.0, 0.0, 9.0, 9.0) },
+            ]),
+        );
+        h.apply(
+            &mut s,
+            Command::Batch(vec![
+                Command::Add(object.clone()),
+                Command::CanvasChange {
+                    before: Bounds::new(0.0, 0.0, 9.0, 9.0),
+                    after: Bounds::new(0.0, 0.0, 10.0, 10.0),
+                },
+            ]),
+        );
         assert_eq!(h.depth(), 2);
     }
 
     #[test]
     fn a_batch_names_its_first_subject_for_reselection() {
         let (_, objects) = scene_with(3);
-        let batch = Command::Batch(
-            objects.iter().map(|o| Command::Remove(o.clone())).collect(),
-        );
+        let batch = Command::Batch(objects.iter().map(|o| Command::Remove(o.clone())).collect());
         assert_eq!(batch.subject(), Some(objects[0].id));
         assert_eq!(Command::Batch(Vec::new()).subject(), None);
     }

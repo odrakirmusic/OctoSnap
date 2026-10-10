@@ -242,12 +242,7 @@ pub fn resize_to_ratio(bounds: Bounds, handle: Handle, to: Point, ratio: f64) ->
     }
 
     let anchor = handle.anchor(bounds);
-    Bounds::new(
-        place(anchor.x, width, dx),
-        place(anchor.y, height, dy),
-        width,
-        height,
-    )
+    Bounds::new(place(anchor.x, width, dx), place(anchor.y, height, dy), width, height)
 }
 
 /// The origin of an extent grown from `anchor` in direction `side`.
@@ -402,7 +397,10 @@ mod tests {
         let r = rect();
         let to = Point::new(220.0, 160.0);
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert!(close(resize_to_ratio(r, Handle::TopLeft, to, bad), resize(r, Handle::TopLeft, to)));
+            assert!(close(
+                resize_to_ratio(r, Handle::TopLeft, to, bad),
+                resize(r, Handle::TopLeft, to)
+            ));
             assert!(close(fit_to_ratio(r, bad), r));
         }
     }

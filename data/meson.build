@@ -39,6 +39,14 @@ install_data(
   install_dir: datadir / 'glib-2.0' / 'schemas',
 )
 
+# SYS-13 (D181): GNOME Shell's Activities search asks the app for captures. The shell reads
+# these at its start and when the installed apps change; a Flatpak exports the file, which
+# is named for the app.
+install_data(
+  app_id + '.search-provider.ini',
+  install_dir: datadir / 'gnome-shell' / 'search-providers',
+)
+
 # spec/05 §8's project type. Installed under the app id so a package that also ships the
 # thumbnailer (M8) adds a file beside it rather than replacing this one.
 install_data(
@@ -104,4 +112,20 @@ install_data(
 install_data(
   'icons' / 'hicolor' / 'symbolic' / 'apps' / app_id + '-symbolic.svg',
   install_dir: datadir / 'icons' / 'hicolor' / 'symbolic' / 'apps',
+)
+
+# The command line's completions and manual pages (SYS-11, D175), where each shell and
+# `man` look for a package's own. They are made from the commands' definition and checked
+# in: `octosnap-cli`'s tests fail when they no longer match it.
+install_data(
+  'cli' / 'octosnap.bash',
+  install_dir: datadir / 'bash-completion' / 'completions',
+  rename: 'octosnap',
+)
+install_data('cli' / '_octosnap', install_dir: datadir / 'zsh' / 'site-functions')
+install_data('cli' / 'octosnap.fish', install_dir: datadir / 'fish' / 'vendor_completions.d')
+install_subdir(
+  'cli' / 'man',
+  install_dir: get_option('prefix') / get_option('mandir') / 'man1',
+  strip_directory: true,
 )

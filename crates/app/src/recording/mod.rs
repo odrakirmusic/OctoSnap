@@ -27,8 +27,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gtk::glib;
 use adw::prelude::*;
+use gtk::glib;
 use tracing::{info, warn};
 
 use octosnap_core::capture::fresh_id;
@@ -37,8 +37,8 @@ use octosnap_media::gif::{GifPlan, GifSettings, StreamSource};
 use octosnap_media::recorder::{Options, Recording, Targeting};
 use octosnap_shell::{Cue, Placement, RecordingState, ShellBridge};
 
-use crate::{SharedFlow, notify};
 use crate::settings::Settings;
+use crate::{SharedFlow, notify};
 use controls::Pill;
 
 /// How often the timer, the panel indicator and (when the stream ends on its own) the
@@ -107,12 +107,12 @@ impl RecordRequest {
             warn!(format, "this build records GIFs only; video is M9");
             return None;
         }
-        let fps = variant::i32_(&dict, "fps")
-            .map(|n| u32::try_from(n).unwrap_or(0).min(GIF_FPS_MAX));
-        let max_width = variant::i32_(&dict, "max-width")
-            .map(|n| u32::try_from(n).unwrap_or(0).min(7680));
-        let quality = variant::i32_(&dict, "quality")
-            .map(|n| u8::try_from(n.clamp(1, 100)).unwrap_or(80));
+        let fps =
+            variant::i32_(&dict, "fps").map(|n| u32::try_from(n).unwrap_or(0).min(GIF_FPS_MAX));
+        let max_width =
+            variant::i32_(&dict, "max-width").map(|n| u32::try_from(n).unwrap_or(0).min(7680));
+        let quality =
+            variant::i32_(&dict, "quality").map(|n| u8::try_from(n.clamp(1, 100)).unwrap_or(80));
         Some(Self { rect, display, cursor, fps, max_width, quality })
     }
 
@@ -404,7 +404,13 @@ impl Recorder {
                     Ok(recording) => recording,
                     Err(e) => {
                         warn!("could not start the recording: {e}");
-                        notify::tell(&self.app, "recording", "Could not record", &e.to_string(), true);
+                        notify::tell(
+                            &self.app,
+                            "recording",
+                            "Could not record",
+                            &e.to_string(),
+                            true,
+                        );
                         return;
                     }
                 };
@@ -514,7 +520,8 @@ impl Recorder {
     /// The pill's Trash. `spec/06` §9 item 5 wants a confirmation, because a discard cannot
     /// be undone the way a card's Trash can.
     pub fn request_trash(self: &Rc<Self>) {
-        let parent = self.active.borrow().as_ref().and_then(|a| a.pill.as_ref().map(|p| p.window().clone()));
+        let parent =
+            self.active.borrow().as_ref().and_then(|a| a.pill.as_ref().map(|p| p.window().clone()));
         let dialog = adw::AlertDialog::builder()
             .heading("Discard the recording?")
             .body("The recording will be deleted. This cannot be undone.")
@@ -693,6 +700,7 @@ impl Recorder {
         let pill = Pill::new(&self.app, stop, trash);
 
         if let Some(path) = pill.object_path() {
+            pill.first_frame().await;
             // Just below the area. For a whole monitor that is off the screen, and
             // `PlaceWindow` keeps a window on it (`spec/10` §3.1), so the pill lands in the
             // monitor's bottom-left corner.
@@ -706,7 +714,6 @@ impl Recorder {
         }
         pill
     }
-
 }
 
 /// Whether something other than the pill can stop a recording: the panel indicator's Stop,

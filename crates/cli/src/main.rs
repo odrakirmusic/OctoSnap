@@ -20,13 +20,20 @@
 
 mod url;
 
+use std::io::{IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
+
 use clap::{Parser, Subcommand, ValueEnum};
-use glib::prelude::ToVariant;
-use octosnap_core::{Monitor, Rect};
-use octosnap_core::capture::{CaptureMode, RequestedAction};
-use octosnap_core::protocol::{APP_BUS_NAME, APP_INTERFACE, APP_OBJECT_PATH, PROTOCOL_VERSION};
-use octosnap_core::request::{CaptureRequest, parse_rect};
+use futures_util::StreamExt;
 use gio::prelude::SettingsExt;
+use glib::prelude::ToVariant;
+use octosnap_core::capture::{CaptureMode, RequestedAction};
+use octosnap_core::protocol::{
+    APP_BUS_NAME, APP_INTERFACE, APP_OBJECT_PATH, PROTOCOL_VERSION, SHELL_BUS_NAME,
+    SHELL_INTERFACE, SHELL_OBJECT_PATH,
+};
+use octosnap_core::request::{CaptureRequest, parse_rect};
+use octosnap_core::{Monitor, Rect};
 use octosnap_shell::{GnomeExtensionBridge, ShellBridge, capture};
 
 const TIMEOUT_MS: i32 = 2_000;
@@ -62,13 +69,18 @@ struct Cli {
 enum Command {
     /// Take a screenshot.
     Capture(CaptureArgs),
-    /// Record a GIF of a rectangle for a fixed time, in this process: the recorder's
-    /// engine driven from the command line (`spec/06`, M5), which is how it is measured.
+    /// Record a GIF of a rectangle for a fixed time, in this process rather than the app.
+    //
+    // `spec/06`, M5: the recorder's engine driven from the command line, which is how it
+    // is measured.
     Record(RecordArgs),
-    /// Stop the recording in progress in the running app (`spec/06` §3). A no-op when
-    /// nothing is recording; the app decides, so this only relays.
+    /// Stop the recording in progress. Does nothing when nothing is recording.
+    //
+    // `spec/06` §3. The app decides, so this only relays.
     StopRecording,
-    /// Open a `.octosnap` project for editing (`spec/05` §8).
+    /// Open a .octosnap project for editing.
+    //
+    // `spec/05` §8.
     Open {
         /// The project file.
         path: std::path::PathBuf,
@@ -83,14 +95,16 @@ enum Command {
     CopyLast,
     /// Write the most recent capture to the export location.
     SaveLast,
-    /// Pin an image to the screen (`spec/07` §3).
+    /// Pin an image to the screen.
+    //
+    // `spec/07` §3.
     Pin {
-        /// The image file.
+        /// The image file, or `-` to read one from standard input.
         path: std::path::PathBuf,
     },
-    /// Open an image, or a `.octosnap` project, in the annotation editor.
+    /// Open an image, or a .octosnap project, in the annotation editor.
     Annotate {
-        /// The file.
+        /// The file, or `-` to read an image from standard input.
         path: std::path::PathBuf,
     },
     /// Open the clipboard's image in the annotation editor.
@@ -103,10 +117,12 @@ enum Command {
     },
     /// Add an image file to the Quick Access Overlay as a card.
     AddOverlay {
-        /// The image file.
+        /// The image file, or `-` to read one from standard input.
         path: std::path::PathBuf,
     },
-    /// Recognise the text in an image and copy it (`spec/07` §2.1).
+    /// Recognise the text in an image and copy it.
+    //
+    // `spec/07` §2.1.
     Text {
         /// The image file. Without one, select an area on screen and read that.
         path: Option<std::path::PathBuf>,
@@ -121,13 +137,13 @@ enum Command {
     History,
     /// Bring back the most recently closed card.
     Restore,
-    /// Call the application's Ping method, starting it via D-Bus activation if needed.
+    /// Check that the app answers, starting it if it is not running.
     Ping,
     /// Report the shell extension's version and protocol.
     ShellVersion,
     /// Print the monitor layout as the extension sees it, in logical coordinates.
     Monitors,
-    /// Report on both halves at once.
+    /// Report on the app and the shell extension at once.
     Status,
 }
 
@@ -140,6 +156,11 @@ struct CaptureArgs {
     /// What to do with it, overriding the configured after-capture actions.
     #[arg(short, long, value_enum)]
     action: Option<Action>,
+
+    /// Write the capture to this file as a PNG, or to standard output with `-`, once it
+    /// is taken, and do nothing else with it: no card, no copy, no save.
+    #[arg(short, long, value_name = "FILE", conflicts_with = "action")]
+    output: Option<PathBuf>,
 
     /// Skip the overlay and capture exactly this region, as logical x,y,width,height.
     #[arg(long, value_name = "X,Y,W,H")]
@@ -170,7 +191,7 @@ struct CaptureArgs {
 
 #[derive(clap::Args)]
 struct RecordArgs {
-    /// The output is a GIF. The only format M5 records; accepted so scripts read right.
+    /// The output is a GIF, the only format there is; accepted so scripts read right.
     #[arg(long)]
     gif: bool,
 
@@ -187,20 +208,28 @@ struct RecordArgs {
     #[arg(long, value_name = "SECONDS", default_value_t = 5.0)]
     seconds: f64,
 
-    /// Frames per second (`gif-fps`); 0 is the recorded screen's own rate, and nothing
-    /// above 50 is honoured, because a GIF cannot play faster (D101).
+    /// Frames per second; 0 is the screen's own rate, and nothing above 50 is honoured,
+    /// because a GIF cannot play faster.
+    //
+    // `gif-fps`, D101.
     #[arg(long, default_value_t = 15)]
     fps: u32,
 
-    /// The widest the GIF may be, in pixels; 0 for no cap (`gif-max-width`).
+    /// The widest the GIF may be, in pixels; 0 for no cap.
+    //
+    // `gif-max-width`.
     #[arg(long, value_name = "PIXELS", default_value_t = 800)]
     max_width: u32,
 
-    /// gifski's quality, 1-100 (`gif-quality`).
+    /// The encoder's quality, from 1 to 100.
+    //
+    // gifski's, `gif-quality`.
     #[arg(long, default_value_t = 80)]
     quality: u8,
 
-    /// Leave the pointer out of the recording (`rec-cursor`).
+    /// Leave the pointer out of the recording.
+    //
+    // `rec-cursor`.
     #[arg(long)]
     no_cursor: bool,
 
@@ -208,8 +237,9 @@ struct RecordArgs {
     #[arg(short, long, value_name = "FILE")]
     output: Option<std::path::PathBuf>,
 
-    /// How pipewiresrc is pointed at the stream (`docs/spikes/11`).
-    #[arg(long, value_enum, default_value_t = TargetArg::NodeId)]
+    /// How pipewiresrc is pointed at the stream (`docs/spikes/11`): a knob for measuring,
+    /// so it is in no help.
+    #[arg(long, value_enum, default_value_t = TargetArg::NodeId, hide = true)]
     target: TargetArg,
 
     /// Tell the compositor this is a recording, so it shows its own indicator too.
@@ -354,7 +384,13 @@ impl CaptureArgs {
         Ok(CaptureRequest::new(mode.into())
             .with_rect(rect)
             .with_display(self.display.clone().unwrap_or_default())
-            .with_action(self.action.map(Into::into))
+            // `--output` writes the file itself, so the app is asked to keep the capture
+            // and do nothing else with it (D175).
+            .with_action(if self.output.is_some() {
+                Some(RequestedAction::Keep)
+            } else {
+                self.action.map(Into::into)
+            })
             .with_freeze(tristate(self.freeze, self.no_freeze))
             .with_cursor(tristate(self.cursor, self.no_cursor))
             .with_timer(self.timer))
@@ -372,29 +408,54 @@ const fn tristate(yes: bool, no: bool) -> Option<bool> {
 }
 
 fn main() -> std::process::ExitCode {
-    // The `.desktop` file's `Exec=octosnap %u` means a `octosnap://` link arrives as
+    // The `.desktop` file's `Exec=octosnap %U` means a `octosnap://` link arrives as
     // argv, not as a subcommand, so it is handled before clap ever sees it. clap would
     // otherwise reject it as an unknown subcommand, which is a confusing thing for a
     // link to do.
     let mut argv = std::env::args();
     let program = argv.next();
     if let Some(first) = argv.next() {
+        let rest: Vec<String> = argv.collect();
         if first.starts_with(url::SCHEME) {
-            let extra: Vec<String> = argv.collect();
-            if !extra.is_empty() {
+            if !rest.is_empty() {
                 eprintln!("octosnap: an octosnap:// link takes no other arguments");
                 return std::process::ExitCode::FAILURE;
             }
             drop(program);
             return handle_url(&first);
         }
-        // A `.octosnap` project, which a file manager hands over the same way: the
-        // `.desktop` file's `Exec=octosnap %u` passes a `file://` URI in argv, and clap
-        // would reject it as an unknown subcommand. `spec/05` §8's whole point is that
-        // double-clicking one reopens an editable document.
-        if let Some(path) = project_argument(&first) {
+        // What the app's icon's right-click menu runs (`SYS-09`): one of the `.desktop`
+        // file's `[Desktop Action]` ids, which the app maps to what it does. Before clap,
+        // as a link is, so it is in no help, completion or man page: nobody types it.
+        if first == "launcher" {
             drop(program);
-            return if open_project(&path) {
+            let [id] = rest.as_slice() else {
+                eprintln!("octosnap: launcher takes one action");
+                return std::process::ExitCode::FAILURE;
+            };
+            return if launcher(id) {
+                std::process::ExitCode::SUCCESS
+            } else {
+                std::process::ExitCode::FAILURE
+            };
+        }
+        // Projects and pictures, which a file manager hands over the same way: the
+        // `.desktop` file's `Exec=octosnap %U` passes a `file://` URI for each file
+        // chosen, and clap would reject them as unknown subcommands. `spec/05` §8's whole
+        // point is that double-clicking a project reopens an editable document, and
+        // SYS-10's that Open With opens a picture in the editor.
+        let files: Option<Vec<FileArgument>> =
+            std::iter::once(&first).chain(&rest).map(|a| file_argument(a)).collect();
+        if let Some(files) = files {
+            drop(program);
+            let mut ok = true;
+            for file in &files {
+                ok &= match file {
+                    FileArgument::Project(path) => open_project(path),
+                    FileArgument::Picture(path) => open_picture(path),
+                };
+            }
+            return if ok {
                 std::process::ExitCode::SUCCESS
             } else {
                 std::process::ExitCode::FAILURE
@@ -413,7 +474,7 @@ fn main() -> std::process::ExitCode {
     };
     let bridge = GnomeExtensionBridge::from_connection(connection.clone());
 
-    // The bare launch: the `.desktop` file's `Exec=octosnap %u` with nothing to hand
+    // The bare launch: the `.desktop` file's `Exec=octosnap %U` with nothing to hand
     // over, which is the app grid. It used to print this program's usage to a terminal
     // nobody could see, so clicking OctoSnap's icon did nothing at all.
     let Some(command) = cli.command else {
@@ -427,11 +488,14 @@ fn main() -> std::process::ExitCode {
     let ok = glib::MainContext::default().block_on(async {
         match command {
             Command::Capture(args) => match args.to_request() {
-                Ok(request) if api_enabled() => activate(
-                    &connection,
-                    "capture",
-                    Some(capture::request_to_variant(&request)),
-                ),
+                Ok(request) if api_enabled() => match &args.output {
+                    Some(output) => capture_to(&connection, &request, output).await,
+                    None => activate(
+                        &connection,
+                        "capture",
+                        Some(capture::request_to_variant(&request)),
+                    ),
+                },
                 Ok(_) => {
                     eprintln!(
                         "octosnap: the command line is disabled. \
@@ -454,16 +518,16 @@ fn main() -> std::process::ExitCode {
             }
             Command::StopRecording => gated(|| activate(&connection, "stop-recording", None)),
             Command::Open { path } => open_project(&path),
-            Command::Settings { tab } => activate(
-                &connection,
-                "open-settings",
-                Some(glib::Variant::from(tab.as_wire())),
-            ),
+            Command::Settings { tab } => {
+                activate(&connection, "open-settings", Some(glib::Variant::from(tab.as_wire())))
+            }
             Command::CopyLast => activate(&connection, "copy-last", None),
             Command::SaveLast => activate(&connection, "save-last", None),
             Command::Pin { path } => with_file(&connection, "pin-file", &path),
             Command::Annotate { path } => with_file(&connection, "annotate-file", &path),
-            Command::OpenFromClipboard => gated(|| activate(&connection, "open-from-clipboard", None)),
+            Command::OpenFromClipboard => {
+                gated(|| activate(&connection, "open-from-clipboard", None))
+            }
             Command::DesktopIcons { action } => gated(|| {
                 activate(&connection, "desktop-icons", Some(glib::Variant::from(action.as_wire())))
             }),
@@ -518,11 +582,23 @@ fn main() -> std::process::ExitCode {
     if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
 }
 
-/// Routes a `octosnap://` link to the same actions the subcommands use.
-/// A `.octosnap` path, from a bare argument or a `file://` URI.
+/// A file handed over as an argument rather than through a subcommand.
+#[derive(Debug, PartialEq, Eq)]
+enum FileArgument {
+    /// A `.octosnap` project (`spec/05` §8).
+    Project(std::path::PathBuf),
+    /// A picture, for the editor (`SYS-10`).
+    Picture(std::path::PathBuf),
+}
+
+/// The extensions of the pictures the `.desktop` file offers to open, one for each of its
+/// `image/` types (`SYS-10`).
+const PICTURES: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
+
+/// A project or a picture, from a bare argument or a `file://` URI.
 ///
 /// `None` for anything else, so an ordinary subcommand still reaches clap.
-fn project_argument(argument: &str) -> Option<std::path::PathBuf> {
+fn file_argument(argument: &str) -> Option<FileArgument> {
     let path = match argument.strip_prefix("file://") {
         // Percent-decoding, because a file manager encodes spaces and anything else
         // awkward. `glib::filename_from_uri` is the same decoder GIO uses, so a name this
@@ -530,7 +606,30 @@ fn project_argument(argument: &str) -> Option<std::path::PathBuf> {
         Some(_) => glib::filename_from_uri(argument).ok().map(|(path, _)| path)?,
         None => std::path::PathBuf::from(argument),
     };
-    octosnap_core::project::is_project(&path).then_some(path)
+    if octosnap_core::project::is_project(&path) {
+        return Some(FileArgument::Project(path));
+    }
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    PICTURES.contains(&extension.as_str()).then_some(FileArgument::Picture(path))
+}
+
+/// `SYS-10`: a picture from Files' Open With, in the editor; a GIF in the GIF editor,
+/// which `annotate-file` chooses by itself. Not gated, as a project is not: the user chose
+/// the file in a file manager, and `api-enabled` is about other programs and links.
+fn open_picture(path: &std::path::Path) -> bool {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    if !absolute.is_file() {
+        eprintln!("octosnap: {}: no such file", absolute.display());
+        return false;
+    }
+    let connection = match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("cannot reach the session bus: {e}");
+            return false;
+        }
+    };
+    activate(&connection, "annotate-file", Some(absolute.to_string_lossy().as_ref().to_variant()))
 }
 
 /// `spec/05` §8: hands a project to the running app.
@@ -559,6 +658,7 @@ fn open_project(path: &std::path::Path) -> bool {
     activate(&connection, "open-project", Some(parameter))
 }
 
+/// Routes a `octosnap://` link to the same actions the subcommands use.
 fn handle_url(link: &str) -> std::process::ExitCode {
     let command = match url::parse(link) {
         Ok(command) => command,
@@ -585,11 +685,9 @@ fn handle_url(link: &str) -> std::process::ExitCode {
             let _ = request;
             false
         }
-        url::Command::Capture(request) => activate(
-            &connection,
-            "capture",
-            Some(capture::request_to_variant(&request)),
-        ),
+        url::Command::Capture(request) => {
+            activate(&connection, "capture", Some(capture::request_to_variant(&request)))
+        }
         url::Command::OpenSettings(tab) => {
             activate(&connection, "open-settings", Some(glib::Variant::from(tab)))
         }
@@ -597,7 +695,9 @@ fn handle_url(link: &str) -> std::process::ExitCode {
         url::Command::SaveLast => activate(&connection, "save-last", None),
         url::Command::Pin(path) => with_file(&connection, "pin-file", &path),
         url::Command::OpenAnnotate(path) => with_file(&connection, "annotate-file", &path),
-        url::Command::OpenFromClipboard => gated(|| activate(&connection, "open-from-clipboard", None)),
+        url::Command::OpenFromClipboard => {
+            gated(|| activate(&connection, "open-from-clipboard", None))
+        }
         url::Command::DesktopIcons(what) => gated(|| {
             activate(&connection, "desktop-icons", Some(glib::Variant::from(what.as_wire())))
         }),
@@ -612,9 +712,7 @@ fn handle_url(link: &str) -> std::process::ExitCode {
             glib::MainContext::default().block_on(record_gif(&connection, &bridge, rect))
         }),
         url::Command::StopRecording => gated(|| activate(&connection, "stop-recording", None)),
-        url::Command::CaptureText { file, linebreaks } => {
-            read_text(&connection, &file, linebreaks)
-        }
+        url::Command::CaptureText { file, linebreaks } => read_text(&connection, &file, linebreaks),
         url::Command::ScrollingCapture(request) => gated(|| {
             let bridge = GnomeExtensionBridge::from_connection(connection.clone());
             scrolling_capture(&connection, &bridge, request)
@@ -663,6 +761,9 @@ fn gated(run: impl FnOnce() -> bool) -> bool {
 /// another process with another working directory, so `shot.png` means nothing to it.
 fn with_file(connection: &gio::DBusConnection, action: &str, path: &std::path::Path) -> bool {
     gated(|| {
+        if path == Path::new("-") {
+            return with_standard_input(connection, action);
+        }
         let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         if !absolute.is_file() {
             eprintln!("octosnap: {}: no such file", absolute.display());
@@ -718,8 +819,6 @@ fn activate(
     // ActivateAction takes the parameter as an *array* of variants, zero or one long,
     // which is how GApplication spells "this action may take no parameter".
     let parameters: Vec<glib::Variant> = parameter.into_iter().collect();
-    let platform_data: std::collections::HashMap<String, glib::Variant> =
-        std::collections::HashMap::new();
 
     let args = glib::Variant::tuple_from_iter([
         action.to_variant(),
@@ -727,7 +826,7 @@ fn activate(
             glib::VariantTy::VARIANT,
             parameters.iter().map(|p| p.to_variant()),
         ),
-        platform_data.to_variant(),
+        platform_data().to_variant(),
     ]);
 
     match connection.call_sync(
@@ -749,6 +848,35 @@ fn activate(
     }
 }
 
+/// One of the icon's actions, handed to the app. Not gated: the icon's menu is the user's
+/// own click, like the panel menu and the shortcuts, and `api-enabled` is about other
+/// programs and links (D175).
+fn launcher(id: &str) -> bool {
+    match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+        Ok(connection) => activate(&connection, "launcher", Some(id.to_variant())),
+        Err(e) => {
+            eprintln!("cannot reach the session bus: {e}");
+            false
+        }
+    }
+}
+
+/// What a launcher hands over so that the window a call opens gets the focus: the
+/// activation token GNOME Shell puts in the environment of what it starts, or an X11
+/// startup id. GApplication passes it to the window it presents next. Without it, a window
+/// opened from the dash or from Files' Open With is refused the focus, and the shell says
+/// "OctoSnap is ready" instead.
+fn platform_data() -> std::collections::HashMap<String, glib::Variant> {
+    let mut data = std::collections::HashMap::new();
+    if let Ok(token) = std::env::var("XDG_ACTIVATION_TOKEN") {
+        data.insert("activation-token".to_owned(), token.to_variant());
+    }
+    if let Ok(id) = std::env::var("DESKTOP_STARTUP_ID") {
+        data.insert("desktop-startup-id".to_owned(), id.to_variant());
+    }
+    data
+}
+
 /// Opens OctoSnap: `org.freedesktop.Application.Activate`, which the app answers with
 /// its welcome window or Settings (`crates/app/src/setup.rs`).
 ///
@@ -758,15 +886,7 @@ fn activate(
 /// own rather than [`TIMEOUT_MS`]: this call is usually the one that starts the app, and a
 /// cold start -- a Flatpak's especially -- takes longer than two seconds.
 fn launch(connection: &gio::DBusConnection) -> bool {
-    let mut platform_data: std::collections::HashMap<String, glib::Variant> =
-        std::collections::HashMap::new();
-    if let Ok(token) = std::env::var("XDG_ACTIVATION_TOKEN") {
-        platform_data.insert("activation-token".to_owned(), token.to_variant());
-    }
-    if let Ok(id) = std::env::var("DESKTOP_STARTUP_ID") {
-        platform_data.insert("desktop-startup-id".to_owned(), id.to_variant());
-    }
-    let args = glib::Variant::tuple_from_iter([platform_data.to_variant()]);
+    let args = glib::Variant::tuple_from_iter([platform_data().to_variant()]);
     match connection.call_sync(
         Some(APP_BUS_NAME),
         APP_GAPPLICATION_PATH,
@@ -815,8 +935,7 @@ async fn record_gif(
 /// Falls back to the primary, then the first, so it always has an answer when there is any
 /// monitor at all.
 async fn current_monitor_rect(bridge: &GnomeExtensionBridge) -> Result<Rect, String> {
-    let monitors =
-        bridge.monitors().await.map_err(|e| format!("cannot read the monitors: {e}"))?;
+    let monitors = bridge.monitors().await.map_err(|e| format!("cannot read the monitors: {e}"))?;
     monitors
         .iter()
         .find(|m| m.current)
@@ -1012,7 +1131,9 @@ async fn record(
         return false;
     };
     if monitor.connector.is_empty() {
-        eprintln!("octosnap: Mutter reports no connector for that monitor, so it cannot be recorded");
+        eprintln!(
+            "octosnap: Mutter reports no connector for that monitor, so it cannot be recorded"
+        );
         return false;
     }
     let selection = rect.unwrap_or(monitor.geometry);
@@ -1162,7 +1283,11 @@ fn pick_monitor<'a>(
             .max_by_key(|m| m.geometry.overlap_area(rect))
             .filter(|m| m.geometry.overlap_area(rect) > 0);
     }
-    monitors.iter().find(|m| m.current).or_else(|| monitors.iter().find(|m| m.primary)).or(monitors.first())
+    monitors
+        .iter()
+        .find(|m| m.current)
+        .or_else(|| monitors.iter().find(|m| m.primary))
+        .or(monitors.first())
 }
 
 async fn print_monitors(bridge: &GnomeExtensionBridge) -> bool {
@@ -1210,4 +1335,343 @@ fn format_flags(m: &Monitor) -> String {
         flags.push("fractional");
     }
     if flags.is_empty() { String::new() } else { format!("  [{}]", flags.join(", ")) }
+}
+
+/// The most `octosnap annotate -` and its kind read from standard input: past any picture
+/// the editor opens (D174's limits are of the same order).
+const STDIN_LIMIT: u64 = 512 << 20;
+
+/// `SYS-11` (D175): `annotate -`, `pin -` and `add-overlay -`, a picture from a pipe.
+///
+/// Written where the app can read it, this process's cache directory, which a Flatpak's
+/// app shares, under a name with the extension its bytes call for: the app tells a GIF
+/// from a still by the name. The app copies it into the spool while it answers the call
+/// (`import`), so it is removed once the call returns. The history calls it what the file
+/// is called, so the name is "Standard input".
+fn with_standard_input(connection: &gio::DBusConnection, action: &str) -> bool {
+    let mut bytes = Vec::new();
+    if let Err(e) = std::io::stdin().lock().take(STDIN_LIMIT + 1).read_to_end(&mut bytes) {
+        eprintln!("octosnap: could not read standard input: {e}");
+        return false;
+    }
+    if bytes.len() as u64 > STDIN_LIMIT {
+        eprintln!("octosnap: standard input is larger than a picture OctoSnap opens");
+        return false;
+    }
+    let Some(extension) = picture_extension(&bytes) else {
+        eprintln!("octosnap: standard input is not a PNG, JPEG, WebP or GIF picture");
+        return false;
+    };
+    let dir = glib::user_cache_dir()
+        .join("octosnap")
+        .join("standard-input")
+        .join(octosnap_core::capture::fresh_id());
+    let path = dir.join(format!("Standard input.{extension}"));
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &bytes)) {
+        eprintln!("octosnap: could not keep standard input in {}: {e}", dir.display());
+        return false;
+    }
+    let ok = activate(connection, action, Some(path.to_string_lossy().as_ref().to_variant()));
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        eprintln!("octosnap: could not remove {}: {e}", dir.display());
+    }
+    ok
+}
+
+/// The extension a picture's first bytes call for, among the ones the `.desktop` file
+/// offers to open.
+fn picture_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("jpg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// What became of one capture, from the extension's two signals.
+enum Outcome {
+    /// `CaptureCompleted`, with the spool file it names.
+    Completed(Option<PathBuf>),
+    /// `CaptureCancelled`, with `spec/10` §3.1's reason.
+    Cancelled(String),
+}
+
+/// `SYS-11` (D175): a capture written to a file, or to standard output with `-`.
+///
+/// The app starts it and says which capture is this one (`App1.Capture`'s handle), and
+/// the extension's `CaptureCompleted` for that handle names the spool file this copies
+/// out. The subscription comes first, so a capture that is taken before the handle is
+/// back is not missed: a `--rect` capture, with no overlay, can be that quick. The request
+/// says `keep`, so the app does nothing else with it, and the history files it later like
+/// any capture that had no card.
+async fn capture_to(
+    connection: &gio::DBusConnection,
+    request: &CaptureRequest,
+    output: &Path,
+) -> bool {
+    let to_stdout = output == Path::new("-");
+    if to_stdout && std::io::stdout().is_terminal() {
+        eprintln!("octosnap: standard output is a terminal; redirect it, or give --output a file");
+        return false;
+    }
+
+    let (sender, mut outcomes) = futures_channel::mpsc::unbounded::<(String, Outcome)>();
+    let _subscription = connection.subscribe_to_signal(
+        Some(SHELL_BUS_NAME),
+        Some(SHELL_INTERFACE),
+        None,
+        Some(SHELL_OBJECT_PATH),
+        None,
+        gio::DBusSignalFlags::NONE,
+        move |signal| {
+            let handle = signal.parameters.child_value(0).str().unwrap_or_default().to_owned();
+            let outcome = match signal.signal_name {
+                "CaptureCompleted" => {
+                    let result = glib::VariantDict::new(Some(&signal.parameters.child_value(1)));
+                    let path = result.lookup::<String>("path").ok().flatten().map(PathBuf::from);
+                    Outcome::Completed(path)
+                }
+                "CaptureCancelled" => Outcome::Cancelled(
+                    signal.parameters.child_value(1).str().unwrap_or_default().to_owned(),
+                ),
+                _ => return,
+            };
+            // A closed channel is a process on its way out, with nothing left to tell.
+            let _ = sender.unbounded_send((handle, outcome));
+        },
+    );
+
+    let handle = match app_capture(connection, request) {
+        Ok(handle) => handle,
+        Err(message) => {
+            eprintln!("octosnap: {message}");
+            return false;
+        }
+    };
+
+    while let Some((of, outcome)) = outcomes.next().await {
+        if of != handle {
+            continue;
+        }
+        return match outcome {
+            Outcome::Completed(Some(path)) => write_capture(&path, output, to_stdout),
+            Outcome::Completed(None) => {
+                eprintln!("octosnap: the capture was taken, but named no file");
+                false
+            }
+            Outcome::Cancelled(reason) => {
+                eprintln!("octosnap: {}", cancelled(&reason));
+                false
+            }
+        };
+    }
+    eprintln!("octosnap: lost the session bus before the capture was taken");
+    false
+}
+
+/// `spec/10` §3.1's reasons, as a sentence.
+fn cancelled(reason: &str) -> String {
+    match reason {
+        "user" => "the capture was cancelled".to_owned(),
+        "busy" => "another capture is under way".to_owned(),
+        other => match other.strip_prefix("error:") {
+            Some(error) => format!("the capture failed: {error}"),
+            None => format!("the capture was cancelled ({other})"),
+        },
+    }
+}
+
+fn write_capture(path: &Path, output: &Path, to_stdout: bool) -> bool {
+    let written = if to_stdout {
+        std::fs::File::open(path).and_then(|mut file| {
+            let mut out = std::io::stdout().lock();
+            std::io::copy(&mut file, &mut out)?;
+            out.flush()
+        })
+    } else {
+        std::fs::copy(path, output).map(drop)
+    };
+    match written {
+        Ok(()) => true,
+        Err(e) => {
+            let to =
+                if to_stdout { "standard output".to_owned() } else { output.display().to_string() };
+            eprintln!("octosnap: could not write the capture to {to}: {e}");
+            false
+        }
+    }
+}
+
+/// `App1.Capture`, which answers with the capture's handle. Retried when it is the call
+/// that starts the app and loses the race for it (`docs/spikes/13`).
+fn app_capture(
+    connection: &gio::DBusConnection,
+    request: &CaptureRequest,
+) -> Result<String, String> {
+    let reply_type = glib::VariantTy::new("(s)").map_err(|e| e.to_string())?;
+    let parameters = capture::request_to_variant(request);
+    let mut attempt = 0;
+    loop {
+        match connection.call_sync(
+            Some(APP_BUS_NAME),
+            APP_OBJECT_PATH,
+            APP_INTERFACE,
+            "Capture",
+            Some(&parameters),
+            Some(reply_type),
+            gio::DBusCallFlags::NONE,
+            TIMEOUT_MS,
+            gio::Cancellable::NONE,
+        ) {
+            Ok(reply) => return Ok(reply.child_value(0).str().unwrap_or_default().to_owned()),
+            Err(e) if attempt < ACTIVATION_RETRIES && lost_activation_race(&e) => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(ACTIVATION_RETRY_DELAY_MS));
+            }
+            Err(e) if e.matches(gio::DBusError::UnknownMethod) => {
+                // There is no Quit in any menu: the app is a service, and the next login
+                // starts the new one. `quit` is its action for this.
+                return Err(format!(
+                    "the OctoSnap that is running is older than this command. The next \
+                     login starts the new one, or now: gapplication action {APP_BUS_NAME} quit"
+                ));
+            }
+            // The app's own words, without GDBus's `GDBus.Error:<name>: ` in front.
+            Err(e) => {
+                let message = e.message();
+                let words = message
+                    .strip_prefix("GDBus.Error:")
+                    .and_then(|rest| rest.split_once(": "))
+                    .map_or(message, |(_, words)| words);
+                return Err(words.to_owned());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_picture_or_a_project_is_a_file_argument_and_a_subcommand_is_not() {
+        let picture = |p: &str| Some(FileArgument::Picture(p.into()));
+        assert_eq!(file_argument("shot.PNG"), picture("shot.PNG"));
+        assert_eq!(file_argument("file:///home/me/a%20b.webp"), picture("/home/me/a b.webp"));
+        assert_eq!(
+            file_argument("doc.octosnap"),
+            Some(FileArgument::Project("doc.octosnap".into()))
+        );
+        assert_eq!(file_argument("capture"), None);
+        assert_eq!(file_argument("notes.txt"), None);
+        assert_eq!(file_argument("file:///etc/passwd"), None);
+    }
+
+    /// Every `image/` type the `.desktop` file offers has an extension here, so Files never
+    /// hands OctoSnap a picture that then reaches clap as an unknown subcommand.
+    #[test]
+    fn every_picture_type_the_desktop_file_offers_is_opened() {
+        let desktop = include_str!("../../../data/io.github.odrakirmusic.OctoSnap.desktop.in");
+        let types = desktop.lines().find_map(|l| l.strip_prefix("MimeType=")).unwrap();
+        let images: Vec<&str> = types.split(';').filter_map(|t| t.strip_prefix("image/")).collect();
+        assert_eq!(images, ["png", "jpeg", "webp", "gif"]);
+        for image in images {
+            assert!(PICTURES.contains(&image), "image/{image}");
+        }
+    }
+
+    #[test]
+    fn a_picture_is_known_by_its_first_bytes() {
+        assert_eq!(picture_extension(b"\x89PNG\r\n\x1a\n...."), Some("png"));
+        assert_eq!(picture_extension(b"\xff\xd8\xff\xe0...."), Some("jpg"));
+        assert_eq!(picture_extension(b"GIF89a...."), Some("gif"));
+        assert_eq!(picture_extension(b"RIFF\x10\0\0\0WEBPVP8 "), Some("webp"));
+        assert_eq!(picture_extension(b"RIFF\x10\0\0\0WAVEfmt "), None);
+        assert_eq!(picture_extension(b"%PDF-1.7"), None);
+        assert_eq!(picture_extension(b""), None);
+    }
+
+    #[test]
+    fn a_cancelled_capture_says_why() {
+        assert_eq!(cancelled("user"), "the capture was cancelled");
+        assert_eq!(cancelled("busy"), "another capture is under way");
+        assert_eq!(cancelled("error:no monitor"), "the capture failed: no monitor");
+    }
+
+    /// `--output` asks the app to keep the capture and do nothing else, and does not mix
+    /// with an action of its own.
+    #[test]
+    fn output_asks_for_keep() {
+        let cli =
+            Cli::try_parse_from(["octosnap", "capture", "--rect", "0,0,10,10", "-o", "-"]).unwrap();
+        let Some(Command::Capture(args)) = cli.command else { panic!("not a capture") };
+        assert_eq!(args.to_request().unwrap().action, Some(RequestedAction::Keep));
+        assert!(Cli::try_parse_from(["octosnap", "capture", "-o", "x.png", "-a", "copy"]).is_err());
+    }
+
+    /// `SYS-11` (D175): the completions and the man page meson installs are made from the
+    /// definition of the commands, so they cannot fall behind it. After changing a command:
+    ///
+    ///   OCTOSNAP_BLESS=1 cargo test -p octosnap-cli shipped
+    #[test]
+    fn the_shipped_completions_and_man_page_match_the_commands() {
+        use clap::CommandFactory;
+        use clap_complete::Shell;
+
+        /// A page for each command, as `octosnap.1`'s list names them.
+        fn pages(command: &clap::Command, out: &mut Vec<(String, Vec<u8>)>) {
+            for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+                pages(sub, out);
+            }
+            let name = command.get_display_name().unwrap_or_else(|| command.get_name());
+            let mut page = Vec::new();
+            clap_mangen::Man::new(command.clone()).source("OctoSnap").render(&mut page).unwrap();
+            out.push((format!("man/{name}.1"), page));
+        }
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/cli");
+        let mut made: Vec<(String, Vec<u8>)> = Vec::new();
+        for (shell, name) in [
+            (Shell::Bash, "octosnap.bash"),
+            (Shell::Zsh, "_octosnap"),
+            (Shell::Fish, "octosnap.fish"),
+        ] {
+            let mut out = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "octosnap", &mut out);
+            made.push((name.to_owned(), out));
+        }
+        // Without the version, so that a release does not change the pages.
+        let mut command = Cli::command().version(None::<&str>).disable_help_subcommand(true);
+        command.build();
+        let mut man = Vec::new();
+        pages(&command, &mut man);
+
+        let bless = std::env::var_os("OCTOSNAP_BLESS").is_some();
+        if bless {
+            let _ = std::fs::remove_dir_all(dir.join("man"));
+            std::fs::create_dir_all(dir.join("man")).unwrap();
+        }
+        let shipped_pages = std::fs::read_dir(dir.join("man")).map_or(0, Iterator::count);
+        assert!(bless || shipped_pages == man.len(), "data/cli/man has pages for other commands");
+        for (name, bytes) in made.into_iter().chain(man) {
+            let path = dir.join(&name);
+            if bless {
+                std::fs::write(&path, &bytes).unwrap();
+                continue;
+            }
+            let shipped = std::fs::read(&path).unwrap_or_default();
+            assert!(
+                shipped == bytes,
+                "data/cli/{name} is not what the commands make: \
+                 OCTOSNAP_BLESS=1 cargo test -p octosnap-cli shipped"
+            );
+        }
+    }
 }

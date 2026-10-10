@@ -211,12 +211,8 @@ pub fn resize_by_handle(
 
     // Dragging a handle past the opposite edge flips the rect rather than producing a
     // negative size.
-    let mut out = Rect::new(
-        left.min(right),
-        top.min(bottom),
-        (right - left).abs(),
-        (bottom - top).abs(),
-    );
+    let mut out =
+        Rect::new(left.min(right), top.min(bottom), (right - left).abs(), (bottom - top).abs());
 
     if modifiers.aspect_lock
         && let Some(ratio) = locked_ratio
@@ -278,11 +274,7 @@ pub fn dominant_monitor(rect: Rect, monitors: &[Rect]) -> Option<usize> {
 fn overlap_area(a: Rect, b: Rect) -> i64 {
     let x = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
     let y = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
-    if x <= 0 || y <= 0 {
-        0
-    } else {
-        i64::from(x) * i64::from(y)
-    }
+    if x <= 0 || y <= 0 { 0 } else { i64::from(x) * i64::from(y) }
 }
 
 /// Arrow-key direction.
@@ -319,12 +311,7 @@ pub fn resize_by_key(rect: Rect, direction: Direction, step: i32) -> Rect {
         Direction::Up => (0, -step),
         Direction::Down => (0, step),
     };
-    Rect::new(
-        rect.x,
-        rect.y,
-        (rect.width + dw).max(1),
-        (rect.height + dh).max(1),
-    )
+    Rect::new(rect.x, rect.y, (rect.width + dw).max(1), (rect.height + dh).max(1))
 }
 
 /// Sets an exact width, anchored at the top-left (`spec/03` §5.1: "typing into the W/H
@@ -353,8 +340,7 @@ pub fn set_height(rect: Rect, height: i32, locked_ratio: Option<f64>) -> Rect {
 /// True when a press-release pair was a click rather than a drag (`spec/03` §5.1).
 #[must_use]
 pub fn is_click(anchor: (i32, i32), release: (i32, i32)) -> bool {
-    (release.0 - anchor.0).abs() < CLICK_THRESHOLD
-        && (release.1 - anchor.1).abs() < CLICK_THRESHOLD
+    (release.0 - anchor.0).abs() < CLICK_THRESHOLD && (release.1 - anchor.1).abs() < CLICK_THRESHOLD
 }
 
 #[cfg(test)]
@@ -427,10 +413,7 @@ mod tests {
 
     #[test]
     fn shift_without_a_ratio_does_nothing() {
-        assert_eq!(
-            rect_from_drag((0, 0), (200, 30), SHIFT, None),
-            Rect::new(0, 0, 200, 30)
-        );
+        assert_eq!(rect_from_drag((0, 0), (200, 30), SHIFT, None), Rect::new(0, 0, 200, 30));
     }
 
     #[test]

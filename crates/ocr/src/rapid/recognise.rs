@@ -23,8 +23,7 @@ pub fn tensor(line: &Gray) -> (Vec<f32>, u32) {
     let ratio = f64::from(line.width()) / f64::from(line.height().max(1));
     let width = ((f64::from(ROWS) * ratio).round() as u32).clamp(NARROWEST, WIDEST);
     let scaled = line.resized(width, ROWS);
-    let plane: Vec<f32> =
-        scaled.pixels().iter().map(|&p| f32::from(p) / 127.5 - 1.0).collect();
+    let plane: Vec<f32> = scaled.pixels().iter().map(|&p| f32::from(p) / 127.5 - 1.0).collect();
     let mut out = Vec::with_capacity(plane.len() * 3);
     for _ in 0..3 {
         out.extend_from_slice(&plane);
@@ -58,7 +57,10 @@ pub fn decode(
             }
             let _ = value;
         }
-        if best != 0 && best != previous && let Some(character) = characters.get(best) {
+        if best != 0
+            && best != previous
+            && let Some(character) = characters.get(best)
+        {
             text.push_str(character);
             sure += row[best];
             kept += 1;

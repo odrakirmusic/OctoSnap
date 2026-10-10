@@ -45,7 +45,8 @@ thread_local! {
 /// The mirror of `schema_id`, opened on first use. `None` when the schema is not bundled or
 /// the extension does not answer, which the Settings dialog shows as unavailable rows.
 pub fn open(schema_id: &str) -> Option<gio::Settings> {
-    if let Some(settings) = MIRRORS.with(|m| m.borrow().get(schema_id).map(|m| m.settings.clone())) {
+    if let Some(settings) = MIRRORS.with(|m| m.borrow().get(schema_id).map(|m| m.settings.clone()))
+    {
         return Some(settings);
     }
     let connection = gio::Application::default()?.dbus_connection()?;
@@ -64,7 +65,8 @@ pub fn open(schema_id: &str) -> Option<gio::Settings> {
 
     // Out: a change made here, by a row or a reset, goes to the extension.
     {
-        let (connection, applying, id) = (connection.clone(), Rc::clone(&applying), schema_id.to_owned());
+        let (connection, applying, id) =
+            (connection.clone(), Rc::clone(&applying), schema_id.to_owned());
         settings.connect_changed(None, move |settings, key| {
             if applying.get() {
                 return;
@@ -86,9 +88,10 @@ pub fn open(schema_id: &str) -> Option<gio::Settings> {
             gio::DBusSignalFlags::NONE,
             move |signal| {
                 let params = signal.parameters;
-                let (Some(key), Some(value)) =
-                    (params.child_value(1).str().map(str::to_owned), params.child_value(2).as_variant())
-                else {
+                let (Some(key), Some(value)) = (
+                    params.child_value(1).str().map(str::to_owned),
+                    params.child_value(2).as_variant(),
+                ) else {
                     return;
                 };
                 apply_one(&settings, &schema, &key, &value, &applying);
@@ -128,7 +131,11 @@ pub fn keybindings() -> Option<Vec<octosnap_core::shortcuts::Binding>> {
     Some(
         bindings
             .into_iter()
-            .map(|(schema, key, accelerators)| octosnap_core::shortcuts::Binding { schema, key, accelerators })
+            .map(|(schema, key, accelerators)| octosnap_core::shortcuts::Binding {
+                schema,
+                key,
+                accelerators,
+            })
             .collect(),
     )
 }
@@ -183,7 +190,10 @@ fn bundled_schema(schema_id: &str) -> Option<gio::SettingsSchema> {
     None
 }
 
-fn fetch(connection: &gio::DBusConnection, schema_id: &str) -> Result<Vec<(String, glib::Variant)>, String> {
+fn fetch(
+    connection: &gio::DBusConnection,
+    schema_id: &str,
+) -> Result<Vec<(String, glib::Variant)>, String> {
     let reply = connection
         .call_sync(
             Some(SHELL_BUS_NAME),
@@ -201,7 +211,8 @@ fn fetch(connection: &gio::DBusConnection, schema_id: &str) -> Result<Vec<(Strin
     let mut values = Vec::with_capacity(dict.n_children());
     for index in 0..dict.n_children() {
         let entry = dict.child_value(index);
-        let (Some(key), Some(value)) = (entry.child_value(0).str().map(str::to_owned), entry.child_value(1).as_variant())
+        let (Some(key), Some(value)) =
+            (entry.child_value(0).str().map(str::to_owned), entry.child_value(1).as_variant())
         else {
             continue;
         };
@@ -246,13 +257,21 @@ fn apply_one(
 }
 
 /// Sends one change: the value, or `None` for a key put back to its default.
-async fn send(connection: &gio::DBusConnection, schema_id: &str, key: &str, value: Option<glib::Variant>) {
+async fn send(
+    connection: &gio::DBusConnection,
+    schema_id: &str,
+    key: &str,
+    value: Option<glib::Variant>,
+) {
     let (method, params) = match &value {
-        Some(value) => ("SetSetting", glib::Variant::tuple_from_iter([
-            schema_id.to_variant(),
-            key.to_variant(),
-            glib::Variant::from_variant(value),
-        ])),
+        Some(value) => (
+            "SetSetting",
+            glib::Variant::tuple_from_iter([
+                schema_id.to_variant(),
+                key.to_variant(),
+                glib::Variant::from_variant(value),
+            ]),
+        ),
         None => ("ResetSetting", (schema_id, key).to_variant()),
     };
     let result = connection

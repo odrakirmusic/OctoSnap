@@ -37,11 +37,7 @@ const CAPTURE_ID: &str = "capture";
 /// read and its **Show** there and nowhere else, so with the switch off a text capture
 /// had no visible end at all. The switch is for captures that worked and would otherwise
 /// be silent.
-pub fn capture_outcome(
-    app: &adw::Application,
-    outcome: &Outcome,
-    enabled: bool,
-) -> bool {
+pub fn capture_outcome(app: &adw::Application, outcome: &Outcome, enabled: bool) -> bool {
     // D171: a read that found no pack opens the packs instead. A notification was all a
     // text capture had to say it, and one that went by unread left a capture that looked
     // like a screenshot and an empty clipboard. Every read ends here -- a text capture, a
@@ -265,9 +261,7 @@ pub fn describe(outcome: &Outcome) -> Option<(String, Option<String>)> {
     // side effects. `spec/07` §2.1 gives the wording: "Text copied" with the first line.
     if let Some(recognised) = &outcome.recognised {
         return Some(match recognised {
-            Recognised::Copied(first) => {
-                ("Text copied".to_owned(), Some(preview(first)))
-            }
+            Recognised::Copied(first) => ("Text copied".to_owned(), Some(preview(first))),
             // Not a failure and not silent: an area was read and a moment went by, so
             // something has to say why nothing arrived on the clipboard.
             Recognised::Nothing => (
@@ -400,11 +394,8 @@ mod tests {
 
     #[test]
     fn a_save_and_copy_says_both() {
-        let both = Outcome {
-            copied: true,
-            saved_to: Some(PathBuf::from("/tmp/Shot.png")),
-            ..outcome()
-        };
+        let both =
+            Outcome { copied: true, saved_to: Some(PathBuf::from("/tmp/Shot.png")), ..outcome() };
         let (title, _) = describe(&both).expect("a message");
         assert_eq!(title, "Screenshot saved and copied");
     }
@@ -466,10 +457,8 @@ mod tests {
     #[test]
     fn a_read_with_no_runtime_says_how_to_get_one() {
         let refusal = crate::ocr::runtime::refusal();
-        let broken = Outcome {
-            recognised: Some(Recognised::Failed(refusal.body.clone())),
-            ..outcome()
-        };
+        let broken =
+            Outcome { recognised: Some(Recognised::Failed(refusal.body.clone())), ..outcome() };
         assert!(broken.lacks_runtime());
         assert!(!broken.waits_for_pack());
         let (title, body) = describe(&broken).expect("a message");

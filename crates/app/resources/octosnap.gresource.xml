@@ -35,6 +35,9 @@
     <file preprocess="xml-stripblanks">icons/scalable/actions/tool-highlighter-symbolic.svg</file>
     <file preprocess="xml-stripblanks">icons/scalable/actions/tool-counter-symbolic.svg</file>
     <file preprocess="xml-stripblanks">icons/scalable/actions/tool-crop-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-cut-out-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tool-magnifier-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/layers-symbolic.svg</file>
     <file preprocess="xml-stripblanks">icons/scalable/actions/tool-text-symbolic.svg</file>
     <file preprocess="xml-stripblanks">icons/scalable/actions/tool-spotlight-symbolic.svg</file>
     <file preprocess="xml-stripblanks">icons/scalable/actions/tool-pixelate-symbolic.svg</file>
@@ -55,6 +58,11 @@
     <file preprocess="xml-stripblanks">icons/scalable/actions/scroll-left-symbolic.svg</file>
     <!-- Settings' Pets page. Adwaita's nearest, `emoji-nature-symbolic`, is a plant. -->
     <file preprocess="xml-stripblanks">icons/scalable/actions/pets-symbolic.svg</file>
+    <!--
+      The editor's Select Text in the Picture (`ANN-27`, D180): lines of text in a frame's
+      corners. Adwaita has no icon for text in a picture.
+    -->
+    <file preprocess="xml-stripblanks">icons/scalable/actions/live-text-symbolic.svg</file>
     <!--
       The application icon and its symbolic twin, from `data/` (the build's second
       source directory), so the welcome window and the About page draw them even where

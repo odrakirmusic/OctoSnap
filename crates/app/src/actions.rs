@@ -67,6 +67,8 @@ const REGISTERED: &[&str] = &[
     "restore-recent",
     // `spec/07` §4.2's strip, toggled: the panel menu, a shortcut and the CLI all open it.
     "open-history",
+    // `SYS-09`'s right-click menu on the app's icon (D175).
+    "launcher",
     // `HIS-04`, `SYS-03`: files the user opens with the app, and the clipboard's image.
     "pin-file",
     "annotate-file",
@@ -91,6 +93,8 @@ const REGISTERED: &[&str] = &[
     // The README's section on ONNX Runtime, the button on a read that could not load it
     // (D172).
     "runtime-help",
+    // `SYS-12`'s keyboard shortcuts, Ctrl+? in every window (D179).
+    "shortcuts",
     "quit",
 ];
 
@@ -115,15 +119,11 @@ fn overlay_actions() -> [(&'static str, OverlayCommand); 4] {
 type PinCommand = fn(&crate::SharedPins);
 
 fn pin_actions() -> [(&'static str, PinCommand); 2] {
-    [
-        ("close-all-pins", |p| p.close_all()),
-        ("toggle-pins", |p| p.toggle_hidden()),
-    ]
+    [("close-all-pins", |p| p.close_all()), ("toggle-pins", |p| p.toggle_hidden())]
 }
 
 pub fn register(app: &adw::Application) {
-    let handle_capture =
-        gio::SimpleAction::new("handle-capture", Some(glib::VariantTy::VARDICT));
+    let handle_capture = gio::SimpleAction::new("handle-capture", Some(glib::VariantTy::VARDICT));
     {
         let app = app.clone();
         handle_capture.connect_activate(move |_, parameter| {
@@ -208,34 +208,31 @@ pub fn register(app: &adw::Application) {
                 );
                 return;
             }
-
-            let app = app.clone();
-            glib::spawn_future_local(async move {
-                let Some(flow) = capture_flow() else {
-                    error!("no capture flow available; cannot start a capture");
-                    return;
-                };
-                match flow.begin(&request).await {
-                    Ok(_handle) => {}
-                    Err(e) => {
-                        // The user asked for a capture and got none, and there is no
-                        // reply channel on an action activation, so this is the one place
-                        // that has to speak up.
-                        error!("could not start a capture: {e}");
-                        let title = if e.is_extension_missing() {
-                            "OctoSnap needs its GNOME Shell extension"
-                        } else {
-                            "Could not start the capture"
-                        };
-                        let notification = gio::Notification::new(title);
-                        notification.set_body(Some(&e.to_string()));
-                        app.send_notification(Some("capture-failed"), &notification);
-                    }
-                }
-            });
+            start_capture(&app, request);
         });
     }
     app.add_action(&capture_action);
+
+    // `SYS-09` (D175): the right-click menu on the app's icon, in the dash and the app grid,
+    // which runs `octosnap launcher <id>`. The user's own click, like the panel menu and the
+    // shortcuts, so it is not gated by `api-enabled`: that setting is about other programs
+    // and links driving OctoSnap, and the icon is neither.
+    let launcher = gio::SimpleAction::new("launcher", Some(glib::VariantTy::STRING));
+    {
+        let app = app.clone();
+        launcher.connect_activate(move |_, parameter| {
+            let Some(id) = parameter.and_then(glib::Variant::str) else { return };
+            info!(id, "launcher");
+            match crate::launcher::Action::from_id(id) {
+                Some(crate::launcher::Action::Capture(mode)) => {
+                    start_capture(&app, octosnap_core::request::CaptureRequest::new(mode));
+                }
+                Some(crate::launcher::Action::History) => crate::history::strip::show(&app),
+                None => warn!(id, "the icon's menu named an action this build does not have"),
+            }
+        });
+    }
+    app.add_action(&launcher);
 
     // `spec/06` (M5): the extension delivers a record request -- a rectangle on a monitor,
     // not pixels -- and the app owns the recording from there (`crate::recording`). Like
@@ -268,8 +265,7 @@ pub fn register(app: &adw::Application) {
     // cannot arm, still records when `record` arrives, just as slowly as before.
     let arm_record = gio::SimpleAction::new("arm-record", Some(glib::VariantTy::VARDICT));
     arm_record.connect_activate(|_, parameter| {
-        let Some(request) =
-            parameter.and_then(crate::recording::RecordRequest::from_variant)
+        let Some(request) = parameter.and_then(crate::recording::RecordRequest::from_variant)
         else {
             warn!("arm-record received a malformed request");
             return;
@@ -376,16 +372,25 @@ pub fn register(app: &adw::Application) {
     {
         let pin_file = gio::SimpleAction::new("pin-file", Some(glib::VariantTy::STRING));
         pin_file.connect_activate(|_, parameter| {
-            let Some(path) = parameter.and_then(glib::Variant::str).map(std::path::PathBuf::from) else { return };
+            let Some(path) = parameter.and_then(glib::Variant::str).map(std::path::PathBuf::from)
+            else {
+                return;
+            };
             info!(path = %path.display(), "pin-file");
-            let (Some(pins), Some(capture)) = (crate::pins(), crate::import::import_file(&path)) else { return };
+            let (Some(pins), Some(capture)) = (crate::pins(), crate::import::import_file(&path))
+            else {
+                return;
+            };
             pins.pin(&capture, None);
         });
         app.add_action(&pin_file);
 
         let annotate_file = gio::SimpleAction::new("annotate-file", Some(glib::VariantTy::STRING));
         annotate_file.connect_activate(|_, parameter| {
-            let Some(path) = parameter.and_then(glib::Variant::str).map(std::path::PathBuf::from) else { return };
+            let Some(path) = parameter.and_then(glib::Variant::str).map(std::path::PathBuf::from)
+            else {
+                return;
+            };
             info!(path = %path.display(), "annotate-file");
             let Some(overlay) = crate::overlay() else { return };
             // A project opens as a project (`spec/05` §8); anything else is a picture.
@@ -401,9 +406,16 @@ pub fn register(app: &adw::Application) {
 
         let add_overlay = gio::SimpleAction::new("add-overlay", Some(glib::VariantTy::STRING));
         add_overlay.connect_activate(|_, parameter| {
-            let Some(path) = parameter.and_then(glib::Variant::str).map(std::path::PathBuf::from) else { return };
+            let Some(path) = parameter.and_then(glib::Variant::str).map(std::path::PathBuf::from)
+            else {
+                return;
+            };
             info!(path = %path.display(), "add-overlay");
-            let (Some(overlay), Some(capture)) = (crate::overlay(), crate::import::import_file(&path)) else { return };
+            let (Some(overlay), Some(capture)) =
+                (crate::overlay(), crate::import::import_file(&path))
+            else {
+                return;
+            };
             overlay.show(&capture, None);
         });
         app.add_action(&add_overlay);
@@ -417,13 +429,19 @@ pub fn register(app: &adw::Application) {
                 glib::spawn_future_local(async move {
                     // The shell reads it (D169): the app has no keyboard focus here.
                     let flow = capture_flow();
-                    match crate::import::import_clipboard(flow.as_ref().map(|flow| flow.bridge())).await {
+                    match crate::import::import_clipboard(flow.as_ref().map(|flow| flow.bridge()))
+                        .await
+                    {
                         Some(capture) => {
                             if let Some(overlay) = crate::overlay() {
                                 overlay.open_editor(&capture);
                             }
                         }
-                        None => notify::action_failed(&app, "Open from clipboard", "The clipboard holds no image"),
+                        None => notify::action_failed(
+                            &app,
+                            "Open from clipboard",
+                            "The clipboard holds no image",
+                        ),
                     }
                 });
             });
@@ -436,10 +454,14 @@ pub fn register(app: &adw::Application) {
             let app = app.clone();
             annotate_last.connect_activate(move |_, _| {
                 info!("annotate-last");
-                let (Some(flow), Some(overlay)) = (capture_flow(), crate::overlay()) else { return };
+                let (Some(flow), Some(overlay)) = (capture_flow(), crate::overlay()) else {
+                    return;
+                };
                 match flow.last_capture() {
                     Some(capture) => overlay.open_editor(&capture),
-                    None => notify::action_failed(&app, "Annotate the last capture", "No capture yet"),
+                    None => {
+                        notify::action_failed(&app, "Annotate the last capture", "No capture yet")
+                    }
                 }
             });
         }
@@ -498,7 +520,8 @@ pub fn register(app: &adw::Application) {
     // would choose for them. The parameter is a `capture-sound` value.
     let preview_shutter = gio::SimpleAction::new("preview-shutter", Some(glib::VariantTy::STRING));
     preview_shutter.connect_activate(move |_, parameter| {
-        let Some(kind) = parameter.and_then(glib::Variant::str).and_then(prefs::shutter_kind) else {
+        let Some(kind) = parameter.and_then(glib::Variant::str).and_then(prefs::shutter_kind)
+        else {
             return;
         };
         glib::spawn_future_local(async move {
@@ -721,8 +744,7 @@ pub fn register(app: &adw::Application) {
         runtime_help.connect_activate(move |_, _| {
             let uri = crate::ocr::runtime::HELP;
             info!(uri, "runtime-help");
-            let opened =
-                gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>);
+            let opened = gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>);
             if let Err(e) = opened {
                 warn!("could not open {uri}: {e}");
                 notify::action_failed(&app, "How to Install", &e.to_string());
@@ -763,6 +785,16 @@ pub fn register(app: &adw::Application) {
     }
     app.add_action(&read_text);
 
+    // `SYS-12` (D179): every key the app answers, over whichever of its windows has the
+    // focus. On the application, so one accelerator serves every window.
+    let shortcuts = gio::SimpleAction::new("shortcuts", None);
+    {
+        let app = app.clone();
+        shortcuts.connect_activate(move |_, _| crate::shortcuts_dialog::present(&app));
+    }
+    app.add_action(&shortcuts);
+    app.set_accels_for_action("app.shortcuts", &[crate::shortcuts_dialog::ACCEL]);
+
     let quit = gio::SimpleAction::new("quit", None);
     {
         let app = app.clone();
@@ -787,6 +819,34 @@ fn reveal(path: &std::path::Path) {
         match result {
             Ok(()) => info!(folder = %folder.display(), "revealed"),
             Err(e) => warn!("could not open {}: {e}", folder.display()),
+        }
+    });
+}
+
+/// Asks the extension for a capture, and says so when it cannot start one: the `capture`
+/// action's work once it has decided to go ahead, and the icon's menu's.
+fn start_capture(app: &adw::Application, request: octosnap_core::request::CaptureRequest) {
+    let app = app.clone();
+    glib::spawn_future_local(async move {
+        let Some(flow) = capture_flow() else {
+            error!("no capture flow available; cannot start a capture");
+            return;
+        };
+        match flow.begin(&request).await {
+            Ok(_handle) => {}
+            Err(e) => {
+                // The user asked for a capture and got none, and there is no reply channel
+                // on an action activation, so this is the one place that has to speak up.
+                error!("could not start a capture: {e}");
+                let title = if e.is_extension_missing() {
+                    "OctoSnap needs its GNOME Shell extension"
+                } else {
+                    "Could not start the capture"
+                };
+                let notification = gio::Notification::new(title);
+                notification.set_body(Some(&e.to_string()));
+                app.send_notification(Some("capture-failed"), &notification);
+            }
         }
     });
 }

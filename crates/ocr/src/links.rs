@@ -88,7 +88,7 @@ fn classify(candidate: &str) -> Option<(LinkKind, String)> {
 
 /// `local@host.tld`, strictly enough that a Rust turbofish or a shell redirection is not
 /// an address.
-fn is_email(candidate: &str) -> bool {
+pub(crate) fn is_email(candidate: &str) -> bool {
     let Some((local, host)) = candidate.split_once('@') else { return false };
     !local.is_empty()
         && local.chars().all(|c| c.is_ascii_alphanumeric() || "._%+-".contains(c))
@@ -105,13 +105,13 @@ fn is_host(candidate: &str) -> bool {
                 && !label.ends_with('-')
                 && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         })
-        && labels.last().is_some_and(|tld| {
-            tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())
-        })
+        && labels
+            .last()
+            .is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()))
 }
 
 /// The runs of non-whitespace in `text`, each with the byte it starts at.
-fn tokens(text: &str) -> Vec<(usize, &str)> {
+pub(crate) fn tokens(text: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
     for (at, c) in text.char_indices() {
@@ -131,7 +131,7 @@ fn tokens(text: &str) -> Vec<(usize, &str)> {
 }
 
 /// The part of a token that could be a link, with the punctuation around it removed.
-fn trim(token: &str) -> Range<usize> {
+pub(crate) fn trim(token: &str) -> Range<usize> {
     let mut start = 0;
     while let Some(c) = token[start..].chars().next() {
         if !OPENERS.contains(&c) {
@@ -167,10 +167,7 @@ mod tests {
     use super::*;
 
     fn found(text: &str) -> Vec<(&str, LinkKind, String)> {
-        links(text)
-            .into_iter()
-            .map(|link| (&text[link.range], link.kind, link.target))
-            .collect()
+        links(text).into_iter().map(|link| (&text[link.range], link.kind, link.target)).collect()
     }
 
     #[test]

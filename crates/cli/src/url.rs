@@ -20,9 +20,9 @@
 
 use std::path::PathBuf;
 
-use octosnap_core::{Rect, ScrollDirection};
 use octosnap_core::capture::{CaptureMode, RequestedAction};
 use octosnap_core::request::{CaptureRequest, parse_rect};
+use octosnap_core::{Rect, ScrollDirection};
 
 pub const SCHEME: &str = "octosnap://";
 
@@ -59,7 +59,10 @@ pub enum Command {
     /// Its own command rather than a `Capture` with a path, because it is not a capture:
     /// nothing is selected, the extension is never called, and the file the user names is
     /// read where it lies. `linebreaks` is §2.1's second shortcut as a parameter.
-    CaptureText { file: PathBuf, linebreaks: Option<bool> },
+    CaptureText {
+        file: PathBuf,
+        linebreaks: Option<bool>,
+    },
     /// `scrolling-capture[?x&y&width&height&direction&start]` (`spec/07` §1.1, `spec/03`
     /// §4's URL param `start`). Its other one, `autoscroll`, went with auto-scroll (D153),
     /// and is reported as any unknown parameter is: a URL that asks for the page to be
@@ -147,7 +150,9 @@ pub fn parse(url: &str) -> Result<Command, UrlError> {
         "open-annotate" => file(&params).map(Command::OpenAnnotate),
         "add-quick-access-overlay" => file(&params).map(Command::AddQuickAccessOverlay),
         "open-from-clipboard" => params.done().map(|()| Command::OpenFromClipboard),
-        "toggle-desktop-icons" => params.done().map(|()| Command::DesktopIcons(DesktopIcons::Toggle)),
+        "toggle-desktop-icons" => {
+            params.done().map(|()| Command::DesktopIcons(DesktopIcons::Toggle))
+        }
         "hide-desktop-icons" => params.done().map(|()| Command::DesktopIcons(DesktopIcons::Hide)),
         "show-desktop-icons" => params.done().map(|()| Command::DesktopIcons(DesktopIcons::Show)),
         "open-history" => params.done().map(|()| Command::OpenHistory),
@@ -174,10 +179,9 @@ pub fn parse(url: &str) -> Result<Command, UrlError> {
                     Ok(Command::CaptureText { file: PathBuf::from(path), linebreaks })
                 }
                 None => capture(CaptureMode::Ocr, &params).map(|command| match command {
-                    Command::Capture(request) => Command::Capture(CaptureRequest {
-                        linebreaks,
-                        ..request
-                    }),
+                    Command::Capture(request) => {
+                        Command::Capture(CaptureRequest { linebreaks, ..request })
+                    }
                     other => other,
                 }),
             }
@@ -302,12 +306,12 @@ impl Params {
 
     fn take_int(&self, key: &str) -> Result<Option<i32>, UrlError> {
         match self.take(key)? {
-            Some(value) => value.trim().parse::<i32>().map(Some).map_err(|_| {
-                UrlError::BadParameter {
+            Some(value) => {
+                value.trim().parse::<i32>().map(Some).map_err(|_| UrlError::BadParameter {
                     key: key.to_owned(),
                     detail: format!("'{value}' is not a whole number"),
-                }
-            }),
+                })
+            }
             None => Ok(None),
         }
     }
@@ -345,20 +349,19 @@ fn decode(text: &str) -> String {
                 out.push(b' ');
                 i += 1;
             }
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(byte) => {
-                        out.push(byte);
-                        i += 3;
-                    }
-                    // A stray `%` is more likely a literal than a broken escape, and
-                    // failing the whole URL over it would be unhelpful.
-                    Err(_) => {
-                        out.push(b'%');
-                        i += 1;
-                    }
-                }
+            // Two hexadecimal digits and nothing else. `from_str_radix` alone also takes a
+            // sign, so `%+1` decoded to a control character until D174.
+            b'%' if i + 2 < bytes.len()
+                && bytes[i + 1].is_ascii_hexdigit()
+                && bytes[i + 2].is_ascii_hexdigit() =>
+            {
+                let hex = [bytes[i + 1], bytes[i + 2]];
+                let byte = std::str::from_utf8(&hex)
+                    .ok()
+                    .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                    .unwrap_or(b'%');
+                out.push(byte);
+                i += 3;
             }
             byte => {
                 out.push(byte);
@@ -476,10 +479,7 @@ mod tests {
     fn capture_text_reads_a_file_or_starts_a_capture() {
         assert_eq!(
             parse("octosnap://capture-text?filepath=/tmp/page.png"),
-            Ok(Command::CaptureText {
-                file: PathBuf::from("/tmp/page.png"),
-                linebreaks: None
-            })
+            Ok(Command::CaptureText { file: PathBuf::from("/tmp/page.png"), linebreaks: None })
         );
         assert_eq!(
             parse("octosnap://capture-text?filepath=/tmp/page.png&linebreaks=false"),
@@ -499,8 +499,7 @@ mod tests {
     /// means "whatever `ocr-line-breaks` says", which is not the same as `false`.
     #[test]
     fn linebreaks_is_absent_unless_it_was_asked_for() {
-        let Ok(Command::Capture(request)) = parse("octosnap://capture-text?linebreaks=true")
-        else {
+        let Ok(Command::Capture(request)) = parse("octosnap://capture-text?linebreaks=true") else {
             panic!("a capture");
         };
         assert_eq!(request.linebreaks, Some(true));
@@ -544,9 +543,18 @@ mod tests {
 
     #[test]
     fn the_desktop_icon_and_history_commands_take_no_parameters() {
-        assert_eq!(parse("octosnap://toggle-desktop-icons"), Ok(Command::DesktopIcons(DesktopIcons::Toggle)));
-        assert_eq!(parse("octosnap://hide-desktop-icons/"), Ok(Command::DesktopIcons(DesktopIcons::Hide)));
-        assert_eq!(parse("octosnap://show-desktop-icons"), Ok(Command::DesktopIcons(DesktopIcons::Show)));
+        assert_eq!(
+            parse("octosnap://toggle-desktop-icons"),
+            Ok(Command::DesktopIcons(DesktopIcons::Toggle))
+        );
+        assert_eq!(
+            parse("octosnap://hide-desktop-icons/"),
+            Ok(Command::DesktopIcons(DesktopIcons::Hide))
+        );
+        assert_eq!(
+            parse("octosnap://show-desktop-icons"),
+            Ok(Command::DesktopIcons(DesktopIcons::Show))
+        );
         assert_eq!(DesktopIcons::Hide.as_wire(), "hide");
         assert_eq!(parse("octosnap://open-history"), Ok(Command::OpenHistory));
         assert_eq!(parse("octosnap://restore-recently-closed"), Ok(Command::RestoreRecentlyClosed));
@@ -604,7 +612,9 @@ mod tests {
     /// `spec/03` §4's URL param `start`, and the direction beside it.
     #[test]
     fn a_scrolling_capture_carries_its_rect_direction_and_start() {
-        let r = scrolling("octosnap://scrolling-capture?x=20&y=100&width=600&height=900&direction=right&start");
+        let r = scrolling(
+            "octosnap://scrolling-capture?x=20&y=100&width=600&height=900&direction=right&start",
+        );
         assert_eq!(r.rect, Some(Rect::new(20, 100, 600, 900)));
         assert_eq!(r.direction, Some(ScrollDirection::Right));
         assert!(r.start);
@@ -636,6 +646,19 @@ mod tests {
         );
     }
 
+    /// D174: only two hexadecimal digits make an escape. A stray `%`, or one followed by
+    /// a sign, stays the literal it most likely is.
+    #[test]
+    fn only_two_hex_digits_make_an_escape() {
+        assert_eq!(decode("a%20b"), "a b");
+        assert_eq!(decode("100%"), "100%");
+        // The `%` is a literal, and the `+` a space as always.
+        assert_eq!(decode("%+1x"), "% 1x");
+        assert_eq!(decode("%-1x"), "%-1x");
+        assert_eq!(decode("%e2%9c%93"), "\u{2713}");
+        assert_eq!(decode("%4"), "%4");
+    }
+
     #[test]
     fn stop_recording_takes_no_parameters() {
         assert_eq!(parse("octosnap://stop-recording"), Ok(Command::StopRecording));
@@ -644,5 +667,135 @@ mod tests {
             parse("octosnap://stop-recording?x=1"),
             Err(UrlError::UnknownParameter("x".to_owned())),
         );
+    }
+
+    /// ENG-03 (D173): the URL scheme is the one door a web page can knock on, so whatever
+    /// a link says, parsing it answers, and never by panicking.
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::super::*;
+
+        const COMMANDS: [&str; 24] = [
+            "all-in-one",
+            "capture-area",
+            "capture-window",
+            "capture-fullscreen",
+            "capture-previous-area",
+            "self-timer",
+            "copy-last",
+            "save-last",
+            "open-settings",
+            "pin",
+            "open-annotate",
+            "add-quick-access-overlay",
+            "open-from-clipboard",
+            "toggle-desktop-icons",
+            "hide-desktop-icons",
+            "show-desktop-icons",
+            "open-history",
+            "restore-recently-closed",
+            "record-gif",
+            "stop-recording",
+            "capture-text",
+            "scrolling-capture",
+            "no-such-command",
+            "",
+        ];
+
+        const KEYS: [&str; 16] = [
+            "x",
+            "y",
+            "width",
+            "height",
+            "display",
+            "action",
+            "freeze",
+            "cursor",
+            "timer",
+            "tab",
+            "filepath",
+            "linebreaks",
+            "direction",
+            "start",
+            "%78",
+            "",
+        ];
+
+        /// A reference percent-decoder: `%` and two hexadecimal digits, `+` for a space.
+        fn reference(text: &str) -> String {
+            let bytes = text.as_bytes();
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'%'
+                    && i + 2 < bytes.len()
+                    && bytes[i + 1].is_ascii_hexdigit()
+                    && bytes[i + 2].is_ascii_hexdigit()
+                {
+                    let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                    out.push(u8::from_str_radix(hex, 16).unwrap());
+                    i += 3;
+                } else {
+                    out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+                    i += 1;
+                }
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        }
+
+        fn value() -> impl Strategy<Value = String> {
+            prop_oneof![
+                any::<i64>().prop_map(|n| n.to_string()),
+                any::<i32>().prop_map(|n| n.to_string()),
+                prop::sample::select(vec!["true", "no", "copy", "down", "%", "%2", "%zz", "+"])
+                    .prop_map(str::to_owned),
+                ".{0,12}",
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(2_000))]
+
+            #[test]
+            fn any_text_at_all_is_answered(text in ".*") {
+                let _ = parse(&text);
+                let _ = parse(&format!("{SCHEME}{text}"));
+            }
+
+            #[test]
+            fn any_query_on_any_command_is_answered(
+                command in prop::sample::select(COMMANDS.to_vec()),
+                pairs in prop::collection::vec((prop::sample::select(KEYS.to_vec()), value()), 0..8),
+                slash in any::<bool>(),
+            ) {
+                let query: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                let url = format!("{SCHEME}{command}{}?{}", if slash { "/" } else { "" }, query.join("&"));
+                let _ = parse(&url);
+            }
+
+            #[test]
+            fn decoding_matches_the_reference(text in ".*") {
+                prop_assert_eq!(decode(&text), reference(&text));
+            }
+
+            /// A rect the URL gives is one whose edges a 32-bit coordinate can hold, or it
+            /// is refused by name.
+            #[test]
+            fn a_rect_from_a_link_has_edges_that_fit(x in any::<i32>(), y in any::<i32>(),
+                    w in any::<i32>(), h in any::<i32>()) {
+                let url = format!("{SCHEME}capture-area?x={x}&y={y}&width={w}&height={h}");
+                match parse(&url) {
+                    Ok(Command::Capture(request)) => {
+                        let r = request.rect.unwrap();
+                        prop_assert!(r.width > 0 && r.height > 0);
+                        prop_assert!(r.x.checked_add(r.width).is_some());
+                        prop_assert!(r.y.checked_add(r.height).is_some());
+                    }
+                    Err(UrlError::BadParameter { .. }) => {}
+                    other => prop_assert!(false, "{url}: {other:?}"),
+                }
+            }
+        }
     }
 }

@@ -13,17 +13,19 @@
 mod card;
 mod style;
 
+pub(crate) use card::shortcut_rows;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
+use adw::prelude::*;
 use gtk::gdk;
 use gtk::glib;
-use adw::prelude::*;
 use octosnap_core::qao::{
-    AutoClose, CardId, CardKind, Edge, PendingTrash, RecentlyClosed, SHADOW_MARGIN, Size,
-    Slot, Stack, TRASH_GRACE_MS,
+    AutoClose, CardId, CardKind, Edge, PendingTrash, RecentlyClosed, SHADOW_MARGIN, Size, Slot,
+    Stack, TRASH_GRACE_MS,
 };
 use octosnap_core::{CaptureResult, Rect};
 use octosnap_shell::{Placement, PlacementMonitor, ShellBridge};
@@ -726,7 +728,9 @@ impl<B: ShellBridge + 'static> Qao<B> {
         ] {
             let Some(path) = path else { continue };
             let file = gtk::gio::File::for_path(path);
-            let result = if keep { file.trash(gtk::gio::Cancellable::NONE) } else {
+            let result = if keep {
+                file.trash(gtk::gio::Cancellable::NONE)
+            } else {
                 file.delete(gtk::gio::Cancellable::NONE)
             };
             match result {
@@ -1072,9 +1076,11 @@ impl<B: ShellBridge + 'static> Qao<B> {
 
     /// Whether a card, a pin or an editor still shows `path`.
     fn held_elsewhere(&self, path: &Path) -> bool {
-        let pinned = self.pins.borrow().as_ref().is_some_and(|pins| {
-            pins.open_paths().iter().any(|open| open == path)
-        });
+        let pinned = self
+            .pins
+            .borrow()
+            .as_ref()
+            .is_some_and(|pins| pins.open_paths().iter().any(|open| open == path));
         pinned
             || self.open_paths().iter().any(|open| open == path)
             || open_editor_paths().iter().any(|open| open == path)
@@ -1124,8 +1130,7 @@ impl<B: ShellBridge + 'static> Qao<B> {
             self.close_cards_for(&capture.path);
             return;
         }
-        let editor =
-            crate::editor::Editor::open(&self.app, capture, self.editor_actions(origin));
+        let editor = crate::editor::Editor::open(&self.app, capture, self.editor_actions(origin));
 
         // The editor is kept alive by a handler on its own window, and nothing else.
         //
@@ -1290,8 +1295,8 @@ impl<B: ShellBridge + 'static> Qao<B> {
         let rect = octosnap_core::Rect {
             x: 0,
             y: 0,
-            width: (opened.manifest.canvas.width / opened.manifest.scale.max(f64::EPSILON))
-                .round() as i32,
+            width: (opened.manifest.canvas.width / opened.manifest.scale.max(f64::EPSILON)).round()
+                as i32,
             height: (opened.manifest.canvas.height / opened.manifest.scale.max(f64::EPSILON))
                 .round() as i32,
         };
@@ -1353,7 +1358,11 @@ impl<B: ShellBridge + 'static> Qao<B> {
 /// editor goes with it; `Editor::drop` logs the moment.
 /// Generic over the editor, because there are two (`spec/05`'s canvas and the GIF
 /// editor) and the janitor's question -- which files are on screen -- is the same for both.
-fn hold_until_closed<T: 'static>(held: Rc<T>, window: &adw::ApplicationWindow, showing: std::path::PathBuf) {
+fn hold_until_closed<T: 'static>(
+    held: Rc<T>,
+    window: &adw::ApplicationWindow,
+    showing: std::path::PathBuf,
+) {
     let any: Rc<dyn std::any::Any> = held.clone();
     EDITORS.with(|editors| editors.borrow_mut().push((Rc::downgrade(&any), showing)));
     let held = RefCell::new(Some(held));
@@ -1608,7 +1617,6 @@ impl<B: ShellBridge + 'static> CardHost for Qao<B> {
         self.close(id, CloseReason::Trashed);
     }
 
-
     fn close(&self, id: CardId, reason: CloseReason) {
         // Deferred by one turn so this can be called from inside a card's own signal
         // handler -- a button click, a gesture -- without destroying the widget the
@@ -1626,11 +1634,7 @@ impl<B: ShellBridge + 'static> CardHost for Qao<B> {
 
     fn hovered(&self, id: CardId, entered: bool) {
         debug!(id, entered, "card hover");
-        let Some(path) = self
-            .entries
-            .borrow()
-            .get(&id)
-            .and_then(|entry| entry.card.object_path())
+        let Some(path) = self.entries.borrow().get(&id).and_then(|entry| entry.card.object_path())
         else {
             return;
         };
@@ -1843,7 +1847,12 @@ mod tests {
             for (id, offset) in stack.placements() {
                 let card = cards[usize::try_from(id).expect("small id") - 1];
                 let rect = bridge
-                    .place_window(&format!("/w/{id}"), "qao", &placement_for(offset, card, config), 0)
+                    .place_window(
+                        &format!("/w/{id}"),
+                        "qao",
+                        &placement_for(offset, card, config),
+                        0,
+                    )
                     .await
                     .expect("the null bridge always places");
                 out.push(rect);
@@ -1890,8 +1899,13 @@ mod tests {
                 .find(|(candidate, _)| *candidate == id)
                 .map(|(_, offset)| offset)
                 .expect("the card is in the stack");
-            run(bridge.place_window(&format!("/w/{id}"), "qao", &placement_for(offset, card, config), 0))
-                .expect("the null bridge always places")
+            run(bridge.place_window(
+                &format!("/w/{id}"),
+                "qao",
+                &placement_for(offset, card, config),
+                0,
+            ))
+            .expect("the null bridge always places")
         };
 
         // Stack is [3, 2, 1] newest first, so card 1 is the top one.
@@ -1972,13 +1986,12 @@ mod tests {
     #[test]
     fn following_the_pointer_is_a_setting_the_extension_is_told_about() {
         let card = Size::new(207, 129);
-        let following = placement_for(0, card, QaoConfig { follow_pointer: true, ..QaoConfig::default() });
-        let fixed = placement_for(0, card, QaoConfig { follow_pointer: false, ..QaoConfig::default() });
+        let following =
+            placement_for(0, card, QaoConfig { follow_pointer: true, ..QaoConfig::default() });
+        let fixed =
+            placement_for(0, card, QaoConfig { follow_pointer: false, ..QaoConfig::default() });
         match (following, fixed) {
-            (
-                Placement::Stacked { monitor: a, .. },
-                Placement::Stacked { monitor: b, .. },
-            ) => {
+            (Placement::Stacked { monitor: a, .. }, Placement::Stacked { monitor: b, .. }) => {
                 assert_eq!(a, PlacementMonitor::Pointer);
                 assert_eq!(b, PlacementMonitor::Primary);
             }
