@@ -3,6 +3,11 @@
 //! A window's first frame, as something to wait for: the first moment the compositor has a
 //! window there to place (D176).
 //!
+//! A window there to *find*, that is. The frame that resolves this can be one in which GTK
+//! only acknowledged the configure, with the first buffer a frame later, so the window can
+//! still have no size when it is asked about. `PlaceWindow` waits for that buffer in the
+//! extension before it places anything (D193).
+//!
 //! `PlaceWindow` finds a window by the GTK object path its surface reports, and the
 //! compositor learns the path with the surface's first commit. A call that overtakes the
 //! commit is answered "no window at <path>; no window on the stage reports a GTK object
@@ -41,8 +46,8 @@ impl State {
     }
 }
 
-/// Resolves once a window has painted and committed its first frame. Cloned, it resolves
-/// for each clone.
+/// Resolves once a window has been through its first frame and committed. Cloned, it
+/// resolves for each clone.
 #[derive(Debug, Clone)]
 pub struct FirstFrame(Rc<RefCell<State>>);
 

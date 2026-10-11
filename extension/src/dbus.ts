@@ -22,6 +22,7 @@ import {
 } from './flow.js';
 import { metaToDict } from './app.js';
 import { Handoff } from './handoff.js';
+import { FIRST_FRAME_WAIT_MS, type FirstFrameEnds, waitForFirstFrame } from './firstFrame.js';
 import { placeAtEdge } from './place.js';
 import { type ScrollCaptureOptions, runScrollingCapture } from './scroll.js';
 import type { Settings } from './settings.js';
@@ -253,6 +254,22 @@ function windowGoneError(objectPath: string): Error {
 }
 
 /**
+ * Why a placement was not made for a window that is still there: it never drew in the
+ * time it was given (D193). A fourth cause, wanting the client looked at rather than the
+ * path or the timing of a close.
+ */
+function notDrawnError(objectPath: string, waitedMs: number): Error {
+    return new Error(`window at ${objectPath} had not drawn after ${waitedMs} ms, so it was not placed`);
+}
+
+/**
+ * A first frame slower than this is logged with the placement it held up. Every card waits
+ * a little, a frame or two, and a line per card would bury the one that matters; the slow
+ * first frame of D193 took 646 ms.
+ */
+const SLOW_FIRST_FRAME_MS = 250;
+
+/**
  * Makes a window that has just been moved appear to slide there.
  *
  * `spec/04` §5: "New card pushes existing cards away from the corner with a 200 ms
@@ -290,16 +307,22 @@ function slideActor(window: Meta.Window, from: Mtk.Rectangle, durationMs: number
 }
 
 /**
- * Runs `then` once the window is one the compositor can be asked about, and **never from
- * inside a frame**.
+ * Every wait still running, for `ShellService.destroy` (D135). Its timer is a main-loop
+ * source, and the review at extensions.gnome.org requires `disable()` to remove every one.
+ */
+const drawableWaits = new Set<() => void>();
+
+/**
+ * Ends `ends` once the window is one the compositor can place, and **never from inside a
+ * frame**: `firstFrame.ts`'s wait, answered with Mutter.
  *
- * "Drawable" here means Mutter has processed the window's first buffer, which is when it
- * gains a stack position and a real frame rect. The proxy for that is a non-empty frame
- * rect; the signal for it is the window actor's `first-frame`, which is the idiom the
- * shell's own extensions use for the same question.
+ * "Drawable" means Mutter has processed the window's first buffer, which is when it gains a
+ * stack position and a frame rect with a size, and when Mutter places it itself. The proxy
+ * for that is a non-empty frame rect; the signal for it is the window actor's
+ * `first-frame`, which is the idiom the shell's own extensions use for the same question.
  *
- * The `later` around the callback is not tidiness -- without it this **crashes the
- * session**:
+ * The later between `first-frame` and placing is not tidiness -- without it this **crashes
+ * the session**:
  *
  * ```text
  * libmutter:ERROR:../src/compositor/compositor.c:467:
@@ -312,109 +335,67 @@ function slideActor(window: Meta.Window, from: Mtk.Rectangle, durationMs: number
  * goes down, taking every application's windows with it. A `BEFORE_REDRAW` later runs
  * outside the paint, which is where any restack belongs. `docs/decisions.md` D36.
  *
- * The timeout is not defensive decoration either. A window that never draws -- a client
- * that mapped a surface and then hung -- would otherwise leave the caller's D-Bus call
- * unanswered until *its* timeout, turning a slow window into an error the caller reports
- * as a failed placement. Placing it late and imperfectly is better than not answering.
- *
- * Which is why there are two outcomes and not one. That 500 ms of grace is long enough
- * for a window to be created and closed inside it, and `then` cannot run for a window
- * that is no longer there: it would measure and move something Mutter has unmanaged, and
- * `PlaceWindow` would answer with the rect of nothing. So `gone` says so instead. What
- * neither outcome may do is stay silent, for the reason in the paragraph above.
+ * Until D193 the wait gave up after 500 ms and placed the window anyway, "late and
+ * imperfectly". It was neither: Mutter places a window itself when its first buffer comes,
+ * so the move was undone and the card drew in the middle of the work area, and the rect
+ * read back had no size. A first card's first frame took 646 ms on battery with a cold
+ * pipeline cache. So the wait is now long, and a window that outlasts it is not placed and
+ * is answered `late`. A window that closes during the wait is answered `gone` when it
+ * goes, from its `unmanaged` signal, and between the frame and the later, from `isAlive`
+ * asked again (D49): moving or measuring a window Mutter has unmanaged segfaulted
+ * libmutter.
  */
-/**
- * Every `whenDrawable` still waiting, for `ShellService.destroy` (D135). Its timeout is a
- * main-loop source, and the review at extensions.gnome.org requires `disable()` to remove
- * every one.
- */
-const drawableWaits = new Set<() => void>();
-
-function whenDrawable(
-    window: Meta.Window,
-    then: () => void,
-    gone: () => void,
-    stopped: () => void,
-): void {
+function whenDrawable(window: Meta.Window, ends: FirstFrameEnds): void {
+    // Captured once: the actor whose `first-frame` is waited for. Asked about only while
+    // `isAlive` says the window still has it, never once Mutter has let it go (D49).
     const actor = window.get_compositor_private<Meta.WindowActor>();
-    if (actor === null) {
-        // No actor is not "too early", it is "not composited". Mutter clears this when it
-        // unmanages a window, so for one `findAppWindow` just handed us *out of the actor
-        // list* it means the window closed in between. Waiting for a first frame that
-        // cannot arrive would burn the full fallback before saying so.
-        gone();
-        return;
-    }
-
-    const frame = window.get_frame_rect();
-    if (frame.width > 0 && frame.height > 0) {
-        then();
-        return;
-    }
-
-    let done = false;
-    let handler = 0;
-    let timeout = 0;
-
-    const finish = (): void => {
-        if (done) return;
-        done = true;
-        drawableWaits.delete(abandon);
-
-        // Release only what is still there to be released. One `actor.disconnect(handler)`
-        // on the fallback path, for a card created and closed inside the 500 ms, produced
-        // two complaints:
-        //
-        // ```text
-        // Gjs-CRITICAL: Object MetaWindowActorWayland (0x...), has been already disposed
-        //   -- impossible to access it.
-        // GLib-GObject-CRITICAL: gsignal.c:2723: instance '0x...' has no handler with id
-        // ```
-        //
-        // Neither is catchable, which is the part that decides the shape of the fix: GJS
-        // logs the disposed access and calls into `g_signal_handler_disconnect` anyway,
-        // and the second line is that C function warning about the pointer it was handed.
-        // A `try`/`catch` would have hidden nothing. The disconnect has to *not happen*,
-        // so aliveness is asked of the window, which outlives its actor -- never of the
-        // actor, which is the object already unsafe to touch. `docs/decisions.md` D49.
-        if (handler !== 0 && isAlive(window)) actor.disconnect(handler);
-        if (timeout !== 0) GLib.source_remove(timeout);
-
-        global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
-            // Asked again rather than carried down from above: the later is a frame away,
-            // and a frame is time enough for the window to go.
-            if (isAlive(window)) then();
-            else gone();
-            return GLib.SOURCE_REMOVE;
-        });
+    let abandon: (() => void) | null = null;
+    // Each end takes the wait out of the set before it answers.
+    const settle = (end: () => void) => (): void => {
+        if (abandon !== null) drawableWaits.delete(abandon);
+        end();
     };
-
-    handler = actor.connect('first-frame', finish);
-    timeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, FIRST_FRAME_TIMEOUT_MS, () => {
-        info('placing a window that never reported a first frame');
-        // Dropped before `finish` can reach for it. D32: removing a GLib source that has
-        // already fired is a `GLib-CRITICAL`, and the rule it left is that whichever side
-        // ends a one-shot source releases the handle.
-        timeout = 0;
-        finish();
-        return GLib.SOURCE_REMOVE;
-    });
-
-    // The extension turned off first: release what `finish` would, the same way, and
-    // answer the caller rather than leave it waiting for its own timeout.
-    const abandon = (): void => {
-        if (done) return;
-        done = true;
-        drawableWaits.delete(abandon);
-        if (handler !== 0 && isAlive(window)) actor.disconnect(handler);
-        if (timeout !== 0) GLib.source_remove(timeout);
-        stopped();
-    };
-    drawableWaits.add(abandon);
+    abandon = waitForFirstFrame(
+        {
+            drawn: () => {
+                const frame = window.get_frame_rect();
+                return frame.width > 0 && frame.height > 0;
+            },
+            alive: () => actor !== null && isAlive(window),
+            onFirstFrame: then => {
+                const id = actor?.connect('first-frame', then) ?? 0;
+                return () => {
+                    if (id !== 0) actor?.disconnect(id);
+                };
+            },
+            onUnmanaged: then => {
+                const id = window.connect('unmanaged', then);
+                return () => window.disconnect(id);
+            },
+            later: then => {
+                global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+                    then();
+                    return GLib.SOURCE_REMOVE;
+                });
+            },
+            timer: (ms, then) => {
+                const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
+                    then();
+                    return GLib.SOURCE_REMOVE;
+                });
+                return () => GLib.source_remove(id);
+            },
+        },
+        {
+            drawn: settle(ends.drawn),
+            gone: settle(ends.gone),
+            late: settle(ends.late),
+            stopped: settle(ends.stopped),
+        },
+        FIRST_FRAME_WAIT_MS,
+    );
+    if (abandon !== null) drawableWaits.add(abandon);
 }
-
-/** Comfortably inside the app's 2 s call timeout, and far longer than a frame. */
-const FIRST_FRAME_TIMEOUT_MS = 500;
 
 /**
  * Fails a D-Bus call with a message rather than a stack trace.
@@ -925,9 +906,10 @@ export class ShellService {
      * heights -- `place.ts` explains who knows what.
      *
      * **Asynchronous**, because a window can be findable before it is placeable. A card
-     * asks to be placed as soon as it has painted its first frame, and at that moment
-     * Mutter has a `MetaWindow` for it but has not put it in the stack or processed its
-     * buffer. Touching it then produced two complaints on every capture:
+     * asks to be placed after its first `after-paint`, and that frame can be one in which
+     * GTK only acknowledged the configure: Mutter has a `MetaWindow` for it but has not
+     * put it in the stack or processed a buffer for it. Touching it then produced two
+     * complaints on every capture:
      *
      * ```text
      * meta_window_set_stack_position_no_sync: assertion 'window->stack_position >= 0' failed
@@ -943,6 +925,13 @@ export class ShellService {
      * A window that closes *during* that wait is answered with an error and not a rect.
      * The alternative is a rect measured off an unmanaged window, which the caller cannot
      * tell from a real one and would stack against. `docs/decisions.md` D49.
+     *
+     * So is a window that has not drawn when the wait runs out, and for the same reason
+     * (D193). It is not moved either: Mutter places a window itself when its first buffer
+     * comes, so a move made before then is undone, and the frame rect read back has no
+     * size. Until D193 the wait was 500 ms and did both, so a first card whose first frame
+     * took 646 ms drew in the middle of the work area while the app was told it was in the
+     * corner, as `0x0`.
      */
     PlaceWindowAsync(
         [objectPath, role, options]: [string, string, MonitorDict],
@@ -958,10 +947,17 @@ export class ShellService {
             return;
         }
 
-        whenDrawable(
-            window,
-            () => {
+        // How long the window kept the answer waiting, for the log: a first frame that is
+        // slow to come is the one condition under which a placement misbehaved (D193).
+        const asked = GLib.get_monotonic_time();
+        const waited = (): number => Math.round((GLib.get_monotonic_time() - asked) / 1000);
+        whenDrawable(window, {
+            drawn: () => {
                 try {
+                    const ms = waited();
+                    if (ms >= SLOW_FIRST_FRAME_MS) {
+                        info(`placing ${role} at ${objectPath}: it drew ${ms} ms after it was asked about`);
+                    }
                     const landed = this.#place(window, role, options);
                     if (role === 'scroller') this.#trackScroller(window);
                     if (role === 'pin') this.#trackPin(window);
@@ -970,9 +966,13 @@ export class ShellService {
                     returnError(invocation, e);
                 }
             },
-            () => returnError(invocation, windowGoneError(objectPath)),
-            () => returnError(invocation, new Error('the extension was turned off before the window drew')),
-        );
+            gone: () => returnError(invocation, windowGoneError(objectPath)),
+            late: () => {
+                info(`not placing ${role} at ${objectPath}: it had not drawn after ${waited()} ms`);
+                returnError(invocation, notDrawnError(objectPath, waited()));
+            },
+            stopped: () => returnError(invocation, new Error('the extension was turned off before the window drew')),
+        });
     }
 
     #place(
@@ -984,14 +984,13 @@ export class ShellService {
         // The caller's size, not Mutter's, when the caller offers one.
         //
         // `get_frame_rect()` answers `0x0` for a window whose first buffer the compositor
-        // has not processed yet -- and a card asks to be placed the moment it is drawable,
-        // which is exactly then. Placing a zero-height window against the bottom edge put
-        // the card at `y = 1200` on a 1200 px display: correct arithmetic, wrong input.
-        //
-        // Waiting for a non-zero frame rect would be polling for something the client
-        // already knows. A GTK window is the size the client made it, so the client says
-        // so and the compositor answers where it ended up. Each half is asked only what
-        // it is in a position to know, which is the same division `place.ts` describes.
+        // has not processed yet, and before D34 a card was placed at exactly that moment.
+        // Placing a zero-height window against the bottom edge put the card at `y = 1200`
+        // on a 1200 px display: correct arithmetic, wrong input. A window is only placed
+        // once it has drawn now (D193), but the division stands: a GTK window is the size
+        // the client made it, so the client says so and the compositor answers where it
+        // ended up. Each half is asked only what it is in a position to know, which is the
+        // same division `place.ts` describes.
         const frame = window.get_frame_rect();
         const size = {
             width: numberOption(options, 'width') ?? frame.width,
@@ -1030,6 +1029,15 @@ export class ShellService {
         // Read back, always. This is the return value the spec asks for and the reason
         // the caller can stack accurately.
         const landed = window.get_frame_rect();
+        // A rect with no size is the rect of a window Mutter has not drawn, which it will
+        // place again itself when it does: not where this one landed (D193). The wait
+        // before this makes it unreachable, and the answer stays an error if it is not.
+        if (landed.width <= 0 || landed.height <= 0) {
+            throw new Error(
+                `${role} has no size yet (${landed.width}x${landed.height}), so where it ` +
+                'landed is not known',
+            );
+        }
         if (landed.x !== target.x || landed.y !== target.y) {
             info(
                 `placed ${role} at ${landed.x},${landed.y} after asking for ` +

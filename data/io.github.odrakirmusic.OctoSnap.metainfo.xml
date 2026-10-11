@@ -114,6 +114,14 @@
   </categories>
 
   <releases>
+    <release version="0.1.11" date="2026-10-11">
+      <description>
+        <p>Windows open where they belong, even the first time.</p>
+        <ul>
+          <li>A card, a pin, the history or a capture's controls that are slow to draw, as the first ones after installing can be, open where they belong, not in the middle of the screen</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.10" date="2026-10-10">
       <description>
         <p>OctoSnap reads your captures for you, and the editor gains a magnifier, layers, Cut Out and vector export.</p>

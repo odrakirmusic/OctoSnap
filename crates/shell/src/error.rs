@@ -31,6 +31,15 @@ pub enum BridgeError {
     #[error("malformed reply from {method}: {detail}")]
     MalformedReply { method: &'static str, detail: String },
 
+    /// `PlaceWindow` answered for a window the compositor had not drawn yet: the rect it
+    /// read back has no size, and the window is wherever Mutter puts it once it draws
+    /// (D193). Only an extension from before D193 answers so, and it is asked again before
+    /// this is returned.
+    #[error(
+        "the window at {path} had not drawn when it was placed, so where it landed is not known"
+    )]
+    NotDrawn { path: String },
+
     #[error("D-Bus call failed: {0}")]
     Dbus(#[from] glib::Error),
 }

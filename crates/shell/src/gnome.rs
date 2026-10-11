@@ -31,6 +31,26 @@ use crate::variant;
 /// should get on with degraded mode rather than hang.
 const CALL_TIMEOUT_MS: i32 = 2_000;
 
+/// How long `PlaceWindow` may take to answer (D193).
+///
+/// The extension answers once the window has drawn, which it waits up to ten seconds for
+/// (`FIRST_FRAME_WAIT_MS` in `extension/src/firstFrame.ts`, whose test reads this). A card
+/// asks before its first buffer has reached the compositor, and a first card's buffer came
+/// 646 ms after it asked, on battery with a cold pipeline cache. The answer is awaited off
+/// the capture path, so a long wait holds nothing up.
+const PLACE_TIMEOUT_MS: i32 = 12_000;
+
+/// How many times `PlaceWindow` is asked before an answer with no size is taken as one.
+///
+/// Only an extension from before D193 answers so. It waited 500 ms for the window's first
+/// frame, then moved it blind and read back a frame rect with no size, and Mutter placed
+/// the window again itself when its buffer came. Asked again, it waits another 500 ms, and
+/// a window that has drawn by then is placed where it was asked to be: four asks cover a
+/// first frame up to two seconds late. After an update the app is new at once and the
+/// extension only from the next login, and an update that changes GTK or the graphics
+/// driver can also leave the pipeline cache cold, which is what made a first frame late.
+const PLACE_ASKS: u32 = 4;
+
 /// How long `PickColor` may wait for the user to click: five minutes, after which a
 /// picker left open counts as abandoned.
 const PICK_TIMEOUT_MS: i32 = 300_000;
@@ -133,6 +153,29 @@ fn is_method_missing(e: &glib::Error) -> bool {
         return true;
     }
     e.message().contains("No such method")
+}
+
+/// Asks `ask` for a landed rect until one has a size, at most `asks` times (D193).
+///
+/// A rect with no size is not where a window landed: it is the frame rect of a window the
+/// compositor had not drawn, which Mutter then placed itself. Taken as an answer, it had
+/// the app stack cards against one in the bottom-left corner that Mutter drew in the middle
+/// of the work area, and read a scrolling capture's controls as clear of a selection they
+/// could be inside. So it is never returned as `Ok`: it is asked about again, and after
+/// `asks` it is [`BridgeError::NotDrawn`]. Any other error ends the asking at once.
+async fn ask_until_sized<F, Fut>(path: &str, asks: u32, mut ask: F) -> Result<Rect, BridgeError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Rect, BridgeError>>,
+{
+    for asked in 1..=asks {
+        let landed = ask().await?;
+        if !landed.is_empty() {
+            return Ok(landed);
+        }
+        tracing::debug!(path, asked, ?landed, "the window was placed before it drew; asking again");
+    }
+    Err(BridgeError::NotDrawn { path: path.to_owned() })
 }
 
 fn is_extension_absent(e: &glib::Error) -> bool {
@@ -276,15 +319,23 @@ impl ShellBridge for GnomeExtensionBridge {
             glib::Variant::from(role),
             options.end(),
         ]);
-        let reply = self.call("PlaceWindow", Some(params), "((iiii))").await?;
-        let (x, y, width, height) =
-            reply.child_value(0).get::<(i32, i32, i32, i32)>().ok_or_else(|| {
-                BridgeError::MalformedReply {
-                    method: "PlaceWindow",
-                    detail: "the landed rect is not (iiii)".to_owned(),
-                }
-            })?;
-        Ok(Rect::new(x, y, width, height))
+        ask_until_sized(object_path, PLACE_ASKS, || {
+            let params = params.clone();
+            async move {
+                let reply = self
+                    .call_with_timeout("PlaceWindow", Some(params), "((iiii))", PLACE_TIMEOUT_MS)
+                    .await?;
+                let (x, y, width, height) = reply
+                    .child_value(0)
+                    .get::<(i32, i32, i32, i32)>()
+                    .ok_or_else(|| BridgeError::MalformedReply {
+                        method: "PlaceWindow",
+                        detail: "the landed rect is not (iiii)".to_owned(),
+                    })?;
+                Ok(Rect::new(x, y, width, height))
+            }
+        })
+        .await
     }
 
     async fn move_window_by(
@@ -456,5 +507,84 @@ impl ShellBridge for GnomeExtensionBridge {
         }
 
         Ok(monitors)
+    }
+}
+
+#[cfg(test)]
+// A failing assertion should panic, so expect() is the right tool here. The
+// workspace-wide ban exists to keep panics out of D-Bus handlers, not out of tests.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+    use std::future::Ready;
+
+    use super::*;
+
+    /// A fresh context per test: the default one is shared between tests.
+    fn run<F: std::future::Future>(future: F) -> F::Output {
+        glib::MainContext::new().block_on(future)
+    }
+
+    /// Answers `ask_until_sized` from a script, counting the asks.
+    struct Script {
+        answers: RefCell<VecDeque<Result<Rect, BridgeError>>>,
+        asked: Cell<u32>,
+    }
+
+    impl Script {
+        fn new(answers: Vec<Result<Rect, BridgeError>>) -> Self {
+            Self { answers: RefCell::new(answers.into()), asked: Cell::new(0) }
+        }
+
+        fn ask(&self) -> Ready<Result<Rect, BridgeError>> {
+            self.asked.set(self.asked.get() + 1);
+            let next =
+                self.answers.borrow_mut().pop_front().expect("asked more often than scripted");
+            std::future::ready(next)
+        }
+    }
+
+    /// The D193 card: placed at the corner before it drew, answered `0x0`, and drawn by
+    /// Mutter in the middle of the work area. Asked again once it has drawn, it is placed
+    /// and answered with its size.
+    #[test]
+    fn an_answer_with_no_size_is_asked_again() {
+        let script =
+            Script::new(vec![Ok(Rect::new(0, 1043, 0, 0)), Ok(Rect::new(0, 1043, 239, 157))]);
+        let landed = run(ask_until_sized("/w/1", PLACE_ASKS, || script.ask()));
+        assert_eq!(landed.unwrap(), Rect::new(0, 1043, 239, 157));
+        assert_eq!(script.asked.get(), 2);
+    }
+
+    #[test]
+    fn a_sized_answer_is_taken_at_once() {
+        let script = Script::new(vec![Ok(Rect::new(0, 1043, 239, 157))]);
+        let landed = run(ask_until_sized("/w/1", PLACE_ASKS, || script.ask()));
+        assert_eq!(landed.unwrap(), Rect::new(0, 1043, 239, 157));
+        assert_eq!(script.asked.get(), 1);
+    }
+
+    /// Never `Ok` without a size, however often it is asked: a caller stacks against it.
+    #[test]
+    fn a_window_that_never_draws_is_not_drawn_rather_than_a_rect() {
+        let script = Script::new((0..PLACE_ASKS).map(|_| Ok(Rect::new(0, 1043, 0, 0))).collect());
+        let landed = run(ask_until_sized("/w/1", PLACE_ASKS, || script.ask()));
+        assert!(matches!(landed, Err(BridgeError::NotDrawn { ref path }) if path == "/w/1"));
+        assert_eq!(script.asked.get(), PLACE_ASKS);
+    }
+
+    /// An error is the extension's answer, not a guess: a window that closed, or one the
+    /// D193 extension gave up on, is not asked about again.
+    #[test]
+    fn an_error_is_not_asked_again() {
+        // As the extension's `returnError` sends it.
+        let script = Script::new(vec![Err(BridgeError::Dbus(glib::Error::new(
+            gio::DBusError::Failed,
+            "window at /w/1 closed before it could be placed",
+        )))]);
+        let landed = run(ask_until_sized("/w/1", PLACE_ASKS, || script.ask()));
+        assert!(matches!(landed, Err(BridgeError::Dbus(_))));
+        assert_eq!(script.asked.get(), 1);
     }
 }

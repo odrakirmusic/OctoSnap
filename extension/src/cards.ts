@@ -196,8 +196,8 @@ export class CardFocus {
  * whole value of it rather than an implementation detail: Mutter disposes the
  * `MetaWindowActor` when it unmanages a window but leaves the `MetaWindow` answering, so
  * this stays a safe question to ask after the answer has become "no". `whenDrawable` in
- * `dbus.ts` depends on exactly that -- by the time its fallback fires, the actor it
- * captured 500 ms earlier may be gone. `docs/decisions.md` D49.
+ * `dbus.ts` depends on exactly that -- by the time its wait ends, the actor it captured at
+ * the start may be gone. `docs/decisions.md` D49, D193.
  */
 export function isAlive(window: Meta.Window | null): window is Meta.Window {
     return window !== null && window.get_compositor_private() !== null;

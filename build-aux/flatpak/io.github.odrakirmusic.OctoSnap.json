@@ -64,8 +64,8 @@
                 },
                 {
                     "type": "archive",
-                    "url": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
-                    "sha512": "8e5d6f6733c38a72ebf5e52ddc9feded5e8580d130f508ef04f772b33f4a7d00c3e357d0ac2d98e2f290762694a454f86d795bd511e12e9a7cc2d9ba3394e04b",
+                    "url": "https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz",
+                    "sha512": "cb64efbb14993c3c906a490544f6472859be28a56a222b1d83dfc26709bd7edbca5cb3fc3515a3dfcfce0e335baf8dd2b285ea36e022b047f519d0b1a9671d07",
                     "dest": "extension/node_modules/typescript"
                 },
                 "cargo-sources.json"

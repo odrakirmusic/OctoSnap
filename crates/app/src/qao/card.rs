@@ -528,9 +528,13 @@ impl Card {
     /// `y = 1200` on a 1200 px display -- exactly one card-height below the bottom edge,
     /// which is what "anchor the bottom of a window with no height" means.
     ///
-    /// `after-paint` fires once GTK has painted and committed, which is the first moment
-    /// the compositor can answer questions about this window. The handler disconnects
-    /// itself, because it fires for every frame afterwards.
+    /// `after-paint` fires once GTK has acknowledged the configure and committed, so the
+    /// window can be asked about without racing that acknowledgement. It is not always a
+    /// frame with a picture in it: the first one after the configure can commit the
+    /// acknowledgement alone, and the first buffer come with the next frame GTK renders,
+    /// 646 ms later with a cold pipeline cache on battery (D193). The extension waits for
+    /// that buffer before it places the window, since it is the side that sees it arrive.
+    /// The handler disconnects itself, because it fires for every frame afterwards.
     fn wait_for_surface(self: &Rc<Self>) {
         let Some(surface) = self.window.surface() else {
             warn!(id = self.id, "card has no surface at map time");

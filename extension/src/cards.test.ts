@@ -7,8 +7,8 @@
  * Only this much of `cards.ts` is testable under Node: its `gi://Meta` import is
  * type-only and so erased, while `dbus.ts` -- where the bug in `docs/decisions.md` D49
  * actually lived -- imports six gi modules as values and cannot be loaded here at all.
- * `whenDrawable`'s sequencing is therefore checked in a nested shell, and what is checked
- * here is the predicate it leans on.
+ * `whenDrawable`'s sequencing has been in `firstFrame.ts` since D193, tested in
+ * `firstFrame.test.ts`, and what is checked here is the predicate it leans on.
  *
  * The interesting case is the third one. A disposed GObject is not merely a wrapper that
  * answers `null`; touching it at all is the fault being guarded against, and the stub
@@ -47,7 +47,7 @@ describe('isAlive', () => {
     });
 
     it('says no once Mutter has unmanaged the window', () => {
-        // The 500 ms fallback in `whenDrawable` outliving the card it was waiting for.
+        // A wait in `whenDrawable` outliving the card it was waiting for.
         expect(isAlive(unmanaged())).toBe(false);
     });
 

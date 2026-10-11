@@ -17,7 +17,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Reading a GIF back for the editor (`gif_edit`): exact frames, delays and disposal,
 # which gdk-pixbuf's animation iterator cannot report (it loops without saying where).
 # Already in the lockfile as gifski's own dependency.
-gif = "0.13"
+gif = "0.14"
 gifski = { version = "1.34", default-features = false }
 gio = "0.22"
 glib = "0.22"

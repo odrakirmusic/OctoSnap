@@ -1,6 +1,6 @@
 {
   "name": "octosnap-shell",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "GNOME Shell extension half of OctoSnap: capture overlay, hotkeys, window placement",
   "license": "GPL-3.0-or-later",
   "private": true,
@@ -16,7 +16,7 @@
   },
   "devDependencies": {
     "@girs/gnome-shell": "^50.0.4",
-    "typescript": "^5.9.0",
-    "vitest": "^5.0.0"
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.2"
   }
 }

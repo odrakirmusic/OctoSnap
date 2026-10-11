@@ -229,6 +229,11 @@ pub trait ShellBridge {
     /// `move_frame` is clamped silently (`docs/spikes/01-02`). A caller that stacks
     /// windows has to stack against reality, so the answer is the rect and not a unit.
     ///
+    /// The rect always has a size. The extension places a window only once the compositor
+    /// has drawn it, which can be a while after the window asks, and a window that has not
+    /// drawn is answered with an error, never with the size-less rect Mutter has for it
+    /// until then (D193).
+    ///
     /// `animate_ms` asks the compositor to slide the window's *actor* there rather than
     /// have it appear at the new position (`spec/04` §5's 200 ms stack shift). Zero for a
     /// window that has never been placed, which has nowhere to slide from.

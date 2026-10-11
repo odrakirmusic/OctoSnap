@@ -16,4 +16,4 @@ octosnap-core = { version = "0.1.0", path = "../core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 ulid = { version = "3.0.0", features = ["serde"] }
-zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }

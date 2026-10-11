@@ -479,7 +479,9 @@ impl<B: ShellBridge + 'static> Qao<B> {
                         if let Some(entry) = qao.entries.borrow_mut().get_mut(&id) {
                             entry.landed = landed;
                         }
-                        debug!(id, ?landed, "card placed");
+                        // The path, so a test can ask the compositor where the window
+                        // really is and hold the answer against this one (D193).
+                        debug!(id, %path, ?landed, "card placed");
                     }
                     // Not fatal. An unplaced card is a card wherever Mutter put it, which
                     // is worse than the corner but far better than no card at all -- and
