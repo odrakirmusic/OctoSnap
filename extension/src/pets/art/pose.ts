@@ -75,6 +75,11 @@ export interface Pose {
      * screen; seen from the side, the engine leaves it out.
      */
     face?: Face;
+    /**
+     * A pack's frame by its name (`spec/14` §14), which only that pack's own acts ask for.
+     * The five have no named frames and ignore it.
+     */
+    frame?: string;
 }
 
 /** The order `poseKey` writes fields in, so two equal poses always have one key. */
@@ -98,6 +103,7 @@ const FIELDS: readonly (keyof Pose)[] = [
     'rot',
     'view',
     'face',
+    'frame',
 ];
 
 /** What each field is when a pose leaves it out; a field at its default is left out of keys. */
@@ -121,6 +127,7 @@ const DEFAULTS: Required<Pose> = {
     rot: 0,
     view: 'side',
     face: 'down',
+    frame: '',
 };
 
 function clamp(value: number, low: number, high: number): number {

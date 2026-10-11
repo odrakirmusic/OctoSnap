@@ -28,7 +28,7 @@
 import Clutter from 'gi://Clutter';
 
 import { info } from '../log.js';
-import { PETS, type PetKind, type PetSpec, baselineOf } from './art/index.js';
+import { type PetKind, type PetSpec, baselineOf, petSpec } from './art/index.js';
 import type { Grid } from './art/painter.js';
 import { type Face, type Pose, type View, poseKey, quantizePose } from './art/pose.js';
 import { ACTS, type ActContext } from './acts.js';
@@ -159,10 +159,12 @@ export class Pet {
     #still: Pose = {};
 
     constructor(kind: PetKind, seed: number, layers: { pets: Clutter.Actor; fx: Clutter.Actor; shadows: Clutter.Actor }) {
+        const spec = petSpec(kind);
+        if (spec === undefined) throw new Error(`no pet ${kind}`);
         this.kind = kind;
-        this.spec = PETS[kind];
+        this.spec = spec;
         this.rng = new Rng(seed);
-        this.#baselines = { side: baselineOf(kind), top: baselineOf(kind, 'top') };
+        this.#baselines = { side: baselineOf(spec), top: baselineOf(spec, 'top') };
         this.sprite = new PetSprite(`octosnap-pet-${kind}`);
         layers.pets.add_child(this.sprite);
         this.effects = new Effects(layers.fx, layers.shadows, (seed ^ 0x9e3779b9) >>> 0, this.spec.mouth);
@@ -273,7 +275,8 @@ export class Pet {
      * first; a trick that goes somewhere turns it the way it goes.
      */
     play(name: string, now: number, s: Surroundings, arg?: number, arg2?: number): void {
-        const factory = ACTS[name];
+        // A pack's own acts first (`spec/14` §14): their names are never the five's.
+        const factory = this.spec.acts?.[name] ?? ACTS[name];
         if (factory === undefined || !this.visible) return;
         this.#stopTrick();
         if (this.state === 'asleep') this.state = 'ground';

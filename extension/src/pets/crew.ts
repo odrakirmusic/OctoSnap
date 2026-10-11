@@ -43,8 +43,8 @@ import type { CaptureModeName, CaptureOptions } from '../flow.js';
 import { error, info } from '../log.js';
 import { createOverlayHost } from '../overlay/host.js';
 import type { Settings } from '../settings.js';
-import { lickReach } from './acts.js';
-import { PETS, PET_KINDS, type PetKind } from './art/index.js';
+import { lickReach, puffAt } from './acts.js';
+import { type PetKind, onPetsChanged, petKinds, petSpec } from './art/index.js';
 import type { Temperament } from './brain.js';
 import { type PetEvent, listenToPets } from './events.js';
 import { type PetSize, artPixel } from './frames.js';
@@ -164,8 +164,12 @@ export class Crew {
     #painted = false;
     #drag: Drag | null = null;
     #menu: PetMenu | null = null;
+    /** The pet whose menu is open, which closes with it if its pack is read again. */
+    #menuPet: Pet | null = null;
     #signals: [Signals, number][] = [];
     #settingSignals: number[] = [];
+    /** Stops following the packs' pets (`onPetsChanged`). */
+    #unwatchPacks: (() => void) | null = null;
     #unlisten: (() => void) | null = null;
     #idleWatch = 0;
     #activeWatch = 0;
@@ -226,12 +230,15 @@ export class Crew {
             raw.connect('changed::pet-roam', () => this.#roamChanged()),
             raw.connect('changed::pet-hide-sharing', () => this.#syncHiding()),
         );
+        this.#unwatchPacks = onPetsChanged(() => this.#syncKinds());
         this.#sync();
     }
 
     destroy(): void {
         for (const id of this.#settingSignals) this.#settings.raw.disconnect(id);
         this.#settingSignals = [];
+        this.#unwatchPacks?.();
+        this.#unwatchPacks = null;
         this.#stop();
         // After `#lost`, what the crew watched is still connected.
         if (this.#signals.length > 0) this.#unwatch();
@@ -358,14 +365,22 @@ export class Crew {
         const layers = this.#layers;
         if (!this.#running || layers === null) return;
         const wanted = this.#settings.pets;
+        // A pack read again comes back as it now is, where its pet was (`spec/14` §14).
+        const kept: Record<string, Spot> = {};
         for (const [kind, pet] of this.#pets) {
-            if (wanted.includes(kind)) continue;
+            if (wanted.includes(kind) && pet.spec === petSpec(kind)) continue;
+            if (wanted.includes(kind)) {
+                const spot = this.#placeOf(pet);
+                if (spot !== null) kept[kind] = spot;
+                info(`${pet.spec.name} comes back as its pack now has it`);
+            }
             if (this.#drag?.pet === pet) this.#endDrag(false);
+            if (this.#menuPet === pet) this.#menu?.destroy();
             pet.destroy();
             this.#pets.delete(kind);
         }
         const world = this.#world();
-        const spots = this.#settings.petSpots;
+        const spots = { ...this.#settings.petSpots, ...kept };
         wanted.forEach((kind, i) => {
             if (this.#pets.has(kind)) return;
             const seed = (GLib.random_int() ^ (i * 0x45d9f3b)) >>> 0;
@@ -396,7 +411,7 @@ export class Crew {
         }
         // The widest pet's width and a half again, at this size on this monitor.
         const unit = artPixel(size, primary.scale) / primary.scale;
-        const step = Math.max(...PET_KINDS.map(k => PETS[k].width)) * unit * 1.5;
+        const step = Math.max(...petKinds().map(k => petSpec(k)?.width ?? 0)) * unit * 1.5;
         pet.place(world, size, primary.work.x + primary.work.width - step * (count - i) + step / 2, primary.work.y + primary.work.height / 2);
     }
 
@@ -743,12 +758,14 @@ export class Crew {
                 chosen: choice => this.#choose(pet, choice),
                 closed: () => {
                     this.#menu = null;
+                    this.#menuPet = null;
                     const t = now();
                     pet.release(t, this.#surroundings());
                     this.#schedule(t);
                 },
             });
             this.#menu = menu;
+            this.#menuPet = pet;
             // It looks at its menu, happily, with its arms up.
             pet.hold({ mood: 'happy', arms: 'up', lookY: menu.side === 'below' ? 1 : -1 });
         } catch (e) {
@@ -1125,7 +1142,7 @@ export class Crew {
             } else {
                 info(`${pet.spec.name} pops out of the ${what} to ${where}`);
                 pet.relocate(target.x, target.y);
-                if (pet.visible) pet.effects.burst(PUFF, 12, false, { x: pet.spec.width / 2, y: 18 }, t);
+                if (pet.visible) pet.effects.burst(PUFF, 12, false, puffAt(pet.spec), t);
             }
         }
     }

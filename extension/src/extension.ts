@@ -22,6 +22,7 @@ import { closeWindowPickers } from './overlay/window.js';
 import { forgetRedrawWaits } from './later.js';
 import { forgetIcons } from './icons.js';
 import { Crew } from './pets/crew.js';
+import { PetPacks } from './pets/packs.js';
 import { forgetPetEvents, tellPets } from './pets/events.js';
 
 /**
@@ -34,6 +35,9 @@ import { forgetPetEvents, tellPets } from './pets/events.js';
  * decision, from `area-shortcuts-respect-actions` (`spec/08` §6). The extension only says
  * which one was pressed.
  */
+/** How long the pets wait for the pet packs' first reading before coming out without them. */
+const PACKS_WAIT_MS = 2000;
+
 const SHORTCUTS: readonly {
     key: string;
     mode: CaptureModeName;
@@ -104,6 +108,10 @@ export default class OctoSnapExtension extends Extension {
     #recording: RecordingCoordinator | null = null;
     /** `spec/14`'s desktop pets, out while `pets-enabled` is on. */
     #crew: Crew | null = null;
+    /** `spec/14` §14's pet packs, read before the pets come out (D196). */
+    #packs: PetPacks | null = null;
+    /** The wait for the packs' first reading, before the pets come out anyway. */
+    #packsWait = 0;
     /** One capture at a time, for the same reason `ShellService` enforces it. */
     #busy = false;
     /** `changed::debug-log` on the settings, which `disable` disconnects. */
@@ -142,7 +150,12 @@ export default class OctoSnapExtension extends Extension {
         const recording = new RecordingCoordinator({ settings, desktopIcons, panel: indicator });
         this.#recording = recording;
 
-        this.#service = new ShellService(settings, desktopIcons, recording, indicator);
+        // The pet packs, first read now, so the pets of packs come out with the rest
+        // rather than as Omni first (`spec/14` §14).
+        const packs = new PetPacks();
+        this.#packs = packs;
+
+        this.#service = new ShellService(settings, desktopIcons, recording, indicator, packs);
         this.#service.export();
 
         this.#keybindings = new Keybindings(settings.raw);
@@ -181,11 +194,27 @@ export default class OctoSnapExtension extends Extension {
             scrolling: () => this.#service?.scrolling ?? 'none',
         });
         this.#crew = crew;
-        try {
-            crew.enable();
-        } catch (e) {
-            error('the pets could not start', e);
-        }
+        // Out once the packs are read, or after two seconds without them: a folder that
+        // will not answer must not keep the five in.
+        const start = () => {
+            if (this.#packsWait !== 0) GLib.source_remove(this.#packsWait);
+            this.#packsWait = 0;
+            stopWaiting();
+            if (this.#crew !== crew) return;
+            try {
+                crew.enable();
+            } catch (e) {
+                error('the pets could not start', e);
+            }
+        };
+        const stopWaiting = packs.onChange(start);
+        this.#packsWait = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PACKS_WAIT_MS, () => {
+            this.#packsWait = 0;
+            info('the pet packs took too long: the pets come out without them for now');
+            start();
+            return GLib.SOURCE_REMOVE;
+        });
+        packs.start();
 
         info(`enabled, version ${EXTENSION_VERSION}`);
     }
@@ -202,9 +231,14 @@ export default class OctoSnapExtension extends Extension {
         forgetRedrawWaits();
 
         // First of the rest: the pets hold a grab while one is dragged, and a menu's modal.
+        if (this.#packsWait !== 0) GLib.source_remove(this.#packsWait);
+        this.#packsWait = 0;
         this.#crew?.destroy();
         this.#crew = null;
         forgetPetEvents();
+        // After the pets, whose kinds it hands in; it takes the packs' pets back out.
+        this.#packs?.stop();
+        this.#packs = null;
 
         this.#indicator?.destroy();
         this.#indicator = null;

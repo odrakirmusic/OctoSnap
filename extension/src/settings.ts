@@ -250,14 +250,18 @@ export class Settings {
         }
     }
 
-    /** Which pets are out, known kinds only, each once, in the stored order. */
+    /**
+     * Which pets are out, known kinds only, each once, in the stored order. When a list that
+     * names pets names none there is -- a pack taken away while its pet was the only one out
+     * -- Omni comes out, so pets that are on are never no pets at all (`spec/14` §14).
+     */
     get pets(): PetKind[] {
         if (!this.#has('pets')) return ['octopus'];
         try {
+            const stored = this.#settings.get_strv('pets');
             const kinds: PetKind[] = [];
-            for (const kind of this.#settings.get_strv('pets'))
-                if (isPetKind(kind) && !kinds.includes(kind)) kinds.push(kind);
-            return kinds;
+            for (const kind of stored) if (isPetKind(kind) && !kinds.includes(kind)) kinds.push(kind);
+            return kinds.length === 0 && stored.length > 0 ? ['octopus'] : kinds;
         } catch (e) {
             error("could not read 'pets'", e);
             return ['octopus'];

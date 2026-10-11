@@ -1,0 +1,39 @@
+{
+  "format": 1,
+  "name": "Mochi",
+  "species": "cat",
+  "size": [32, 32],
+  "gait": "waddle",
+  "tricks": ["groom", "wave", "wiggle"],
+  "frames": [
+    { "cell": 0 },
+    { "cell": 1, "mood": "blink" },
+    { "cell": 2, "mood": "closed" },
+    { "cell": 3, "mood": "happy" },
+    { "cell": 4, "mood": "wide" },
+    { "cell": 5, "mood": "squeeze" },
+    { "cell": 6, "mood": "dizzy" },
+    { "cell": 7, "step": 1 },
+    { "cell": 8, "step": 3 },
+    { "cell": 9, "mood": "happy", "step": 1 },
+    { "cell": 10, "mood": "happy", "step": 3 },
+    { "cell": 11, "arm": "up" },
+    { "cell": 12, "arm": "wave2" },
+    { "cell": 13, "look": -1 },
+    { "cell": 14, "look": 1 },
+    { "cell": 15, "view": "top" },
+    { "cell": 16, "view": "top", "face": "up" },
+    { "cell": 17, "view": "top", "face": "right" },
+    { "cell": 18, "name": "groom-1" },
+    { "cell": 19, "name": "groom-2" }
+  ],
+  "acts": {
+    "groom": {
+      "times": [2, 4],
+      "steps": [
+        { "frame": "groom-1", "ms": 260 },
+        { "frame": "groom-2", "ms": 220 }
+      ]
+    }
+  }
+}

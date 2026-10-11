@@ -114,6 +114,15 @@
   </categories>
 
   <releases>
+    <release version="0.1.12" date="2026-10-11">
+      <description>
+        <p>Desktop pets of your own.</p>
+        <ul>
+          <li>A pet pack, a folder with a sheet of the pet's frames and a short description of them, adds a pet of your own beside the five, and OctoSnap's updates leave it where it is</li>
+          <li>Settings → Pets opens the folder, shows each pack's pet among the others, and says what to change in a pack it cannot read</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.11" date="2026-10-11">
       <description>
         <p>Windows open where they belong, even the first time.</p>

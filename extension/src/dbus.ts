@@ -39,6 +39,8 @@ import {
 import { ScrollFrame, ScrollSession, type ScrollDirection, isDirection } from './scrollAssist.js';
 import { PinShadows } from './pinShadow.js';
 import { tellPets } from './pets/events.js';
+import type { PetPacks } from './pets/packs.js';
+import { wirePacks } from './pets/packWire.js';
 import { playCue } from './sound.js';
 import { SettingsBridge } from './settingsBridge.js';
 import { setAnnouncedSpool, spoolDir } from './spool.js';
@@ -153,6 +155,12 @@ const INTERFACE_XML = `
     <method name="SetUpdateOffered">
       <arg type="b" direction="in" name="offered"/>
     </method>
+    <method name="GetPetPacks">
+      <arg type="s" direction="out" name="packs"/>
+    </method>
+    <method name="OpenPetFolder">
+    </method>
+    <signal name="PetPacksChanged"/>
     <method name="ShowRecordingFrame">
       <arg type="(iiii)" direction="in" name="rect"/>
       <arg type="b" direction="in" name="visible"/>
@@ -711,16 +719,23 @@ export class ShellService {
     /** D123: the settings a sandboxed app mirrors, from here. */
     #bridge: SettingsBridge | null = null;
 
+    /** `spec/14` §14's pet packs, which `GetPetPacks` hands over (D196). */
+    #packs: PetPacks | null;
+    /** Stops `PetPacksChanged` following the packs. */
+    #unwatchPacks: (() => void) | null = null;
+
     constructor(
         settings: Settings,
         desktopIcons: DesktopIcons | null = null,
         recording: RecordingCoordinator | null = null,
         panel: UpdatePanel | null = null,
+        packs: PetPacks | null = null,
     ) {
         this.#settings = settings;
         this.#desktopIcons = desktopIcons;
         this.#recording = recording;
         this.#panel = panel;
+        this.#packs = packs;
     }
 
     export(): void {
@@ -749,6 +764,8 @@ export class ShellService {
                 } catch (e) {
                     error('could not share the settings over the bus', e);
                 }
+                this.#unwatchPacks?.();
+                this.#unwatchPacks = this.#packs?.onChange(() => this.#exported?.emit_signal('PetPacksChanged', new GLib.Variant('()', []))) ?? null;
             },
             null,
             () => error(`lost or could not acquire the bus name ${SHELL_BUS_NAME}`),
@@ -761,6 +778,8 @@ export class ShellService {
      * object behind it.
      */
     destroy(): void {
+        this.#unwatchPacks?.();
+        this.#unwatchPacks = null;
         for (const abandon of [...drawableWaits]) abandon();
         this.#focus.stop();
         this.#shadows.destroy();
@@ -1667,6 +1686,41 @@ export class ShellService {
      */
     SetUpdateOffered(offered: boolean): void {
         this.#panel?.setUpdateOffered(offered);
+    }
+
+    /**
+     * `spec/14` §14's pet packs, for Settings' Pets page (D196): JSON with the user's folder,
+     * each pack's pet as Settings plays it, and each pack left out with its problem
+     * (`packWire.ts`). The extension reads the packs so that the Flatpak needs no
+     * permission for them. Added without a protocol bump, like `SetUpdateOffered`: an app
+     * calling it on an older extension gets `UnknownMethod`, and shows the five.
+     */
+    GetPetPacksAsync(_params: [], invocation: Gio.DBusMethodInvocation): void {
+        if (!callerIsTheApp(invocation.get_sender())) {
+            returnError(invocation, new Error("the pet packs are the app's to ask for"));
+            return;
+        }
+        try {
+            const listing = this.#packs?.listing ?? { folder: '', pets: [], problems: [] };
+            invocation.return_value(new GLib.Variant('(s)', [wirePacks(listing)]));
+        } catch (e) {
+            returnError(invocation, e);
+        }
+    }
+
+    /** Settings' Open Pets Folder (D196): the user's packs' folder, made if missing, in the file manager. */
+    OpenPetFolderAsync(_params: [], invocation: Gio.DBusMethodInvocation): void {
+        if (!callerIsTheApp(invocation.get_sender())) {
+            returnError(invocation, new Error("the pets folder is the app's to open"));
+            return;
+        }
+        try {
+            if (this.#packs === null) throw new Error('the pet packs are not read');
+            this.#packs.openFolder();
+            invocation.return_value(null);
+        } catch (e) {
+            returnError(invocation, e);
+        }
     }
 
     /**

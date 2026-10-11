@@ -656,6 +656,80 @@ and where a pet's menu opens: above it, below it or around it. They come back wh
 left them after you log out. With GNOME's Reduce Animation on, they only blink and look
 around between reactions.
 
+### Pets of your own
+
+A pet of your own comes in a **pet pack**: a folder holding a `sheet.png` with the pet's
+frames and a `pet.json` that says what the pet is and what each frame shows. Put the folder
+in `~/.local/share/octosnap/pets/`, which **Open Pets Folder** in Settings → Pets opens,
+making it the first time. OctoSnap reads a pack a second after it arrives or changes, and
+its pet gets a card on the Pets page after the five. A pack it cannot read is listed under
+**Your own pets**, with what to change. For everyone on a computer, an administrator can put
+a pack in `/usr/local/share/octosnap/pets/` or `/usr/share/octosnap/pets/`, read when you
+log in.
+
+The folder's name is what OctoSnap calls the pet: up to 32 lower-case letters, digits and
+hyphens. A pack is only pictures and words. It runs nothing, it cannot replace one of the
+five, and updating OctoSnap leaves it where it is. Its pet does everything the five do, on
+the floor, the pins and the desk, and is never in a capture.
+
+[Mochi the cat](../data/pets/packs/mochi/pet.json) is a whole pack to learn from: its
+`pet.json` is a model to copy, and [its sheet](../data/pets/packs/mochi/sheet.png) shows how
+the cells are laid out. Mochi's pictures are GPL-3.0-or-later, as OctoSnap is, so a pet
+drawn over them is a changed copy of Mochi; one drawn on an empty sheet takes nothing from
+it.
+
+**The sheet** holds the frames in cells of the pet's size, one image pixel to the pet's
+pixel, numbered from 0 at the top left along each row and then down. A frame is 8 to 64
+pixels each way; the sheet is at most 512 × 512 pixels, 1 MiB and 255 colours, and not
+interlaced. A pixel is either solid or clear: one at least half opaque is solid, and any
+other clear, so the pet stays sharp at every size and scale.
+
+**pet.json** has `"format": 1`, and gives the pet its `name` and `species` ("Mochi" and
+"cat" make "Mochi the cat"), its frame `size` as `[width, height]`, how it gets about (`gait`: `waddle`, `hop` or
+`glide`), `floats` to fall slowly as Omni does, and a list of `frames`, each a `cell` of
+the sheet and what it shows:
+
+| Field | What the frame shows |
+|---|---|
+| (none) | The pet at rest. Every pack needs one |
+| `mood` | Its face: `blink`, `half`, `closed`, `sleep`, `happy`, `squeeze`, `wide` or `dizzy` |
+| `step` | Walking: `1` with its left foot up, `3` with its right |
+| `arm` | `up`, `wave`, `wave2` or `flap` |
+| `look`, `lookY` | Looking left (`-1`) or right (`1`), up (`-1`) or down (`1`) |
+| `squash` | Squashed flat (`1`) or stretched tall (`-1`) |
+| `view`, `face` | `"view": "top"` is the pet seen from above, on the desk, facing `down` (towards you), `up`, `left` or `right` |
+| `name` | A frame only one of its own tricks shows |
+
+Fields go together: `{ "cell": 9, "mood": "happy", "step": 1 }` is a happy pet with its left
+foot up. For each moment OctoSnap shows the frame that matches the most and contradicts
+nothing, and the nearest drawn one stands in for the rest, so a pack with a single frame
+already walks, jumps and reacts, and each frame added makes it more lively. A missing
+`left` facing is the `right` one mirrored. A pet that has no frame seen from above is drawn
+from the side on the desk too, and one not drawn squashed is squashed by whole rows of
+pixels.
+
+`tricks` lists what it does by itself: `wave`, `flap`, `wiggle`, `roll` (with square
+frames), `ink` (vanishing in a puff), or a trick of its own from `acts`, made of its frames:
+
+```json
+"tricks": ["groom", "wave"],
+"acts": {
+  "groom": {
+    "times": [2, 4],
+    "steps": [
+      { "frame": "groom-1", "ms": 260 },
+      { "frame": "groom-2", "ms": 220 }
+    ]
+  }
+}
+```
+
+Each step holds a frame, by its `name`, or a `mood`, `arm`, `look` or `step`, for `ms`
+milliseconds, and can `lift` the pet a few pixels off the ground or float up an `emote`:
+`heart`, `note`, `spark`, `star`, `bang`, `what` or `zzz`. The steps play a number of times
+between the two `times`, a little faster or slower each time. Mochi's
+[pet.json](../data/pets/packs/mochi/pet.json) uses most of this.
+
 ## Without the mouse
 
 Every capture can be taken from the keyboard:

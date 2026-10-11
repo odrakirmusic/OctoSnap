@@ -2,9 +2,11 @@
 
 /**
  * The pets, by the name the settings use (`pets`, `spec/08` §11), and what the engine has
- * to know about each one beyond its pixels.
+ * to know about each one beyond its pixels: the five, and the pets of the packs the
+ * extension has read (`spec/14` §14), which `setPackPets` hands in.
  */
 
+import type { ActFactory } from '../acts.js';
 import { frog, FROG_MOUTH, frogTop } from './frog.js';
 import { mushroom, mushroomTop } from './mushroom.js';
 import { octopus, octopusTop } from './octopus.js';
@@ -18,10 +20,14 @@ function views(side: (pose: Pose) => Grid, top: (pose: Pose) => Grid): (pose: Po
     return (pose: Pose = {}) => (pose.view === 'top' ? top(pose) : side(pose));
 }
 
-export type PetKind = 'octopus' | 'penguin' | 'frog' | 'mushroom' | 'potato';
+/** The five, which come with OctoSnap. */
+export type BuiltinKind = 'octopus' | 'penguin' | 'frog' | 'mushroom' | 'potato';
 
-/** The settings' order, which is also the order they are offered in. */
-export const PET_KINDS: readonly PetKind[] = ['octopus', 'penguin', 'frog', 'mushroom', 'potato'];
+/** A pet's kind: one of the five, or a pack's id (`spec/14` §14). */
+export type PetKind = string;
+
+/** The settings' order, which is also the order they are offered in; the packs' pets come after. */
+export const PET_KINDS: readonly BuiltinKind[] = ['octopus', 'penguin', 'frog', 'mushroom', 'potato'];
 
 /** How a pet gets about: walking with a waddle, hopping, or gliding on its arms. */
 export type Gait = 'waddle' | 'hop' | 'glide';
@@ -30,6 +36,8 @@ export interface PetSpec {
     kind: PetKind;
     /** Its name, as Settings and the menu say it. */
     name: string;
+    /** What it is, for its card and its accessible name: "Omni the octopus". */
+    species: string;
     /** Canvas size in art pixels. */
     width: number;
     height: number;
@@ -43,11 +51,16 @@ export interface PetSpec {
     /** The row its eyes are on, for looking at something. */
     eyeRow: number;
     draw(pose: Pose): Grid;
+    /** Tricks only this pet knows, by name: a pack's acts. Looked up before `ACTS`. */
+    acts?: Readonly<Record<string, ActFactory>>;
+    /** The colours of the puff its `ink` vanishes in; absent is the octopus's ink. */
+    ink?: readonly string[];
 }
 
-export const PETS: Record<PetKind, PetSpec> = {
+export const PETS: Record<BuiltinKind, PetSpec> = {
     octopus: {
         kind: 'octopus',
+        species: 'octopus',
         name: 'Omni',
         width: 32,
         height: 32,
@@ -60,6 +73,7 @@ export const PETS: Record<PetKind, PetSpec> = {
     },
     penguin: {
         kind: 'penguin',
+        species: 'penguin',
         name: 'Pengu',
         width: 32,
         height: 32,
@@ -72,6 +86,7 @@ export const PETS: Record<PetKind, PetSpec> = {
     },
     frog: {
         kind: 'frog',
+        species: 'frog',
         name: 'Hops',
         width: 36,
         height: 32,
@@ -84,6 +99,7 @@ export const PETS: Record<PetKind, PetSpec> = {
     },
     mushroom: {
         kind: 'mushroom',
+        species: 'mushroom',
         name: 'Morel',
         width: 32,
         height: 32,
@@ -96,6 +112,7 @@ export const PETS: Record<PetKind, PetSpec> = {
     },
     potato: {
         kind: 'potato',
+        species: 'potato',
         name: 'Spud',
         width: 32,
         height: 32,
@@ -108,20 +125,56 @@ export const PETS: Record<PetKind, PetSpec> = {
     },
 };
 
+/** The packs' pets, in id order: whatever `setPackPets` was given last. */
+let packPets: readonly PetSpec[] = [];
+const listeners = new Set<() => void>();
+
+/** One of the five, by its kind. */
+export function isBuiltinKind(name: string): name is BuiltinKind {
+    return (PET_KINDS as readonly string[]).includes(name);
+}
+
+/** The pet of that kind, one of the five or a pack's, or `undefined` when there is none. */
+export function petSpec(kind: PetKind): PetSpec | undefined {
+    return isBuiltinKind(kind) ? PETS[kind] : packPets.find(p => p.kind === kind);
+}
+
+/** Every pet there is, in the order they are offered: the five, then the packs' by id. */
+export function petKinds(): PetKind[] {
+    return [...PET_KINDS, ...packPets.map(p => p.kind)];
+}
+
+/** Whether `name` is a pet there is, for reading the settings' list. */
+export function isPetKind(name: string): boolean {
+    return petSpec(name) !== undefined;
+}
+
+/**
+ * The packs' pets from now on (`packs.ts`), in place of the ones before. A pack's id that is
+ * one of the five is never taken; `pack.ts` refuses it before it gets here.
+ */
+export function setPackPets(specs: readonly PetSpec[]): void {
+    packPets = specs.filter(s => !isBuiltinKind(s.kind)).sort((a, b) => (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0));
+    for (const listener of [...listeners]) listener();
+}
+
+/** Calls `listener` whenever the packs' pets change; the function returned stops it. */
+export function onPetsChanged(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+}
+
 /**
  * The row under a pet's feet at rest, in art pixels from its top: what stands on the
  * floor, or seen from above (`view` `top`) the bottom of what sits on the desk. Not always
  * the canvas's bottom -- the octopus's arms end three rows short of it. Painted each time
  * it is asked, which the engine does once per pet and view.
  */
-export function baselineOf(kind: PetKind, view: View = 'side'): number {
-    const grid = PETS[kind].draw(view === 'top' ? { view } : {});
+export function baselineOf(kind: PetKind | PetSpec, view: View = 'side'): number {
+    const spec = typeof kind === 'string' ? petSpec(kind) : kind;
+    if (spec === undefined) throw new Error(`no pet ${String(kind)}`);
+    const grid = spec.draw(view === 'top' ? { view } : {});
     let row = grid.h;
     while (row > 0 && grid.px.slice((row - 1) * grid.w, row * grid.w).every(c => c === null)) row--;
     return row;
-}
-
-/** Whether `name` is one of the pets, for reading the settings' list. */
-export function isPetKind(name: string): name is PetKind {
-    return (PET_KINDS as readonly string[]).includes(name);
 }

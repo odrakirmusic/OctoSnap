@@ -20,6 +20,12 @@
 //! A pet moved without being drawn again keeps the place on the grid it was drawn for,
 //! which at a fractional scale is off the grid where it now is. Scrolling does that, so a
 //! pet is drawn again whenever its page scrolls, and anyway at every step of its loop.
+//!
+//! A pet pack's pet (`spec/14` §14, D196) comes from the extension, which reads the packs
+//! on the host where the sandbox cannot: `GetPetPacks` hands over each one's preview,
+//! already played by the shell's runner and painted, as a palette and frames of palette
+//! indices. `set_packs` makes those into sheets like the five's, and every pet here is
+//! drawn the same way after that.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -29,8 +35,9 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib, graphene};
+use octosnap_core::protocol::{SHELL_BUS_NAME, SHELL_INTERFACE, SHELL_OBJECT_PATH};
 use serde::Deserialize;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// The pets in the extension's order (`PET_KINDS`), which is the order the `pets` key keeps.
 pub const KINDS: [&str; 5] = ["octopus", "penguin", "frog", "mushroom", "potato"];
@@ -39,7 +46,7 @@ pub const KINDS: [&str; 5] = ["octopus", "penguin", "frog", "mushroom", "potato"
 const RESOURCES: &str = "/io/github/odrakirmusic/OctoSnap/pets";
 
 /// One pet's sheet, as `pets.json` has it.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Sheet {
     /// What the pet is called: "Omni" for the octopus.
     pub name: String,
@@ -125,30 +132,41 @@ fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(buffer)
 }
 
-/// The sheets, and the box every pet is drawn in so that they stand on one floor.
-#[derive(Debug)]
-struct Sheets {
-    sheets: HashMap<String, Sheet>,
-    frames: RefCell<HashMap<String, Option<Rc<Vec<Rects>>>>>,
-    /// The widest pet, in art pixels.
+/// The box every pet is drawn in so that they stand on one floor, in art pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Layout {
+    /// The widest pet.
     width: u32,
     /// The art row the floor is on: room for the highest jump above the tallest pet.
     floor: u32,
-    /// The whole box's height, in art pixels.
+    /// The whole box's height.
     height: u32,
+}
+
+impl Layout {
+    fn of<'a>(sheets: impl Iterator<Item = &'a Sheet> + Clone) -> Self {
+        let width = sheets.clone().map(|s| s.width).max().unwrap_or(0);
+        let lift =
+            sheets.clone().flat_map(|s| s.steps.iter().map(|step| step.2)).max().unwrap_or(0);
+        let baseline = sheets.clone().map(|s| s.baseline).max().unwrap_or(0);
+        let floor = lift + baseline;
+        // Below the floor: whatever a pet draws under the row it stands on.
+        let height = floor + sheets.map(|s| s.height.saturating_sub(s.baseline)).max().unwrap_or(0);
+        Self { width, floor, height }
+    }
+}
+
+/// The five's sheets, from the bundle.
+#[derive(Debug)]
+struct Sheets {
+    sheets: HashMap<String, Rc<Sheet>>,
+    frames: RefCell<HashMap<String, Option<Rc<Vec<Rects>>>>>,
 }
 
 impl Sheets {
     fn new(sheets: HashMap<String, Sheet>) -> Self {
-        let width = sheets.values().map(|s| s.width).max().unwrap_or(0);
-        let lift =
-            sheets.values().flat_map(|s| s.steps.iter().map(|step| step.2)).max().unwrap_or(0);
-        let baseline = sheets.values().map(|s| s.baseline).max().unwrap_or(0);
-        let floor = lift + baseline;
-        // Below the floor: whatever a pet draws under the row it stands on.
-        let height =
-            floor + sheets.values().map(|s| s.height.saturating_sub(s.baseline)).max().unwrap_or(0);
-        Self { sheets, frames: RefCell::default(), width, floor, height }
+        let sheets = sheets.into_iter().map(|(kind, sheet)| (kind, Rc::new(sheet))).collect();
+        Self { sheets, frames: RefCell::default() }
     }
 
     /// A pet's frames, read from its strip the first time they are wanted.
@@ -173,8 +191,22 @@ impl Sheets {
     }
 }
 
+/// A pack's pet, ready to draw.
+#[derive(Debug)]
+struct PackEntry {
+    sheet: Rc<Sheet>,
+    frames: Rc<Vec<Rects>>,
+    species: String,
+}
+
 thread_local! {
     static SHEETS: OnceCell<Option<Rc<Sheets>>> = const { OnceCell::new() };
+    /// The packs' pets, by id, from the last `set_packs`.
+    static PACKS: RefCell<HashMap<String, PackEntry>> = RefCell::new(HashMap::new());
+    /// The box for every pet there is now, worked out again when the packs change.
+    static LAYOUT: Cell<Option<Layout>> = const { Cell::new(None) };
+    /// The packs' pets' ids, in the order the extension gave them: by id.
+    static PACK_ORDER: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The sheets, read once. `None`, said once in the log, when the bundle has none.
@@ -195,11 +227,288 @@ fn sheets() -> Option<Rc<Sheets>> {
     })
 }
 
+/// The box every pet there is stands in: the five's and the packs' together.
+fn layout() -> Option<Layout> {
+    if let Some(layout) = LAYOUT.with(Cell::get) {
+        return Some(layout);
+    }
+    let sheets = sheets()?;
+    let layout = PACKS.with(|packs| {
+        let packs = packs.borrow();
+        Layout::of(
+            sheets.sheets.values().map(Rc::as_ref).chain(packs.values().map(|p| p.sheet.as_ref())),
+        )
+    });
+    LAYOUT.with(|cell| cell.set(Some(layout)));
+    Some(layout)
+}
+
+/// A pet's sheet and its frames: one of the five's, or a pack's.
+fn entry(kind: &str) -> Option<(Rc<Sheet>, Rc<Vec<Rects>>)> {
+    if let Some(found) = PACKS
+        .with(|packs| packs.borrow().get(kind).map(|p| (Rc::clone(&p.sheet), Rc::clone(&p.frames))))
+    {
+        return Some(found);
+    }
+    let sheets = sheets()?;
+    Some((Rc::clone(sheets.sheets.get(kind)?), sheets.frames(kind)?))
+}
+
+/// A pet's sheet without its frames: what the loop's timer needs.
+fn sheet(kind: &str) -> Option<Rc<Sheet>> {
+    PACKS
+        .with(|packs| packs.borrow().get(kind).map(|p| Rc::clone(&p.sheet)))
+        .or_else(|| sheets().and_then(|sheets| sheets.sheets.get(kind).cloned()))
+}
+
 /// What a pet is called, or its kind when the sheets do not say.
 pub fn name(kind: &str) -> String {
-    sheets()
-        .and_then(|sheets| sheets.sheets.get(kind).map(|sheet| sheet.name.clone()))
+    sheet(kind).map_or_else(|| kind.to_owned(), |sheet| sheet.name.clone())
+}
+
+/// What a pet is, for its card and its accessible name: its kind for the five, and what its
+/// pack says for a pack's.
+pub fn species(kind: &str) -> String {
+    PACKS
+        .with(|packs| packs.borrow().get(kind).map(|p| p.species.clone()))
         .unwrap_or_else(|| kind.to_owned())
+}
+
+/// A pack's pet as the extension hands it over (`GetPetPacks`, `spec/14` §14): its preview,
+/// already played by the shell's runner and painted.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackPet {
+    /// Its pack's id, which the `pets` key calls it by.
+    pub id: String,
+    pub name: String,
+    pub species: String,
+    /// Its pack's folder.
+    #[serde(default)]
+    pub from: String,
+    pub width: u32,
+    pub height: u32,
+    pub baseline: u32,
+    /// `#rrggbb` colours, which the frames number from 1.
+    pub palette: Vec<String>,
+    /// Two hex digits a pixel, rows top to bottom: `00` clear, `n` the `n`th colour.
+    pub frames: Vec<String>,
+    #[serde(rename = "loop")]
+    pub steps: Vec<(u32, u32, u32)>,
+}
+
+/// A pack the extension could not read, and why.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackProblem {
+    pub id: String,
+    #[serde(default)]
+    pub from: String,
+    pub problem: String,
+}
+
+/// What `GetPetPacks` says: the user's packs' folder, the pets, and the packs left out.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Packs {
+    #[serde(default)]
+    pub folder: String,
+    #[serde(default)]
+    pub pets: Vec<PackPet>,
+    #[serde(default)]
+    pub problems: Vec<PackProblem>,
+}
+
+/// Reads `GetPetPacks`' JSON.
+pub fn parse_packs(json: &str) -> Result<Packs, serde_json::Error> {
+    serde_json::from_str(json)
+}
+
+/// The most a pack's pet may be each way, in art pixels: the format's own limit.
+const PACK_SIDE: usize = 64;
+
+/// A pack's pet as a sheet and its strip, straight RGBA with its frames side by side, as
+/// `frames_as_rects` reads the five's. Refused, with why, when anything in it does not add
+/// up: the extension made it, but a pet nothing checked is not drawn.
+pub fn pack_strip(pet: &PackPet) -> Result<(Sheet, Vec<u8>), String> {
+    let (width, height) = (pet.width as usize, pet.height as usize);
+    if !(1..=PACK_SIDE).contains(&width) || !(1..=PACK_SIDE).contains(&height) {
+        return Err(format!("it is {width} × {height}"));
+    }
+    if pet.frames.is_empty() || pet.frames.len() > 256 {
+        return Err(format!("it has {} frames", pet.frames.len()));
+    }
+    if pet.steps.is_empty() {
+        return Err("it has no loop".to_owned());
+    }
+    if pet.palette.len() > 255 {
+        return Err(format!("it has {} colours", pet.palette.len()));
+    }
+    let mut palette = Vec::with_capacity(pet.palette.len());
+    for colour in &pet.palette {
+        let rgb = colour
+            .strip_prefix('#')
+            .filter(|hex| hex.len() == 6)
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .ok_or_else(|| format!("{colour} is not a colour"))?;
+        let [_, r, g, b] = rgb.to_be_bytes();
+        palette.push([r, g, b, 255]);
+    }
+    let stride = width * pet.frames.len();
+    let mut rgba = vec![0u8; stride * height * 4];
+    for (f, frame) in pet.frames.iter().enumerate() {
+        let digits = frame.as_bytes();
+        if digits.len() != width * height * 2 {
+            return Err(format!(
+                "frame {f} is {} digits, not {}",
+                digits.len(),
+                width * height * 2
+            ));
+        }
+        for (p, pair) in digits.as_chunks::<2>().0.iter().enumerate() {
+            let n = std::str::from_utf8(pair)
+                .ok()
+                .and_then(|pair| usize::from_str_radix(pair, 16).ok())
+                .ok_or_else(|| format!("frame {f} has something that is not a colour's number"))?;
+            if n == 0 {
+                continue;
+            }
+            let colour = palette
+                .get(n - 1)
+                .ok_or_else(|| format!("frame {f} uses colour {n} of {}", palette.len()))?;
+            let (x, y) = (p % width, p / width);
+            let at = (y * stride + f * width + x) * 4;
+            rgba[at..at + 4].copy_from_slice(colour);
+        }
+    }
+    let frames = u32::try_from(pet.frames.len()).map_err(|e| e.to_string())?;
+    if let Some(&(frame, _, lift)) =
+        pet.steps.iter().find(|&&(frame, _, lift)| frame >= frames || lift > 64)
+    {
+        return Err(format!("its loop has frame {frame} lifted {lift}"));
+    }
+    let sheet = Sheet {
+        name: pet.name.clone(),
+        width: pet.width,
+        height: pet.height,
+        baseline: pet.baseline.min(pet.height),
+        frames,
+        steps: pet.steps.clone(),
+    };
+    Ok((sheet, rgba))
+}
+
+/// The packs' pets from now on, in place of the ones before; the ids of those that can be
+/// drawn, in the order given. A pet whose id is taken -- one of the five's, or an earlier
+/// pack's -- is left out.
+pub fn set_packs(pets: &[PackPet]) -> Vec<String> {
+    let mut entries = HashMap::new();
+    let mut ids = Vec::new();
+    for pet in pets {
+        if KINDS.contains(&pet.id.as_str()) || entries.contains_key(&pet.id) {
+            warn!(id = pet.id, "a pack's pet with a name already taken, left out");
+            continue;
+        }
+        match pack_strip(pet) {
+            Ok((sheet, rgba)) => {
+                let frames = Rc::new(frames_as_rects(&rgba, &sheet));
+                entries.insert(
+                    pet.id.clone(),
+                    PackEntry { sheet: Rc::new(sheet), frames, species: pet.species.clone() },
+                );
+                ids.push(pet.id.clone());
+            }
+            Err(e) => warn!(id = pet.id, "a pack's pet the app cannot draw: {e}"),
+        }
+    }
+    PACKS.with(|packs| *packs.borrow_mut() = entries);
+    PACK_ORDER.with(|order| order.borrow_mut().clone_from(&ids));
+    LAYOUT.with(|cell| cell.set(None));
+    ids
+}
+
+/// Every pet there is, in the order the `pets` key keeps: the five, then the packs' pets.
+pub fn kinds() -> Vec<String> {
+    KINDS
+        .iter()
+        .map(|&kind| kind.to_owned())
+        .chain(PACK_ORDER.with(|order| order.borrow().clone()))
+        .collect()
+}
+
+/// The pet packs, from the extension (`GetPetPacks`). `None` when it has no such method, as
+/// one from before D196 has not, or does not answer: then Settings shows the five.
+pub async fn fetch_packs() -> Option<Packs> {
+    let connection = gio::Application::default()?.dbus_connection()?;
+    let reply = connection
+        .call_future(
+            Some(SHELL_BUS_NAME),
+            SHELL_OBJECT_PATH,
+            SHELL_INTERFACE,
+            "GetPetPacks",
+            None,
+            glib::VariantTy::new("(s)").ok(),
+            gio::DBusCallFlags::NONE,
+            // The first call plays each pack's preview in the shell.
+            5000,
+        )
+        .await;
+    let reply = match reply {
+        Ok(reply) => reply,
+        Err(e) if e.matches(gio::DBusError::UnknownMethod) => {
+            info!("the extension reads no pet packs: it is older than the app");
+            return None;
+        }
+        Err(e) => {
+            warn!("the extension did not hand over the pet packs: {e}");
+            return None;
+        }
+    };
+    let (json,) = reply.get::<(String,)>()?;
+    let packs = parse_packs(&json).map_err(|e| warn!("the pet packs do not read: {e}")).ok()?;
+    info!(
+        pets = packs.pets.len(),
+        problems = packs.problems.len(),
+        "the extension handed over the pet packs"
+    );
+    Some(packs)
+}
+
+/// Settings' Open Pets Folder: the extension makes the user's packs' folder if it is
+/// missing, and opens it in the file manager (`OpenPetFolder`).
+pub fn open_pet_folder() {
+    let Some(connection) = gio::Application::default().and_then(|app| app.dbus_connection()) else {
+        return;
+    };
+    glib::spawn_future_local(async move {
+        if let Err(e) = connection
+            .call_future(
+                Some(SHELL_BUS_NAME),
+                SHELL_OBJECT_PATH,
+                SHELL_INTERFACE,
+                "OpenPetFolder",
+                None,
+                None,
+                gio::DBusCallFlags::NONE,
+                5000,
+            )
+            .await
+        {
+            warn!("the pets folder could not be opened: {e}");
+        }
+    });
+}
+
+/// Calls `changed` whenever the extension has read the packs again (`PetPacksChanged`), for
+/// as long as the subscription returned is kept.
+pub fn watch_packs(changed: impl Fn() + 'static) -> Option<gio::SignalSubscription> {
+    let connection = gio::Application::default()?.dbus_connection()?;
+    Some(connection.subscribe_to_signal(
+        Some(SHELL_BUS_NAME),
+        Some(SHELL_INTERFACE),
+        Some("PetPacksChanged"),
+        Some(SHELL_OBJECT_PATH),
+        None,
+        gio::DBusSignalFlags::NONE,
+        move |_| changed(),
+    ))
 }
 
 /// The cards' stylesheet, once per process.
@@ -276,10 +585,10 @@ mod imp {
 
     impl WidgetImpl for PetPreview {
         fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
-            let Some(sheets) = sheets() else { return (0, 0, -1, -1) };
+            let Some(layout) = layout() else { return (0, 0, -1, -1) };
             let art = match orientation {
-                gtk::Orientation::Horizontal => sheets.width,
-                _ => sheets.height,
+                gtk::Orientation::Horizontal => layout.width,
+                _ => layout.height,
             };
             let scale = self.scale();
             self.measured.set(scale);
@@ -302,13 +611,8 @@ mod imp {
         }
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
-            let Some(sheets) = sheets() else { return };
-            let kind = self.kind.borrow();
-            let (Some(sheet), Some(frames)) =
-                (sheets.sheets.get(kind.as_str()), sheets.frames(&kind))
-            else {
-                return;
-            };
+            let Some(layout) = layout() else { return };
+            let Some((sheet, frames)) = entry(&self.kind.borrow()) else { return };
             let (frame, _, lift) = sheet.steps.get(self.step.get()).copied().unwrap_or((0, 0, 0));
             let Some(rects) = frames.get(frame as usize) else { return };
 
@@ -319,8 +623,8 @@ mod imp {
             // its floor, then the whole moved onto the physical grid.
             let (width, height) = (f64::from(widget.width()), f64::from(widget.height()));
             let left = (width - f64::from(sheet.width) * unit) / 2.0;
-            let top = height - f64::from(sheets.height) * unit
-                + f64::from(sheets.floor.saturating_sub(sheet.baseline + lift)) * unit;
+            let top = height - f64::from(layout.height) * unit
+                + f64::from(layout.floor.saturating_sub(sheet.baseline + lift)) * unit;
             let (dx, dy) = self.on_grid(left, top, scale);
             let (left, top) = (left + dx, top + dy);
 
@@ -392,11 +696,8 @@ mod imp {
         }
 
         fn schedule(&self) {
-            let Some(sheets) = sheets() else { return };
-            let ms = sheets
-                .sheets
-                .get(self.kind.borrow().as_str())
-                .and_then(|sheet| sheet.steps.get(self.step.get()))
+            let ms = sheet(&self.kind.borrow())
+                .and_then(|sheet| sheet.steps.get(self.step.get()).copied())
                 .map_or(650, |step| step.1);
             let weak = self.obj().downgrade();
             let timer = glib::timeout_add_local_once(
@@ -415,9 +716,7 @@ mod imp {
         }
 
         fn advance(&self) {
-            let Some(sheets) = sheets() else { return };
-            let steps =
-                sheets.sheets.get(self.kind.borrow().as_str()).map_or(0, |sheet| sheet.steps.len());
+            let steps = sheet(&self.kind.borrow()).map_or(0, |sheet| sheet.steps.len());
             if steps == 0 {
                 return;
             }
@@ -497,9 +796,7 @@ impl PetPreview {
         imp.base.set(base);
         *imp.kind.borrow_mut() = kind.to_owned();
         // Pets side by side would otherwise breathe in step, which no two animals do.
-        let steps = sheets()
-            .and_then(|sheets| sheets.sheets.get(kind).map(|sheet| sheet.steps.len()))
-            .unwrap_or(0);
+        let steps = sheet(kind).map_or(0, |sheet| sheet.steps.len());
         if steps > 0 {
             #[allow(
                 clippy::cast_possible_truncation,
@@ -509,8 +806,9 @@ impl PetPreview {
             imp.step.set(glib::random_int_range(0, steps as i32) as usize);
         }
         preview.update_property(&[gtk::accessible::Property::Label(&format!(
-            "{} the {kind}",
-            name(kind)
+            "{} the {}",
+            name(kind),
+            species(kind)
         ))]);
         preview
     }
@@ -519,7 +817,77 @@ impl PetPreview {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{KINDS, parse};
+    use super::{KINDS, PackPet, pack_strip, parse, parse_packs};
+
+    /// A pack's pet as `GetPetPacks` hands it over: the shape `packWire.ts` writes, which
+    /// `pack.test.ts` reads back on the extension's side.
+    const WIRE: &str = r##"{
+        "folder": "/home/u/.local/share/octosnap/pets",
+        "pets": [{
+            "id": "mochi", "name": "Mochi", "species": "cat", "from": "/home/u/.local/share/octosnap/pets/mochi",
+            "width": 3, "height": 2, "baseline": 2,
+            "palette": ["#ff0000", "#00ff00"],
+            "frames": ["010201000000", "000000020201"],
+            "loop": [[0, 650, 0], [1, 110, 2]]
+        }],
+        "problems": [{ "id": "broken", "from": "/x/broken", "problem": "it has no sheet.png" }]
+    }"##;
+
+    fn mochi() -> PackPet {
+        parse_packs(WIRE).expect("it reads").pets.remove(0)
+    }
+
+    /// The wire's fields, read: the folder, a pet, a pack left out with why.
+    #[test]
+    fn the_packs_read_as_the_extension_writes_them() {
+        let packs = parse_packs(WIRE).expect("it reads");
+        assert_eq!(packs.folder, "/home/u/.local/share/octosnap/pets");
+        assert_eq!(packs.problems.len(), 1);
+        assert_eq!(packs.problems[0].problem, "it has no sheet.png");
+        let pet = &packs.pets[0];
+        assert_eq!(
+            (pet.id.as_str(), pet.name.as_str(), pet.species.as_str()),
+            ("mochi", "Mochi", "cat")
+        );
+        assert_eq!(pet.steps, [(0, 650, 0), (1, 110, 2)]);
+        // An extension that says nothing about packs is no packs, not an error.
+        assert!(parse_packs("{}").expect("it reads").pets.is_empty());
+    }
+
+    /// A pack's pet becomes a strip `frames_as_rects` reads as it reads the five's, and the
+    /// rectangles drawn for each frame are exactly its pixels.
+    #[test]
+    fn a_pack_pets_frames_are_its_pixels_exactly() {
+        let (sheet, rgba) = pack_strip(&mochi()).expect("a strip");
+        assert_eq!((sheet.width, sheet.height, sheet.frames, sheet.baseline), (3, 2, 2, 2));
+        let (red, green) = ([255, 0, 0, 255], [0, 255, 0, 255]);
+        let rects = super::frames_as_rects(&rgba, &sheet);
+        assert_eq!(rects[0], [(0, 0, 1, 1, red), (1, 0, 1, 1, green), (2, 0, 1, 1, red)]);
+        assert_eq!(rects[1], [(0, 1, 2, 1, green), (2, 1, 1, 1, red)]);
+    }
+
+    /// A pet nothing checked is not drawn: every way its numbers can fail to add up.
+    #[test]
+    fn a_pack_pet_that_does_not_add_up_is_refused() {
+        type Spoil = fn(&mut PackPet);
+        let cases: [(&str, Spoil); 7] = [
+            ("too big", |p| p.width = 65),
+            ("no frames", |p| p.frames.clear()),
+            ("not a colour", |p| p.palette[0] = "red".to_owned()),
+            ("a frame too short", |p| p.frames[0].truncate(10)),
+            ("a colour past the palette", |p| p.frames[0].replace_range(0..2, "03")),
+            ("not a number", |p| p.frames[0].replace_range(0..2, "zz")),
+            ("a loop past the frames", |p| p.steps.push((2, 100, 0))),
+        ];
+        for (what, spoil) in cases {
+            let mut pet = mochi();
+            spoil(&mut pet);
+            assert!(pack_strip(&pet).is_err(), "{what}");
+        }
+        let mut no_loop = mochi();
+        no_loop.steps.clear();
+        assert!(pack_strip(&no_loop).is_err(), "no loop");
+    }
 
     const DATA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/pets");
 

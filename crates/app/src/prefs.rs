@@ -2184,17 +2184,25 @@ fn pets_page(ext_settings: Option<&gio::Settings>) -> adw::PreferencesPage {
         .description("Drag a pet to move it, and right-click it for the capture menu")
         .build();
     let wrap = adw::WrapBox::builder().child_spacing(12).line_spacing(12).align(0.5).build();
-    let cards: Vec<(&'static str, gtk::ToggleButton)> =
-        crate::pets::KINDS.iter().map(|&kind| (kind, pet_card(kind))).collect();
-    for (_, card) in &cards {
+    let five: Vec<(gtk::ToggleButton, crate::pets::PetPreview)> =
+        crate::pets::KINDS.iter().map(|&kind| pet_card(kind)).collect();
+    let pets_key = with_key(Some(settings), "pets");
+    for (kind, (card, _)) in crate::pets::KINDS.iter().zip(&five) {
         wrap.append(card);
+        if let Some(s) = pets_key {
+            bind_pet_card(s, kind, card);
+        }
     }
-    match with_key(Some(settings), "pets") {
-        Some(s) => bind_pet_cards(s, &cards),
-        None => wrap.set_sensitive(false),
+    if pets_key.is_none() {
+        wrap.set_sensitive(false);
     }
     who.add(&wrap);
     page.add(&who);
+    page.add(&own_pets_group(
+        pets_key,
+        &wrap,
+        five.into_iter().map(|(_, preview)| preview).collect(),
+    ));
 
     let behaviour = adw::PreferencesGroup::builder().title("Behaviour").build();
     let size = adw::ComboRow::builder()
@@ -2279,17 +2287,22 @@ fn pets_page(ext_settings: Option<&gio::Settings>) -> adw::PreferencesPage {
 }
 
 /// A pet's card on the Pets page: the pet playing its loop, its name and what it is. On
-/// means it comes out.
-fn pet_card(kind: &'static str) -> gtk::ToggleButton {
+/// means it comes out. The preview comes back too, for a card whose box has to grow when a
+/// bigger pack's pet arrives.
+fn pet_card(kind: &str) -> (gtk::ToggleButton, crate::pets::PetPreview) {
     let name = crate::pets::name(kind);
+    let species = crate::pets::species(kind);
     let column = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
-    column.append(&crate::pets::PetPreview::new(kind, 2));
+    let preview = crate::pets::PetPreview::new(kind, 2);
+    column.append(&preview);
     let title = gtk::Label::new(Some(&name));
     title.add_css_class("heading");
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     column.append(&title);
-    let what = gtk::Label::new(Some(kind));
+    let what = gtk::Label::new(Some(&species));
     what.add_css_class("caption");
     what.add_css_class("dim-label");
+    what.set_ellipsize(gtk::pango::EllipsizeMode::End);
     column.append(&what);
 
     // A tick as well as the colour, so the choice does not rest on colour alone.
@@ -2306,63 +2319,165 @@ fn pet_card(kind: &'static str) -> gtk::ToggleButton {
     card.add_css_class("card");
     card.add_css_class("octosnap-pet-card");
     card.bind_property("active", &tick, "visible").sync_create().build();
-    card.update_property(&[gtk::accessible::Property::Label(&format!("{name} the {kind}"))]);
-    card
+    card.update_property(&[gtk::accessible::Property::Label(&format!("{name} the {species}"))]);
+    (card, preview)
 }
 
-/// Binds the `pets` list to the pets' cards: a card that is on is a pet that is out.
+/// The `pets` list with `kind` put out (`out`) or in. It keeps the order of `known` -- the
+/// five, then the packs' pets (`pets::kinds`) -- whatever order the pets were chosen in, and
+/// keeps any pet this app does not know, after the ones it does, as they were: for an
+/// extension newer than the app, or a pack the app could not draw.
+fn pets_with(current: &[String], kind: &str, out: bool, known: &[String]) -> Vec<String> {
+    let is_out = |k: &str| if k == kind { out } else { current.iter().any(|v| v == k) };
+    known
+        .iter()
+        .filter(|k| is_out(k))
+        .cloned()
+        .chain(current.iter().filter(|v| !known.contains(v)).cloned())
+        .collect()
+}
+
+/// Binds the `pets` list to a pet's card: a card that is on is a pet that is out.
 ///
-/// The list keeps the extension's order (`pets::KINDS`) whatever order the pets were chosen
-/// in, and keeps any pet this app does not know, after the ones it does, for an extension
-/// newer than the app. It is never left empty: with the pets on, an empty list is pets
-/// that never come, and the switch above is the way to put them all away. So the last card
-/// on stays on, and the dialog says why.
-fn bind_pet_cards(settings: &gio::Settings, cards: &[(&'static str, gtk::ToggleButton)]) {
+/// The list is never left empty: with the pets on, an empty list is pets that never come,
+/// and the switch above is the way to put them all away. So the last card on stays on, and
+/// the dialog says why.
+fn bind_pet_card(settings: &gio::Settings, kind: &str, card: &gtk::ToggleButton) {
     const KEY: &str = "pets";
-    for (kind, card) in cards {
-        let kind = *kind;
-        let apply = move |card: &gtk::ToggleButton, settings: &gio::Settings| {
+    let apply = {
+        let kind = kind.to_owned();
+        move |card: &gtk::ToggleButton, settings: &gio::Settings| {
             let out = settings.strv(KEY).iter().any(|v| v.as_str() == kind);
             // Guarded, or writing the setting below re-enters this and fights the user.
             if card.is_active() != out {
                 card.set_active(out);
             }
-        };
-        apply(card, settings);
-        watch(settings, KEY, card, apply);
+        }
+    };
+    apply(card, settings);
+    watch(settings, KEY, card, apply);
 
-        let settings = settings.clone();
-        card.connect_toggled(move |card| {
-            let current: Vec<String> =
-                settings.strv(KEY).iter().map(|v| v.as_str().to_owned()).collect();
-            if card.is_active() == current.iter().any(|v| v == kind) {
-                return;
+    let (settings, kind) = (settings.clone(), kind.to_owned());
+    card.connect_toggled(move |card| {
+        let current: Vec<String> =
+            settings.strv(KEY).iter().map(|v| v.as_str().to_owned()).collect();
+        if card.is_active() == current.contains(&kind) {
+            return;
+        }
+        let next = pets_with(&current, &kind, card.is_active(), &crate::pets::kinds());
+        if next.is_empty() {
+            card.set_active(true);
+            if let Some(dialog) = card
+                .ancestor(adw::PreferencesDialog::static_type())
+                .and_downcast::<adw::PreferencesDialog>()
+            {
+                dialog.add_toast(adw::Toast::new(
+                    "One pet stays out. The switch above puts them all away",
+                ));
             }
-            let out =
-                |k: &str| if k == kind { card.is_active() } else { current.iter().any(|v| v == k) };
-            let next: Vec<&str> = crate::pets::KINDS
-                .iter()
-                .copied()
-                .filter(|k| out(k))
-                .chain(
-                    current.iter().map(String::as_str).filter(|v| !crate::pets::KINDS.contains(v)),
-                )
-                .collect();
-            if next.is_empty() {
-                card.set_active(true);
-                if let Some(dialog) = card
-                    .ancestor(adw::PreferencesDialog::static_type())
-                    .and_downcast::<adw::PreferencesDialog>()
-                {
-                    dialog.add_toast(adw::Toast::new(
-                        "One pet stays out. The switch above puts them all away",
-                    ));
-                }
-                return;
-            }
-            wrote(KEY, settings.set_strv(KEY, next));
-        });
+            return;
+        }
+        wrote(KEY, settings.set_strv(KEY, next.iter().map(String::as_str).collect::<Vec<_>>()));
+    });
+}
+
+/// `spec/14` §14's **Your own pets** (D196): the packs' pets as cards after the five's in
+/// `wrap`, and a group that says how to add one, opens the folder, and lists each pack the
+/// extension could not read, with why.
+///
+/// The extension reads the packs and says what they are (`GetPetPacks`), and says again
+/// when they change (`PetPacksChanged`), which this follows for as long as the page is
+/// there. An extension without packs answers `UnknownMethod`, and the group stays hidden.
+/// Everything the signal's handler reaches it holds weakly, but the settings: the handler
+/// is the bus connection's, and goes with the page.
+fn own_pets_group(
+    settings: Option<&gio::Settings>,
+    wrap: &adw::WrapBox,
+    five: Vec<crate::pets::PetPreview>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Your own pets")
+        .description("Add a pet of your own: a folder with a pet.json and a sheet.png, put in the pets folder")
+        .visible(false)
+        .build();
+    let open = gtk::Button::builder().label("Open Pets Folder").valign(gtk::Align::Center).build();
+    open.connect_clicked(|_| crate::pets::open_pet_folder());
+    group.set_header_suffix(Some(&open));
+
+    struct Shown {
+        cards: Vec<gtk::ToggleButton>,
+        problems: Vec<adw::ActionRow>,
     }
+    let shown = std::rc::Rc::new(std::cell::RefCell::new(Shown {
+        cards: Vec::new(),
+        problems: Vec::new(),
+    }));
+    let five: Vec<glib::WeakRef<crate::pets::PetPreview>> =
+        five.iter().map(|p| p.downgrade()).collect();
+    let (wrap_weak, group_weak, open_weak, settings) =
+        (wrap.downgrade(), group.downgrade(), open.downgrade(), settings.cloned());
+    let refresh = move || {
+        let (wrap_weak, group_weak, open_weak, settings, shown, five) = (
+            wrap_weak.clone(),
+            group_weak.clone(),
+            open_weak.clone(),
+            settings.clone(),
+            std::rc::Rc::clone(&shown),
+            five.clone(),
+        );
+        glib::spawn_future_local(async move {
+            let packs = crate::pets::fetch_packs().await;
+            let (Some(wrap), Some(group)) = (wrap_weak.upgrade(), group_weak.upgrade()) else {
+                return;
+            };
+            let mut shown = shown.borrow_mut();
+            for card in shown.cards.drain(..) {
+                wrap.remove(&card);
+            }
+            for row in shown.problems.drain(..) {
+                group.remove(&row);
+            }
+            let ids = crate::pets::set_packs(packs.as_ref().map_or(&[][..], |p| &p.pets));
+            // A bigger pet makes every card's box bigger, the five's too.
+            for preview in five.iter().filter_map(glib::WeakRef::upgrade) {
+                preview.queue_resize();
+            }
+            let Some(packs) = packs else {
+                group.set_visible(false);
+                return;
+            };
+            if let Some(open) = open_weak.upgrade() {
+                open.set_tooltip_text(Some(&packs.folder));
+            }
+            for id in &ids {
+                let (card, _) = pet_card(id);
+                if let Some(from) = packs.pets.iter().find(|p| &p.id == id).map(|p| p.from.as_str())
+                {
+                    card.set_tooltip_text(Some(from));
+                }
+                wrap.append(&card);
+                if let Some(settings) = &settings {
+                    bind_pet_card(settings, id, &card);
+                }
+                shown.cards.push(card);
+            }
+            for problem in &packs.problems {
+                let row = adw::ActionRow::builder()
+                    .title(glib::markup_escape_text(&problem.id))
+                    .subtitle(glib::markup_escape_text(&problem.problem))
+                    .build();
+                row.set_tooltip_text(Some(&problem.from));
+                row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                group.add(&row);
+                shown.problems.push(row);
+            }
+            group.set_visible(true);
+        });
+    };
+    refresh();
+    let subscription = std::cell::RefCell::new(crate::pets::watch_packs(refresh));
+    group.connect_destroy(move |_| drop(subscription.take()));
+    group
 }
 
 // --- Advanced ------------------------------------------------------------------------
@@ -2859,8 +2974,36 @@ fn bind_string_list_member(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        PET_ACTIVITY_WIRE, PET_SIZES_WIRE, SHUTTER_SOUNDS_WIRE, shutter_kind, usable_as_global,
+        PET_ACTIVITY_WIRE, PET_SIZES_WIRE, SHUTTER_SOUNDS_WIRE, pets_with, shutter_kind,
+        usable_as_global,
     };
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|&s| s.to_owned()).collect()
+    }
+
+    /// The cards write `pets` in the five's order and then the packs' (`spec/14` §14),
+    /// whatever order they were clicked in, and keep a pet the app does not know -- an
+    /// extension newer than the app, a pack it could not draw -- after the rest.
+    #[test]
+    fn the_cards_write_the_pets_in_their_order_and_keep_the_unknown() {
+        let known = strings(&["octopus", "penguin", "frog", "mushroom", "potato", "amy", "mochi"]);
+        let current = strings(&["mochi", "ghost", "frog"]);
+        assert_eq!(
+            pets_with(&current, "octopus", true, &known),
+            ["octopus", "frog", "mochi", "ghost"]
+        );
+        assert_eq!(pets_with(&current, "amy", true, &known), ["frog", "amy", "mochi", "ghost"]);
+        assert_eq!(pets_with(&current, "mochi", false, &known), ["frog", "ghost"]);
+        assert_eq!(pets_with(&current, "frog", false, &known), ["mochi", "ghost"]);
+        // A pack gone from the app's list is kept as it was, not dropped.
+        let without_mochi = strings(&["octopus", "penguin", "frog", "mushroom", "potato"]);
+        assert_eq!(
+            pets_with(&current, "penguin", true, &without_mochi),
+            ["penguin", "frog", "mochi", "ghost"]
+        );
+        assert!(pets_with(&strings(&["amy"]), "amy", false, &known).is_empty());
+    }
 
     /// Settings writes the index of the row the user picked, through this list, into a
     /// key whose schema only takes its own choices. A list that drifted from the schema

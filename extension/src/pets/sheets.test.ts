@@ -12,7 +12,7 @@
  *   README and the store: sharp at any size.
  *
  * The previews are the pets' own tricks, played through the shell's `Runner` with a fixed
- * seed and no room to move, so a preview is what the pet does on the desktop.
+ * seed and no room to move (`preview.ts`), so a preview is what the pet does on the desktop.
  *
  * `npx vitest run src/pets/sheets.test.ts` checks the files; with `UPDATE_PET_SHEETS=1`
  * it writes them. The check compares pixels rather than PNG bytes, since two zlib builds
@@ -26,14 +26,10 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib';
 
 import { describe, expect, it } from 'vitest';
 
-import { ACTS, type ActContext } from './acts.js';
-import { PETS, PET_KINDS, type PetKind, baselineOf } from './art/index.js';
+import { type BuiltinKind, PETS, PET_KINDS, baselineOf } from './art/index.js';
 import type { Grid } from './art/painter.js';
-import { type Pose, poseKey, quantizePose } from './art/pose.js';
-import { BLINK_MS, BREATH_MS } from './brain.js';
 import { parseColour } from './frames.js';
-import { Rng } from './rng.js';
-import { Runner } from './runner.js';
+import { previewOf } from './preview.js';
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '../../../data/pets');
 const UPDATE = process.env.UPDATE_PET_SHEETS === '1';
@@ -43,7 +39,7 @@ const UPDATE = process.env.UPDATE_PET_SHEETS === '1';
  * before it starts again. Tricks that are mostly an effect beside the pet -- the frog's
  * fly, the octopus's ink, the mushroom's spores -- are left for the desktop.
  */
-const LOOPS: Record<PetKind, string[]> = {
+const LOOPS: Record<BuiltinKind, string[]> = {
     octopus: ['breath', 'blink', 'breath', 'camo', 'breath', 'jump', 'breath', 'blink', 'wave', 'breath'],
     penguin: ['breath', 'blink', 'breath', 'flap', 'breath', 'jump', 'breath', 'blink', 'wave', 'breath'],
     frog: ['breath', 'blink', 'croak', 'breath', 'blep', 'breath', 'jump', 'blink', 'wiggle', 'breath'],
@@ -51,72 +47,14 @@ const LOOPS: Record<PetKind, string[]> = {
     potato: ['breath', 'blink', 'sprout', 'breath', 'bask', 'breath', 'jump', 'blink', 'roll', 'breath'],
 };
 
-/** A step of a preview: a pose, how long it shows, and how many art pixels off the ground. */
-type Step = [Pose, number, number];
-
-/** A trick played to the end on a 16 ms clock, as poses held for so long at so high. */
-function played(kind: PetKind, name: string, seed: number): Step[] {
-    const factory = ACTS[name];
-    if (factory === undefined) throw new Error(`no trick ${name}`);
-    const ctx: ActContext = {
-        rng: new Rng(seed),
-        spec: PETS[kind],
-        room: () => ({ left: 0, right: 0 }),
-        desk: () => null,
-        toFloor: () => null,
-        climb: () => null,
-        crowded: () => false,
-        fly: () => null,
-    };
-    const runner = new Runner(factory(ctx), 0);
-    const steps: Step[] = [];
-    for (let now = 0; !runner.done; now += 16) {
-        if (now > 60_000) throw new Error(`${kind} ${name} did not finish`);
-        runner.update(now);
-        runner.takeDx();
-        runner.takeFx();
-        const pose = quantizePose(runner.pose);
-        const y = Math.round(runner.y);
-        const last = steps[steps.length - 1];
-        if (last !== undefined && poseKey(last[0]) === poseKey(pose) && last[2] === y) last[1] += 16;
-        else steps.push([pose, 16, y]);
-    }
-    return steps;
-}
-
-function preview(kind: PetKind): Step[] {
-    const quarter = BREATH_MS / 4;
-    const steps: Step[] = [];
-    LOOPS[kind].forEach((part, i) => {
-        if (part === 'breath') steps.push([{}, quarter, 0], [{ squash: 0.1 }, quarter, 0], [{}, quarter, 0], [{ squash: -0.1 }, quarter, 0]);
-        else if (part === 'blink') steps.push([{ mood: 'blink' }, BLINK_MS, 0], [{}, quarter, 0]);
-        else steps.push(...played(kind, part, 7 + i));
-    });
-    return steps;
-}
-
 interface Sheet {
-    kind: PetKind;
+    kind: BuiltinKind;
     frames: Grid[];
     loop: [number, number, number][];
 }
 
-function sheetOf(kind: PetKind): Sheet {
-    const spec = PETS[kind];
-    const keys: string[] = [];
-    const frames: Grid[] = [];
-    const loop: [number, number, number][] = [];
-    for (const [pose, ms, y] of preview(kind)) {
-        const key = poseKey(pose);
-        let index = keys.indexOf(key);
-        if (index < 0) {
-            index = keys.length;
-            keys.push(key);
-            frames.push(spec.draw(pose));
-        }
-        loop.push([index, ms, y]);
-    }
-    return { kind, frames, loop };
+function sheetOf(kind: BuiltinKind): Sheet {
+    return { kind, ...previewOf(PETS[kind], LOOPS[kind]) };
 }
 
 /** The strip's pixels, straight alpha, frames side by side. */
@@ -222,7 +160,7 @@ function svg(width: number, height: number, title: string, body: string[]): stri
     ].join('\n');
 }
 
-const TITLES: Record<PetKind, string> = {
+const TITLES: Record<BuiltinKind, string> = {
     octopus: 'Omni the octopus',
     penguin: 'Pengu the penguin',
     frog: 'Hops the frog',

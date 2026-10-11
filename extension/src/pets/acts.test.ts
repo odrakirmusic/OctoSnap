@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { PETS, PET_KINDS, type PetKind } from './art/index.js';
+import { type BuiltinKind, PETS, PET_KINDS } from './art/index.js';
 import { type View, poseKey } from './art/pose.js';
 import { ACTS, type ActContext, LICK_REACH, facing, lickReach } from './acts.js';
 import { LIVELINESS, type Place, type Temperament, isLiveliness, nextAct, pause, startsTricks } from './brain.js';
@@ -26,7 +26,7 @@ interface Played {
     poses: string[];
 }
 
-function context(kind: PetKind, seed: number, room = { left: 200, right: 200 }): ActContext {
+function context(kind: BuiltinKind, seed: number, room = { left: 200, right: 200 }): ActContext {
     let fly: { dx: number; dy: number } | null = null;
     return {
         rng: new Rng(seed),
@@ -84,7 +84,7 @@ interface Desk {
 
 const DESK = { width: 300, floor: 200, top: 32 };
 
-function deskContext(kind: PetKind, seed: number, at: Desk): ActContext {
+function deskContext(kind: BuiltinKind, seed: number, at: Desk): ActContext {
     return {
         rng: new Rng(seed),
         spec: PETS[kind],
@@ -190,7 +190,7 @@ describe('re-rolling', () => {
     });
 
     it('another seed plays it differently', () => {
-        const differs = (name: string, kind: PetKind) => {
+        const differs = (name: string, kind: BuiltinKind) => {
             const a = play(context(kind, 1), name);
             const b = play(context(kind, 2), name);
             return a.ms !== b.ms || a.dx !== b.dx || a.maxY !== b.maxY || a.poses.join() !== b.poses.join();

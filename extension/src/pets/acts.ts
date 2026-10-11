@@ -289,10 +289,20 @@ export function* camo(ctx: ActContext): Act {
     yield hold({ mood: 'happy' }, 400);
 }
 
+/**
+ * Where on a pet a puff comes from, in art pixels: across its middle, a little below half
+ * its height, which on the octopus is between its eyes and its arms.
+ */
+export function puffAt(spec: { width: number; height: number }): { x: number; y: number } {
+    return { x: spec.width / 2, y: Math.round(spec.height * 0.56) };
+}
+
 /** A puff of ink, and the octopus is somewhere else. */
 export function* ink(ctx: ActContext): Act {
     yield hold({ squash: 0.8, mood: 'squeeze' }, 160);
-    yield fx({ kind: 'burst', colours: ['#3b2358', '#4a2d70', '#2a1840'], count: 22, up: false, at: { x: 16, y: 18 } });
+    // A pack's pet vanishes in its own puff (`spec/14` §14), from the same spot on it.
+    const colours = ctx.spec.ink ?? ['#3b2358', '#4a2d70', '#2a1840'];
+    yield fx({ kind: 'burst', colours, count: 22, up: false, at: puffAt(ctx.spec) });
     yield fx({ kind: 'vanish' });
     yield hold({}, 420);
     // On the desk it can come back up or down it as well as across.
