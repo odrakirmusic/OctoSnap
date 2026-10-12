@@ -303,6 +303,10 @@ pub enum Control {
     /// The tip's shape ([`ArrowHead`]). Not in §2's table; asked for on hardware.
     ArrowHead,
     TextStyle,
+    /// A label's background (D198), apart from its glyphs' colour: the plate's on a box
+    /// style and the edge's on "Outlined". One chosen for a plain style gives it its
+    /// plate ([`TextStyle::boxed`]).
+    TextBackground,
     /// §4.5's thirteen presets over a continuous value ([`crate::style::FONT_SIZES`]).
     FontSize,
     /// How a text's lines line up with each other ([`TextAlign`]). The model had it from
@@ -354,9 +358,13 @@ impl Tool {
             // tool lists neither.
             Self::FilledRect => &[Control::ColorWithAlpha, Control::CornerRadius],
             Self::Ellipse => &[Control::Color, Control::Size, Control::Shadow],
-            Self::Text => {
-                &[Control::Color, Control::FontSize, Control::TextStyle, Control::TextAlign]
-            }
+            Self::Text => &[
+                Control::Color,
+                Control::TextBackground,
+                Control::FontSize,
+                Control::TextStyle,
+                Control::TextAlign,
+            ],
             Self::Pencil => &[Control::Color, Control::Size, Control::Smoothing],
             Self::Highlighter => &[Control::Color, Control::Size, Control::SmartMode],
             // No colour: the spotlight paints a scrim, not a stroke.
@@ -394,6 +402,11 @@ impl Control {
         match self {
             Self::Color | Self::ColorWithAlpha => {
                 object.style.color = settings.style.color;
+                // A label's colour is its glyphs' (D197), a label from before included:
+                // recoloured, it is drawn the way every label now is.
+                if let Geometry::Text { ink, .. } = &mut object.geometry {
+                    *ink = Some(settings.style.color);
+                }
                 // `spec/05` §4.7: a highlighter keeps its wash whatever the palette says.
                 if let Geometry::Path { highlighter: true, .. } = object.geometry {
                     object.style.color.a = HIGHLIGHTER_ALPHA;
@@ -439,6 +452,27 @@ impl Control {
             Self::TextStyle => {
                 if let Geometry::Text { style, .. } = &mut object.geometry {
                     *style = settings.text;
+                }
+            }
+            Self::TextBackground => {
+                // Only when it changes, so a value read off a label and written back
+                // leaves it alone -- a plain label kept its background when its style
+                // was set back to plain, and that is the user's to keep.
+                if let Geometry::Text { background, style, ink, .. } = &mut object.geometry
+                    && *background != settings.text_background
+                {
+                    // A label from before D197 is drawn the old way, which has no room
+                    // for a background: it takes the ink its glyphs were drawn in, and
+                    // is drawn the way every label now is.
+                    if ink.is_none() {
+                        let before =
+                            crate::style::label_colours(*style, object.style.color, None, None);
+                        *ink = Some(before.fill.unwrap_or(object.style.color));
+                    }
+                    *background = settings.text_background;
+                    if background.is_some() && !style.has_plate() && !style.is_outlined() {
+                        *style = style.boxed();
+                    }
                 }
             }
             Self::FontSize => {
@@ -515,6 +549,8 @@ pub struct ToolSettings {
     /// The arrow tip's shape, chosen independently of the style.
     pub head: ArrowHead,
     pub text: TextStyle,
+    /// A label's background (D198), `None` for the one that stands off its colour.
+    pub text_background: Option<crate::style::Rgba>,
     pub font_size: f64,
     /// How a new text's lines line up, and what the row sets on a selected one.
     pub align: TextAlign,
@@ -554,10 +590,11 @@ impl ToolSettings {
                 settings.head = *head;
             }
             Geometry::Rect { radius, .. } => settings.rounded_corners = *radius > 0.0,
-            Geometry::Text { style, font_size, align, .. } => {
+            Geometry::Text { style, font_size, align, background, .. } => {
                 settings.text = *style;
                 settings.font_size = *font_size;
                 settings.align = *align;
+                settings.text_background = *background;
             }
             Geometry::Path { smoothing, .. } => settings.smoothing = *smoothing,
             Geometry::Spotlight { shape, opacity, .. } => {
@@ -590,6 +627,7 @@ impl Default for ToolSettings {
             arrow: ArrowStyle::default(),
             head: ArrowHead::default(),
             text: TextStyle::default(),
+            text_background: None,
             // The middle of §4.5's thirteen presets.
             font_size: 24.0,
             align: TextAlign::Start,
@@ -852,6 +890,8 @@ impl Draft {
                     align: self.settings.align,
                     width,
                     tail: None,
+                    ink: Some(self.settings.style.color),
+                    background: self.settings.text_background,
                 }
             }
             // A held stroke is the shape it became (`ANN-28`), drawn with the pencil's own
@@ -1210,6 +1250,38 @@ mod tests {
         let mut arrow =
             drag(Tool::Arrow, (0.0, 0.0), (100.0, 0.0), Modifiers::none()).expect("committable");
         assert!(!Control::TextAlign.apply(&right, &mut arrow));
+    }
+
+    /// A background (D198) is the plate's colour: a plain label takes the box it needs to
+    /// show one, a boxed one keeps its style, and a label from before the ink takes the
+    /// glyph colour it was drawn in, so the background shows and the letters do not change.
+    #[test]
+    fn a_background_boxes_a_plain_label_and_keeps_an_old_ones_letters() {
+        let blue = crate::style::Rgba::new(0.1, 0.4, 0.8, 1.0);
+        let mut draft = Draft::begin(
+            Tool::Text,
+            ToolSettings::default(),
+            Point::new(0.0, 0.0),
+            Modifiers::none(),
+        )
+        .expect("creates");
+        draft.extend(Point::new(200.0, 40.0), Modifiers::none());
+        let mut text = draft.object(0, 0, 1).expect("committable");
+        let read = ToolSettings::from_object(&text, ToolSettings::default());
+        let chosen = ToolSettings { text_background: Some(blue), ..read };
+        assert!(Control::TextBackground.apply(&chosen, &mut text));
+        let Geometry::Text { style, background, .. } = &text.geometry else { panic!("text") };
+        assert_eq!((*style, *background), (TextStyle::Box, Some(blue)));
+
+        // A Rounded Box from before D197: red plate, white letters.
+        let red = text.style.color;
+        if let Geometry::Text { style, background, ink, .. } = &mut text.geometry {
+            (*style, *background, *ink) = (TextStyle::RoundedBox, None, None);
+        }
+        assert!(Control::TextBackground.apply(&chosen, &mut text));
+        let Geometry::Text { style, background, ink, .. } = text.geometry else { panic!("text") };
+        assert_eq!((style, background), (TextStyle::RoundedBox, Some(blue)));
+        assert_eq!(ink, Some(red.contrasting()), "the letters stay the colour they were");
     }
 
     /// The head is its own control: changing it leaves the style, and a document from
@@ -1664,8 +1736,9 @@ mod options_row_tests {
             (Tool::Rect, &[C::Color, C::Size, C::CornerRadius, C::Shadow]),
             (Tool::FilledRect, &[C::ColorWithAlpha, C::CornerRadius]),
             (Tool::Ellipse, &[C::Color, C::Size, C::Shadow]),
-            // §2's three, plus the alignment the model always had (D167).
-            (Tool::Text, &[C::Color, C::FontSize, C::TextStyle, C::TextAlign]),
+            // §2's three, plus the alignment the model always had (D167) and the
+            // background the owner asked back for once the colour was the glyphs' (D198).
+            (Tool::Text, &[C::Color, C::TextBackground, C::FontSize, C::TextStyle, C::TextAlign]),
             (Tool::Pencil, &[C::Color, C::Size, C::Smoothing]),
             (Tool::Highlighter, &[C::Color, C::Size, C::SmartMode]),
             (Tool::Spotlight, &[C::SpotlightShape, C::SpotlightOpacity]),

@@ -1028,11 +1028,18 @@ impl Editor {
         // On the right of its line whichever line that is: alone on a second line, a
         // group left to itself would sit at the start.
         end.set_halign(gtk::Align::End);
-        // The user's own name for it (2026-09-23), and the one close that leaves no card.
-        let final_close = gtk::Button::with_label("Final Close");
-        final_close.set_tooltip_text(Some(
-            "Close without leaving a preview; the capture goes to the history (Ctrl+Shift+W)",
-        ));
+        // Icons, every one (D198): the owner asked for the bar's words to become icons,
+        // and an icon row reads at a glance where five labels had to be read. Each says
+        // its name in its tooltip, with its key, and to a screen reader.
+        //
+        // The user's own name for it (2026-09-23), and the one close that leaves no card:
+        // a clock, for the history it files the capture in, where the title bar's ×
+        // leaves a card.
+        let final_close = bar_button(
+            "document-open-recent-symbolic",
+            "Final Close",
+            "Final Close: close without a preview card, filed in the history (Ctrl+Shift+W)",
+        );
         {
             let editor = Rc::downgrade(self);
             final_close.connect_clicked(move |_| {
@@ -1041,16 +1048,19 @@ impl Editor {
                 }
             });
         }
-        // Apart from the outputs: it leaves the editor, they do not (`spec/13` #4).
-        final_close.set_margin_end(12);
         end.append(&final_close);
+        // Apart from the outputs, by a rule: it leaves the editor, they do not
+        // (`spec/13` #4).
+        let rule = gtk::Separator::new(gtk::Orientation::Vertical);
+        rule.set_margin_start(6);
+        rule.set_margin_end(6);
+        rule.set_margin_top(6);
+        rule.set_margin_bottom(6);
+        end.append(&rule);
         // §7's list, minus the ones whose feature is not here: Upload is M7, Share and
         // OCR are Tier 2/3. A button that only writes to the journal is indistinguishable
         // from a broken one.
-        // Labelled like its neighbours (`spec/13` #13): one icon-only button among four
-        // labelled ones stands out for no reason.
-        let print = gtk::Button::with_label("Print");
-        print.set_tooltip_text(Some("Print (Ctrl+P)"));
+        let print = bar_button("document-print-symbolic", "Print", "Print (Ctrl+P)");
         {
             let editor = Rc::downgrade(self);
             print.connect_clicked(move |_| {
@@ -1061,10 +1071,11 @@ impl Editor {
         }
         end.append(&print);
 
-        let pin = gtk::Button::with_label("Pin");
-        pin.set_tooltip_text(Some(
-            "Pin the rendered result and close (Ctrl+Shift+P); Alt keeps the editor",
-        ));
+        let pin = bar_button(
+            "view-pin-symbolic",
+            "Pin",
+            "Pin it to the screen and close (Ctrl+Shift+P); Alt keeps the editor",
+        );
         {
             let editor = Rc::downgrade(self);
             pin.connect_clicked(move |_| {
@@ -1076,8 +1087,11 @@ impl Editor {
         }
         end.append(&pin);
 
-        let save_as = gtk::Button::with_label("Save as…");
-        save_as.set_tooltip_text(Some("Choose where to put it (Ctrl+Shift+S)"));
+        let save_as = bar_button(
+            "document-save-as-symbolic",
+            "Save As",
+            "Save as…: choose where to put it (Ctrl+Shift+S)",
+        );
         {
             let editor = Rc::downgrade(self);
             save_as.connect_clicked(move |_| {
@@ -1093,9 +1107,12 @@ impl Editor {
         // the bar was already wide enough to wrap at the window's own minimum. Hanging the
         // text read off Copy costs no width and puts it where its neighbour is.
         let copy = adw::SplitButton::builder()
-            .label("Copy")
-            .tooltip_text("Copy the rendered image (Ctrl+C)")
+            .icon_name("edit-copy-symbolic")
+            .tooltip_text("Copy the picture (Ctrl+C)")
+            .dropdown_tooltip("More ways to copy")
             .build();
+        copy.upcast_ref::<gtk::Widget>()
+            .update_property(&[gtk::accessible::Property::Label("Copy")]);
         {
             let editor = Rc::downgrade(self);
             copy.connect_clicked(move |_| {
@@ -1109,9 +1126,8 @@ impl Editor {
         copy.set_menu_model(Some(&menu));
         end.append(&copy);
 
-        let save = gtk::Button::with_label("Save");
+        let save = bar_button("document-save-symbolic", "Save", "Save (Ctrl+S)");
         save.add_css_class("suggested-action");
-        save.set_tooltip_text(Some("Save it (Ctrl+S)"));
         {
             let editor = Rc::downgrade(self);
             save.connect_clicked(move |_| {
@@ -1197,8 +1213,21 @@ impl Editor {
     /// export an unannotated document, and re-exporting on every edit would encode a PNG
     /// per stroke. The same reasoning the cards use for their own drag source.
     fn build_drag_button(self: &Rc<Self>) -> gtk::Widget {
-        let button = gtk::Button::with_label("Drag me");
-        button.set_tooltip_text(Some("Drag the rendered image into another app"));
+        // §1's "Drag Me handle centred with grip glyphs on both sides", in icons (D198):
+        // the picture between two grips, which says "pick this up" without a word.
+        let face = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        for icon in
+            ["list-drag-handle-symbolic", "image-x-generic-symbolic", "list-drag-handle-symbolic"]
+        {
+            let image = gtk::Image::from_icon_name(icon);
+            if icon.starts_with("list-") {
+                image.add_css_class("dim-label");
+            }
+            face.append(&image);
+        }
+        let button = gtk::Button::builder().child(&face).build();
+        button.set_tooltip_text(Some("Drag me: drag the picture into another app"));
+        button.update_property(&[gtk::accessible::Property::Label("Drag the picture")]);
         let source = gtk::DragSource::new();
         source.set_actions(gtk::gdk::DragAction::COPY);
         {
@@ -1523,7 +1552,8 @@ impl Editor {
     /// task switcher show it -- the editor's own title bar carries the tools instead.
     pub(super) fn refresh_unsaved(&self) {
         let unsaved = self.has_unsaved();
-        if self.unsaved.is_visible() != unsaved {
+        // Its own flag: `is_visible` is false for anything in a window not yet shown (D199).
+        if self.unsaved.get_visible() != unsaved {
             tracing::debug!(unsaved, "unsaved indicator");
         }
         self.unsaved.set_visible(unsaved);
@@ -1703,4 +1733,14 @@ fn named_transform(name: &str, editor: &Editor) -> Option<octosnap_scene::transf
         "flip-vertical" => Transform::FlipVertical,
         _ => return None,
     })
+}
+
+/// One of the bottom bar's icon buttons (D198): the icon, its name and key as the tooltip,
+/// and its name for a screen reader, which an icon alone does not give it. The GIF
+/// editor's bar is made of the same.
+pub(crate) fn bar_button(icon: &str, name: &str, tip: &str) -> gtk::Button {
+    let button = gtk::Button::from_icon_name(icon);
+    button.set_tooltip_text(Some(tip));
+    button.update_property(&[gtk::accessible::Property::Label(name)]);
+    button
 }

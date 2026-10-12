@@ -135,6 +135,17 @@ pub enum Geometry {
         /// (`crate::callout`). Absent on every label from before there were tails.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail: Option<Point>,
+        /// The glyphs' own colour (D197), which the colour control sets in every style:
+        /// a box style's plate and the outlined style's edge are then whichever of white
+        /// or black stands off it ([`crate::style::label_colours`]). Absent on a label
+        /// from before, whose colour was its plate's and whose glyphs were black or white.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ink: Option<crate::style::Rgba>,
+        /// The plate's own colour, and the edge's on "Outlined" (D198): what the options
+        /// row's Background sets, apart from the glyphs' colour. Absent, the plate is
+        /// whichever of white or near-black stands off the ink, as D197 made it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        background: Option<crate::style::Rgba>,
     },
     Path {
         points: Vec<Point>,
@@ -922,6 +933,8 @@ mod resize_tests {
             align: TextAlign::Start,
             width,
             tail: None,
+            ink: None,
+            background: None,
         };
 
         let mut corner = object(text(None));
@@ -967,6 +980,8 @@ mod resize_tests {
             align: TextAlign::Start,
             width: None,
             tail: None,
+            ink: None,
+            background: None,
         });
         // The plate is the glyphs plus 0.4 em (8 units) on every side: pretend the glyph
         // box measured 40 x 24, so the plate is 56 x 40 at (92, 92).
@@ -985,6 +1000,8 @@ mod resize_tests {
             align: TextAlign::Start,
             width: None,
             tail: None,
+            ink: None,
+            background: None,
         });
         o.resize(plate, Bounds::new(92.0, 92.0, 116.0, 40.0), Handle::Right);
         let Geometry::Text { pos, width, .. } = o.geometry else { panic!("text") };

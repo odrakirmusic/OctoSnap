@@ -52,7 +52,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
-use octosnap_scene::{Command, Geometry, Object, ObjectId, Point, TextAlign};
+use octosnap_scene::{Command, Geometry, Object, Point, TextAlign};
 
 use super::window::Editor;
 
@@ -81,6 +81,11 @@ pub struct Editing {
     /// `Add`, and an existing one emptied produces a `Remove` -- which is what §4.5's
     /// "commit if non-empty" means for text that already existed.
     subject: Option<Box<Object>>,
+    /// The label as it reads while it is typed, drawn by the canvas: the subject with its
+    /// new words, or a new label put in as the draft. The view over it draws only the
+    /// caret and the selection, so what is typed is the label itself -- its plate, its
+    /// outline, its colours -- and nothing changes when the edit ends (D197).
+    shown: Object,
 }
 
 impl Editor {
@@ -122,7 +127,30 @@ impl Editor {
             },
             None => (settings.text, settings.font_size, settings.align, width, String::new()),
         };
-        let color = subject.as_ref().map_or(settings.style.color, |object| object.style.color);
+        let shown = match &subject {
+            Some(object) => object.clone(),
+            None => {
+                let z = self.canvas.scene().map_or(0, |scene| scene.top_z().saturating_add(1));
+                Object::new(
+                    z,
+                    now_seconds(),
+                    settings.style,
+                    Geometry::Text {
+                        pos,
+                        text: String::new(),
+                        style,
+                        font_size,
+                        align,
+                        width,
+                        tail: None,
+                        ink: Some(settings.style.color),
+                        background: settings.text_background,
+                    },
+                )
+            }
+        };
+        // The handles of the label being typed into are the edit's frame now.
+        self.canvas.set_selection(Vec::new());
 
         let view = gtk::TextView::new();
         view.set_wrap_mode(if width.is_some() {
@@ -141,15 +169,15 @@ impl Editor {
         });
         // The document's font at the document's size. The zoom is applied as a transform
         // on the layer, not by scaling the font, so the glyphs the user types are laid out
-        // exactly as `Canvas::text_layout` will lay them out when the edit commits --
-        // otherwise the text jumps the moment they press Enter.
-        apply_style(&view, style, font_size, color);
-        // The view *is* the object while it is open: the plate is its background, drawn
-        // by `install_text_css` with the object's colour and radius, and the plate's
-        // padding is the view's margins -- in document units, like everything under the
-        // layer's transform. The first version had a themed white text view of 24 px
-        // that scrolled the text out of sight as it was typed; the user's words were
-        // "the basic box is so small it cuts off text" and "background is not fitting".
+        // exactly as `Canvas::text_layout` lays out the label under them -- which is what
+        // puts the caret between the right two letters.
+        apply_style(&view, style, font_size);
+        // The view stands over the label rather than for it: transparent, its glyphs too,
+        // so the canvas's own drawing of the label shows through, and the caret and the
+        // selection are all it adds. Its padding is the plate's, in document units like
+        // everything under the layer's transform. The first version drew the text itself,
+        // as a text view can -- flat, without the outline or the plate's own colours, so
+        // a label looked one way while it was typed and another once it was done.
         view.add_css_class("octosnap-text-edit");
         #[allow(clippy::cast_possible_truncation)]
         let pad = (style.plate_padding_em() * font_size).round() as i32;
@@ -159,7 +187,7 @@ impl Editor {
         view.set_bottom_margin(pad);
         view.set_pixels_above_lines(0);
         view.set_pixels_below_lines(0);
-        self.install_text_css(style, font_size, color);
+        self.install_text_css(style, font_size);
 
         {
             let editor = Rc::downgrade(self);
@@ -189,15 +217,6 @@ impl Editor {
             view.add_controller(keys);
         }
 
-        // The object being re-edited is blanked in the *displayed* scene while the
-        // overlay stands in for it, or the same text draws twice -- once by the canvas and
-        // once by the `TextView` above it. The history is untouched: `commit_text_edit`
-        // puts the original back before applying anything, so an undo has the real object
-        // to return to.
-        if let Some(object) = &subject {
-            self.blank_text(object.id);
-        }
-
         self.text_layer.put(&view, 0.0, 0.0);
         self.text_layer.set_visible(true);
         *self.editing.borrow_mut() = Some(Editing {
@@ -209,14 +228,18 @@ impl Editor {
             width,
             effective_width: width,
             subject: subject.map(Box::new),
+            shown,
         });
-        // Sized to its text now and after every keystroke, from the renderer's own layout.
+        // Sized to its text now and after every keystroke, from the renderer's own layout,
+        // and the label under it showing what has been typed.
         self.fit_text_edit();
+        self.show_text_edit();
         {
             let editor = Rc::downgrade(self);
             view.buffer().connect_changed(move |_| {
                 if let Some(editor) = editor.upgrade() {
                     editor.fit_text_edit();
+                    editor.show_text_edit();
                 }
             });
         }
@@ -277,35 +300,35 @@ impl Editor {
         );
     }
 
-    /// The overlay's plate, outline and caret, as a stylesheet for this one edit.
+    /// The overlay's frame, caret and selection, as a stylesheet for this one edit.
     ///
-    /// A provider per edit rather than a tag background: a tag paints a rectangle behind
-    /// each line, and §4.5's plate is one rounded rectangle behind all of them with
-    /// padding around -- which is what the committed object draws, and the overlay has to
-    /// look like the object it is standing in for. A dashed accent outline (outside the
-    /// box, so it moves no glyph) says "this is being edited" on any picture; it is the
-    /// one thing the object does not have.
-    fn install_text_css(&self, style: TextStyle, font_size: f64, color: octosnap_scene::Rgba) {
+    /// Everything else is transparent: the label under it is the canvas's (D197). The
+    /// frame is solid where a selected label's is dashed -- the same box, saying "typing"
+    /// rather than "selected" -- outside the view, so it moves no glyph, and in the
+    /// selection's orange. The sizes are in document units, under the layer's zoom, so
+    /// they are divided by it to stay the same on screen.
+    fn install_text_css(&self, style: TextStyle, font_size: f64) {
         let Some(display) = gtk::gdk::Display::default() else { return };
         if let Some(old) = self.text_css.borrow_mut().take() {
             gtk::style_context_remove_provider_for_display(&display, &old);
         }
-        let (plate, ink) = if style.has_plate() {
-            (color.to_hex(), color.contrasting().to_hex())
-        } else {
-            ("00000000".to_owned(), color.to_hex())
-        };
         let radius = style.plate_radius_em() * font_size;
+        let per_pixel = 1.0 / (self.canvas.zoom() * self.canvas.picture_scale()).max(0.01);
+        let (frame, gap) = (1.5 * per_pixel, 3.0 * per_pixel);
         let css = format!(
             "textview.octosnap-text-edit, textview.octosnap-text-edit > text {{
                  background-color: transparent;
+                 color: transparent;
              }}
              textview.octosnap-text-edit {{
-                 background-color: #{plate};
                  border-radius: {radius:.1}px;
-                 outline: 1px dashed alpha(@accent_color, 0.85);
-                 outline-offset: 3px;
-                 caret-color: #{ink};
+                 outline: {frame:.2}px solid #ED5B00;
+                 outline-offset: {gap:.2}px;
+                 caret-color: #ED5B00;
+             }}
+             textview.octosnap-text-edit > text > selection {{
+                 background-color: alpha(#ED5B00, 0.3);
+                 color: transparent;
              }}"
         );
         let provider = gtk::CssProvider::new();
@@ -316,6 +339,93 @@ impl Editor {
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
         );
         *self.text_css.borrow_mut() = Some(provider);
+    }
+
+    /// The options row's change to the label being typed (D197): its colour, its size, its
+    /// style or its alignment, shown at once. Answers whether a label is being typed, so
+    /// the row's caller knows the change is spent here -- the selection is empty while
+    /// it is, and the change would otherwise only reach the tool's memory. The label used
+    /// to take the row's colour when it was committed, from whatever it was then; with the
+    /// label drawn while it is typed, it has to take it as it is chosen.
+    pub(super) fn restyle_text_edit(
+        &self,
+        control: octosnap_scene::tool::Control,
+        settings: &octosnap_scene::tool::ToolSettings,
+    ) -> bool {
+        let (style, font_size, align, view) = {
+            let mut editing = self.editing.borrow_mut();
+            let Some(editing) = editing.as_mut() else { return false };
+            if !control.apply(settings, &mut editing.shown) {
+                return true;
+            }
+            let Geometry::Text { style, font_size, align, .. } = editing.shown.geometry else {
+                return true;
+            };
+            editing.style = style;
+            editing.font_size = font_size;
+            editing.align = align;
+            (style, font_size, align, editing.view.clone())
+        };
+        if let Some(tag) = view.buffer().tag_table().lookup("octosnap-text") {
+            tag.set_font_desc(Some(&font_for(style, font_size)));
+        }
+        view.set_monospace(style.is_monospaced());
+        view.set_justification(match align {
+            TextAlign::Start => gtk::Justification::Left,
+            TextAlign::Center => gtk::Justification::Center,
+            TextAlign::End => gtk::Justification::Right,
+        });
+        #[allow(clippy::cast_possible_truncation)]
+        let pad = (style.plate_padding_em() * font_size).round() as i32;
+        view.set_left_margin(pad);
+        view.set_right_margin(pad);
+        view.set_top_margin(pad);
+        view.set_bottom_margin(pad);
+        self.install_text_css(style, font_size);
+        self.fit_text_edit();
+        self.show_text_edit();
+        self.reposition_text_edit();
+        view.grab_focus();
+        true
+    }
+
+    /// A press anywhere off the label being typed ends the edit, with any button (D198).
+    ///
+    /// The layer the text view stands in covers the whole canvas while it is up, so the
+    /// canvas's own press and right-click handlers never heard a click away -- only Esc
+    /// ended the edit, which the owner found the hard way. The press is the layer's when
+    /// it misses the view, and the view's own when it lands in it, where it places the
+    /// caret.
+    pub(super) fn wire_text_layer(self: &Rc<Self>) {
+        let click = gtk::GestureClick::new();
+        click.set_button(0);
+        let editor = Rc::downgrade(self);
+        click.connect_pressed(move |gesture, _, x, y| {
+            let Some(editor) = editor.upgrade() else { return };
+            let view = editor.editing.borrow().as_ref().map(|editing| editing.view.clone());
+            let Some(view) = view else { return };
+            // A left or a right click, the owner's two; the middle button is the view's pan.
+            if gesture.current_button() == gtk::gdk::BUTTON_MIDDLE {
+                return;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let at = gtk::graphene::Point::new(x as f32, y as f32);
+            let bounds = view.compute_bounds(&editor.text_layer);
+            let inside = bounds.is_some_and(|bounds| bounds.contains_point(&at));
+            tracing::debug!(
+                x,
+                y,
+                inside,
+                bounds = ?bounds.map(|b| (b.x(), b.y(), b.width(), b.height())),
+                "text layer press"
+            );
+            if inside {
+                return;
+            }
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            editor.finish_text_edit(false);
+        });
+        self.text_layer.add_controller(click);
     }
 
     /// Puts the overlay where the document says it should be, at the current zoom.
@@ -344,9 +454,47 @@ impl Editor {
         self.text_layer.set_child_transform(&editing.view, Some(&transform));
     }
 
-    /// Ends the edit, keeping the text if there is any (`spec/05` §4.5).
+    /// The label under the overlay, saying what has been typed so far (D197): the draft
+    /// for a new one, the displayed scene for one being re-edited. The history does not
+    /// hear of it; `commit_text_edit` decides what it was.
+    fn show_text_edit(&self) {
+        let shown = {
+            let mut editing = self.editing.borrow_mut();
+            let Some(editing) = editing.as_mut() else { return };
+            let buffer = editing.view.buffer();
+            let typed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            let effective = editing.effective_width;
+            if let Geometry::Text { text, width, .. } = &mut editing.shown.geometry {
+                *text = typed.trim_end_matches('\n').to_owned();
+                *width = effective;
+            }
+            (editing.shown.clone(), editing.subject.is_some())
+        };
+        match shown {
+            (object, true) => {
+                if let Some(mut scene) = self.canvas.scene() {
+                    scene.replace(object);
+                    self.canvas.update_scene(scene);
+                }
+            }
+            (object, false) => self.canvas.set_draft(Some(object)),
+        }
+    }
+
+    /// Ends the edit, keeping the text if there is any (`spec/05` §4.5), and leaves the
+    /// label selected (D197).
     pub(super) fn commit_text_edit(self: &Rc<Self>) {
+        self.finish_text_edit(true);
+    }
+
+    /// [`Self::commit_text_edit`], leaving the label selected or not. A click away from
+    /// the box ends the edit and leaves nothing selected, so the next click places the
+    /// next label; Enter and Esc leave it selected, for the keys that act on a selection
+    /// (D197).
+    pub(super) fn finish_text_edit(self: &Rc<Self>, select: bool) {
         let Some(editing) = self.editing.borrow_mut().take() else { return };
+        tracing::debug!(select, "text edit closed");
+        self.canvas.set_draft(None);
         let buffer = editing.view.buffer();
         let text = buffer
             .text(&buffer.start_iter(), &buffer.end_iter(), false)
@@ -382,20 +530,15 @@ impl Editor {
             (None, true) => None,
             (None, false) => {
                 let Some(scene) = self.canvas.scene() else { return };
-                Some(Command::Add(Object::new(
-                    scene.top_z().saturating_add(1),
-                    now_seconds(),
-                    self.settings().style,
-                    Geometry::Text {
-                        pos: editing.pos,
-                        text,
-                        style: editing.style,
-                        font_size: editing.font_size,
-                        align: editing.align,
-                        width: editing.effective_width,
-                        tail: None,
-                    },
-                )))
+                // The label that was shown, with its id: the canvas's cache already has
+                // its node.
+                let mut label = editing.shown.clone();
+                label.z = scene.top_z().saturating_add(1);
+                if let Geometry::Text { text: shown, width, .. } = &mut label.geometry {
+                    *shown = text;
+                    *width = editing.effective_width;
+                }
+                Some(Command::Add(label))
             }
             // An existing label emptied is a deletion. §4.5's "commit if non-empty" read
             // the other way: an empty commit of something that used to say something is
@@ -403,7 +546,10 @@ impl Editor {
             // -- it would still be selectable and still be in `objects.json`.
             (Some(before), true) => Some(Command::Remove(*before)),
             (Some(before), false) => {
-                let mut after = (*before).clone();
+                // The label as it was shown, so what the options row changed while it was
+                // typed is kept with the text: its colour, background, size, style and
+                // alignment (D198). From `before`, they went with the edit.
+                let mut after = editing.shown.clone();
                 if let Geometry::Text { text: existing, width, .. } = &mut after.geometry {
                     *existing = text;
                     // A label that grew to the canvas's edge while being edited keeps
@@ -425,24 +571,11 @@ impl Editor {
         };
         let subject = command.subject();
         self.commit(command);
-        if let Some(id) = subject {
+        if let Some(id) = subject
+            && select
+        {
             self.canvas.set_selection(vec![id]);
         }
-    }
-
-    /// Empties a text object in the displayed scene, without touching the history.
-    ///
-    /// `draw_text` returns early on empty text, so this is all it takes to make the object
-    /// invisible while the overlay stands in for it.
-    fn blank_text(&self, id: ObjectId) {
-        let Some(mut scene) = self.canvas.scene() else { return };
-        let Some(object) = scene.get(id) else { return };
-        let mut blanked = object.clone();
-        if let Geometry::Text { text, .. } = &mut blanked.geometry {
-            text.clear();
-        }
-        scene.replace(blanked);
-        self.canvas.update_scene(scene);
     }
 
     /// §4.1: "Double-click a text object edits it."
@@ -463,7 +596,7 @@ impl Editor {
     }
 }
 
-/// The document's font and colours on a `GtkTextView`, as a `GtkTextTag`.
+/// The document's font on a `GtkTextView`, as a `GtkTextTag`.
 ///
 /// A tag and not a CSS provider. `GtkWidget::style_context` has been deprecated since
 /// 4.10 and GTK 4 has no per-widget provider to replace it, so the alternative would be a
@@ -471,24 +604,17 @@ impl Editor {
 /// lives only as long as someone is typing.
 ///
 /// The tag carries [`font_for`]'s **exact** description, which is the one the renderer
-/// uses. That is what stops the glyphs jumping when the edit commits: the overlay and the
-/// committed object are laid out by the same font at the same size, so the only thing that
-/// changes on Enter is which widget is drawing them.
+/// uses. That is what puts the caret where the canvas draws the letters: the view and the
+/// label under it are laid out by the same font at the same size. Its glyphs are
+/// transparent -- the label's are the ones seen (D197).
 ///
 /// The tag is re-applied as text arrives -- a tag covers a range, and a range does not
 /// grow when the user types past the end of it.
-fn apply_style(view: &gtk::TextView, style: TextStyle, size: f64, color: octosnap_scene::Rgba) {
+fn apply_style(view: &gtk::TextView, style: TextStyle, size: f64) {
     let buffer = view.buffer();
     let tag = gtk::TextTag::new(Some("octosnap-text"));
     tag.set_font_desc(Some(&font_for(style, size)));
-    // §4.5's auto-contrast applies while typing too: the plate is the view's own
-    // background (`install_text_css`), so the glyphs are whichever of black or white
-    // reads on it, exactly as the committed object draws them.
-    if style.has_plate() {
-        tag.set_foreground_rgba(Some(&to_gdk(color.contrasting())));
-    } else {
-        tag.set_foreground_rgba(Some(&to_gdk(color)));
-    }
+    tag.set_foreground_rgba(Some(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0)));
     buffer.tag_table().add(&tag);
 
     let restyle = move |buffer: &gtk::TextBuffer| {
@@ -497,11 +623,6 @@ fn apply_style(view: &gtk::TextView, style: TextStyle, size: f64, color: octosna
     };
     restyle(&buffer);
     buffer.connect_changed(restyle);
-}
-
-fn to_gdk(color: octosnap_scene::Rgba) -> gtk::gdk::RGBA {
-    #[allow(clippy::cast_possible_truncation)]
-    gtk::gdk::RGBA::new(color.r as f32, color.g as f32, color.b as f32, color.a as f32)
 }
 
 /// `spec/05` §5.1's `created`, in seconds since the epoch.

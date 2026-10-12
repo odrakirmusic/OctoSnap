@@ -46,7 +46,7 @@ import {
     widthLabel,
 } from '../recordChoices.js';
 import { icon } from '../icons.js';
-import { error, info } from '../log.js';
+import { info } from '../log.js';
 
 /** `spec/03` §4: two dark translucent pills, ~44 pt tall, radius ~14. */
 const PILL_STYLE =
@@ -770,13 +770,6 @@ export class Toolbar {
         return within(this.actor, x, y);
     }
 
-    /** Closes any transient child, such as the ratio list. Safe to call at any time. */
-    dismissPopups(): boolean {
-        if (this.#menu === null) return false;
-        this.#closeMenu();
-        return true;
-    }
-
     /**
      * Closes the open list when a press at `x, y`, stage coordinates, is not on it, and
      * says whether it did: the press is then spent on closing it (D150).
@@ -801,15 +794,6 @@ export class Toolbar {
     get editing(): boolean {
         const focus = global.stage.get_key_focus();
         return focus === this.#width.clutter_text || focus === this.#height.clutter_text;
-    }
-
-    /** Hands focus back to the overlay, so arrow keys nudge instead of moving a caret. */
-    unfocusFields(): void {
-        try {
-            global.stage.set_key_focus(null);
-        } catch (e) {
-            error('could not release focus from the toolbar fields', e);
-        }
     }
 
     /**

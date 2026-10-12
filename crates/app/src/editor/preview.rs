@@ -40,6 +40,10 @@ pub enum Kind {
     /// opened three times wider than its swatches and nothing in the swatch code was
     /// wrong.
     Wheel,
+    /// A label's background (D198): an A in the label's colour on its plate, so the
+    /// colour button beside it and this one say which is which. `None` is a style
+    /// without a plate, drawn as a dashed box.
+    Plate { ink: Rgba, plate: Option<Rgba> },
 }
 
 impl Default for Kind {
@@ -85,6 +89,7 @@ mod imp {
             // as a diagonal rather than as a corner.
             let (w, h) = match *self.kind.borrow() {
                 Kind::Color(_) | Kind::Empty | Kind::Wheel => (20, 20),
+                Kind::Plate { .. } => (24, 20),
                 Kind::Stroke(_) => (56, 22),
             };
             let size = if orientation == gtk::Orientation::Horizontal { w } else { h };
@@ -157,6 +162,41 @@ mod imp {
                     let mut ink = widget.color();
                     ink.set_alpha(0.45);
                     snapshot.append_stroke(&builder.to_path(), &spec, &ink);
+                }
+                Kind::Plate { ink, plate } => {
+                    let shape = gtk::gsk::RoundedRect::from_rect(bounds, 4.0);
+                    let edge = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.22);
+                    if let Some(plate) = plate {
+                        snapshot.push_rounded_clip(&shape);
+                        if plate.a < 1.0 {
+                            draw_checker(snapshot, w, h);
+                        }
+                        snapshot.append_color(&to_rgba(plate), &bounds);
+                        snapshot.pop();
+                        snapshot.append_border(&shape, &[1.0; 4], &[edge; 4]);
+                    } else {
+                        let builder = gtk::gsk::PathBuilder::new();
+                        builder.add_rounded_rect(&gtk::gsk::RoundedRect::from_rect(
+                            graphene::Rect::new(0.5, 0.5, w - 1.0, h - 1.0),
+                            3.5,
+                        ));
+                        let spec = gtk::gsk::Stroke::new(1.0);
+                        spec.set_dash(&[2.5, 2.5]);
+                        let mut line = widget.color();
+                        line.set_alpha(0.45);
+                        snapshot.append_stroke(&builder.to_path(), &spec, &line);
+                    }
+                    let layout = widget.create_pango_layout(Some("A"));
+                    layout.set_font_description(Some(&gtk::pango::FontDescription::from_string(
+                        "Sans Bold 10",
+                    )));
+                    let (gw, gh) = layout.pixel_size();
+                    #[allow(clippy::cast_precision_loss)]
+                    snapshot.translate(&graphene::Point::new(
+                        ((w - gw as f32) / 2.0).round(),
+                        ((h - gh as f32) / 2.0).round(),
+                    ));
+                    snapshot.append_layout(&layout, &to_rgba(ink));
                 }
                 Kind::Stroke(level) => {
                     // §2: "the active one filled in the accent colour".

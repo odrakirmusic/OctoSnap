@@ -51,7 +51,7 @@ use octosnap_media::reel;
 use octosnap_media::text;
 use tracing::{debug, info, warn};
 
-use crate::editor::actions::{Closed, Done, Outcome, Returned};
+use crate::editor::actions::{Closed, Done, Outcome, Returned, bar_button};
 use crate::recording::render;
 
 /// The tallest the filmstrip's thumbnails are made, in pixels.
@@ -466,10 +466,12 @@ impl GifEditor {
 
         let end = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         end.set_halign(gtk::Align::End);
-        let final_close = gtk::Button::with_label("Final Close");
-        final_close.set_tooltip_text(Some(
-            "Close without leaving a preview; the GIF goes to the history (Ctrl+Shift+W)",
-        ));
+        // The annotation editor's icons (D198), so that the two bars read alike.
+        let final_close = bar_button(
+            "document-open-recent-symbolic",
+            "Final Close",
+            "Final Close: close without a preview card, filed in the history (Ctrl+Shift+W)",
+        );
         {
             let editor = Rc::downgrade(self);
             final_close.connect_clicked(move |_| {
@@ -478,8 +480,11 @@ impl GifEditor {
                 }
             });
         }
-        let save_as = gtk::Button::with_label("Save as…");
-        save_as.set_tooltip_text(Some("Choose where to put it (Ctrl+Shift+S)"));
+        let save_as = bar_button(
+            "document-save-as-symbolic",
+            "Save As",
+            "Save as…: choose where to put it (Ctrl+Shift+S)",
+        );
         {
             let editor = Rc::downgrade(self);
             save_as.connect_clicked(move |_| {
@@ -488,8 +493,7 @@ impl GifEditor {
                 }
             });
         }
-        let copy = gtk::Button::with_label("Copy");
-        copy.set_tooltip_text(Some("Copy the GIF (Ctrl+C)"));
+        let copy = bar_button("edit-copy-symbolic", "Copy", "Copy the GIF (Ctrl+C)");
         {
             let editor = Rc::downgrade(self);
             copy.connect_clicked(move |_| {
@@ -498,9 +502,9 @@ impl GifEditor {
                 }
             });
         }
-        let save = gtk::Button::with_label("Save");
+        let save =
+            bar_button("document-save-symbolic", "Save", "Save to the recording folder (Ctrl+S)");
         save.add_css_class("suggested-action");
-        save.set_tooltip_text(Some("Save to the recording folder (Ctrl+S)"));
         {
             let editor = Rc::downgrade(self);
             save.connect_clicked(move |_| {
@@ -509,9 +513,16 @@ impl GifEditor {
                 }
             });
         }
-        // Apart from the outputs: it leaves the editor, they do not (`spec/13` #4).
-        final_close.set_margin_end(12);
-        for button in [&final_close, &save_as, &copy, &save] {
+        // Apart from the outputs, by a rule: it leaves the editor, they do not
+        // (`spec/13` #4).
+        end.append(&final_close);
+        let rule = gtk::Separator::new(gtk::Orientation::Vertical);
+        rule.set_margin_start(6);
+        rule.set_margin_end(6);
+        rule.set_margin_top(6);
+        rule.set_margin_bottom(6);
+        end.append(&rule);
+        for button in [&save_as, &copy, &save] {
             end.append(button);
         }
         *self.outputs.borrow_mut() = vec![save_as, copy, save];

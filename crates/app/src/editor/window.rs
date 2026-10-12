@@ -295,6 +295,23 @@ pub struct Editor {
     pub(super) layers: super::layers::LayersPanel,
     /// `ANN-27`'s live text: the picture's words, once read, and what is selected (D180).
     pub(super) live: super::live_text::LiveText,
+    /// What the window was sized to its picture with (D197), kept for the panels.
+    pub(super) sizing: Sizing,
+}
+
+/// What the bars take of the window's height at a width.
+type Chrome = Box<dyn Fn(i32) -> i32>;
+
+/// What sized the window to its picture (D197), kept so that a panel opening beside the
+/// canvas can make room for itself: the screen the capture came from, what the bars take
+/// of the window's height at a width, and the size the window was last given.
+#[derive(Default)]
+pub struct Sizing {
+    screen: Cell<Option<gtk::gdk::Rectangle>>,
+    chrome: RefCell<Option<Chrome>>,
+    /// The narrowest the window goes, with its bars on one line each (D198).
+    min_width: Cell<i32>,
+    given: Cell<(i32, i32)>,
 }
 
 /// One line when an editor is really gone, which is the only evidence `spec/05` §11
@@ -448,8 +465,16 @@ impl Editor {
         layers.set_sidebar_position(gtk::PackType::End);
         layers.set_content(Some(&toasts));
         layers.set_show_sidebar(false);
+        // Shown and hidden by F9 and its button alone. Unpinned, a split view hides its
+        // sidebar as a breakpoint collapses it and shows it as one lets go -- and the
+        // window grows for a panel now (D197), across the other panel's breakpoint, which
+        // opened that panel too.
+        layers.set_pin_sidebar(true);
         layers.set_sidebar_width_fraction(0.22);
         layers.set_max_sidebar_width(f64::from(super::layers::WIDTH));
+        // And no narrower: the window widens by exactly this much for it (D197), and a
+        // share of a window that just fits it is a few pixels short, taken off the canvas.
+        layers.set_min_sidebar_width(f64::from(super::layers::WIDTH));
         let view = adw::ToolbarView::new();
         view.set_top_bar_style(adw::ToolbarStyle::Raised);
         view.set_bottom_bar_style(adw::ToolbarStyle::Raised);
@@ -465,6 +490,8 @@ impl Editor {
         let split = adw::OverlaySplitView::new();
         split.set_content(Some(&view));
         split.set_show_sidebar(false);
+        // By its button alone, as the layers panel is.
+        split.set_pin_sidebar(true);
         split.set_sidebar_width_fraction(0.26);
         // The panel is exactly as wide as it says it is. A cap *below* the panel's own
         // minimum is not a cap at all -- Adwaita asks for the fraction, clamps it to the
@@ -481,32 +508,17 @@ impl Editor {
         ));
         unsaved.set_visible(false);
 
-        // §1: "Window is resizable and remembers its size. It opened at 1322 x 934 pt for a
-        // 1710 x 1107 pt screen, so roughly 77 % of the screen width [V]."
-        let (width, height, maximized) = window_size_for(capture);
+        // Sized to the picture once the bars are in it -- see `fit_window_to`.
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Annotate")
-            .default_width(width)
-            .default_height(height)
             .content(&split)
             .build();
         window.add_css_class("octosnap-editor");
         // Wide enough for the tool strip beside the window buttons, which is the one
-        // thing in the toolbar that cannot wrap; everything else does (D57). Tiled to
-        // half of a 1366 px screen is 683, and that has to work.
-        window.set_size_request(MIN_CANVAS, 440);
-        if maximized {
-            window.maximize();
-        }
-        window.connect_close_request(|window| {
-            crate::settings::set_editor_window(
-                window.default_width(),
-                window.default_height(),
-                window.is_maximized(),
-            );
-            glib::Propagation::Proceed
-        });
+        // thing in the toolbar that cannot wrap (D57) -- for now: once the bars are
+        // built, the bars on one line each (D198, below).
+        window.set_size_request(MIN_CANVAS, MIN_HEIGHT);
         // The third of `editor-test.sh`'s counts, beside "editor dropped" and "canvas
         // finalized": the window holds the editor's actions and every handler connected to
         // them, and a window that outlives its editor keeps all of those.
@@ -539,6 +551,7 @@ impl Editor {
             background: super::background::BackgroundPanel::default(),
             layers: super::layers::LayersPanel::default(),
             live: super::live_text::LiveText::default(),
+            sizing: Sizing::default(),
         });
         {
             // What the window leaves behind (D108), while it still has a renderer to draw
@@ -566,7 +579,46 @@ impl Editor {
         *editor.background.split.borrow_mut() = Some(split.clone());
         layers.set_sidebar(Some(&editor.build_layers_sidebar()));
         *editor.layers.split.borrow_mut() = Some(layers.clone());
-        // Narrow windows get an overlay rather than a second column: `MIN_CANVAS` is
+        let toolbars = editor.build_toolbars();
+        toolbars.set_hexpand(true);
+        bar.append(&toolbars);
+        bar.append(&controls_end);
+        // The room the bar keeps beside the tools for the options (D199), measured now
+        // that the row is in the title bar and has its styling.
+        let widest = editor.widest_options();
+        editor.refresh_options();
+        if let Some(layout) = editor.options.layout.borrow().as_ref() {
+            layout.set_reserve(widest);
+        }
+        info!(widest, "options row's widest");
+        // Last, and after the `Rc` exists: every button on it needs a weak reference back.
+        let bottom = editor.build_bottom_bar();
+        view.add_bottom_bar(&bottom);
+        // What the bars take of the window's height at a given width: the toolbar wraps
+        // onto a second line when the window is narrow, and so does the bottom bar.
+        let chrome = {
+            let (title_bar, bottom) = (title_bar.clone(), bottom.clone());
+            move |width: i32| {
+                let (_, top, _, _) = title_bar.measure(gtk::Orientation::Vertical, width);
+                let (_, below, _, _) = bottom.measure(gtk::Orientation::Vertical, width);
+                top + below
+            }
+        };
+        let screen = capture_monitor(capture);
+        // The narrowest the window goes: the tools on one line beside the window's
+        // buttons, and the bottom bar on one (D198). It was `MIN_CANVAS`, 680 px, for a
+        // window tiled to half of a 1366 px screen (D57), and at that width the tools
+        // took a second line and the outputs another, which the owner found untidy
+        // enough to ask for the window never to go so narrow. Measured rather than
+        // written down, because the bars' widths are the theme's and the font's; no
+        // wider than the screen, where it would not fit at all.
+        let min_width = one_line_width(&title_bar, &bottom, editor.options.row.borrow().as_ref())
+            .max(MIN_CANVAS)
+            .min(screen.map_or(i32::MAX, |s| s.width()));
+        window.set_size_request(min_width, MIN_HEIGHT);
+        editor.sizing.min_width.set(min_width);
+        info!(min_width, "editor's narrowest");
+        // Narrow windows get an overlay rather than a second column: `min_width` is
         // what the editor's own half needs, and a sidebar beside it in a window that
         // small would leave the canvas too narrow to hold the toolbar. `adw::Breakpoint`
         // rather than a size-allocate handler, because the condition is exactly what a
@@ -579,26 +631,38 @@ impl Editor {
         // GTK gave the title bar's box its children's minimums, and the *last* of them
         // fell off the right-hand edge -- which on GNOME's own button layout is the
         // close button (D100).
-        let narrow = format!("max-width: {}px", super::background::WIDTH + MIN_CANVAS);
-        if let Ok(condition) = adw::BreakpointCondition::parse(&narrow) {
-            let breakpoint = adw::Breakpoint::new(condition);
-            breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
-            window.add_breakpoint(breakpoint);
-        }
-        // The layers panel likewise: over the canvas, not beside it, when both do not fit.
-        let narrow = format!("max-width: {}px", super::layers::WIDTH + MIN_CANVAS);
-        if let Ok(condition) = adw::BreakpointCondition::parse(&narrow) {
-            let breakpoint = adw::Breakpoint::new(condition);
-            breakpoint.add_setter(&layers, "collapsed", Some(&true.to_value()));
-            window.add_breakpoint(breakpoint);
+        //
+        // The layers panel likewise, and its breakpoint collapses both. Only one
+        // breakpoint is ever applied -- the last one added of those that match -- so the
+        // narrower one has to carry the wider one's setter too. When it did not, a window
+        // under the layers' width left the background panel a column, and the panel
+        // pushed the canvas off the window's right edge. Nobody saw it while the editor
+        // opened at three quarters of the screen; it opens at its picture's size now
+        // (D197), and the narrow window is the common one.
+        let panels: [(i32, &[&adw::OverlaySplitView]); 2] =
+            [(super::background::WIDTH, &[&split]), (super::layers::WIDTH, &[&split, &layers])];
+        const { assert!(super::layers::WIDTH <= super::background::WIDTH) };
+        for (width, collapsed) in panels {
+            let narrow = format!("max-width: {}px", width + min_width);
+            if let Ok(condition) = adw::BreakpointCondition::parse(&narrow) {
+                let breakpoint = adw::Breakpoint::new(condition);
+                for split in collapsed {
+                    breakpoint.add_setter(*split, "collapsed", Some(&true.to_value()));
+                }
+                window.add_breakpoint(breakpoint);
+            }
         }
 
-        let toolbars = editor.build_toolbars();
-        toolbars.set_hexpand(true);
-        bar.append(&toolbars);
-        bar.append(&controls_end);
-        // Last, and after the `Rc` exists: every button on it needs a weak reference back.
-        view.add_bottom_bar(&editor.build_bottom_bar());
+        // The picture's size on the screen it came from: a capture's rect is in logical
+        // pixels already, and a project's canvas is in its picture's pixels.
+        let opening = document
+            .as_ref()
+            .map_or((f64::from(capture.rect.width), f64::from(capture.rect.height)), on_screen);
+        let (width, height) = opening_size(screen, opening, &chrome, (0, 0), min_width);
+        window.set_default_size(width, height);
+        editor.sizing.screen.set(screen);
+        editor.sizing.given.set((width, height));
+        *editor.sizing.chrome.borrow_mut() = Some(Box::new(chrome));
 
         editor.install_actions();
         editor.install_background_actions();
@@ -611,6 +675,7 @@ impl Editor {
         editor.wire_zoom();
         editor.wire_shortcuts();
         editor.wire_tools();
+        editor.wire_text_layer();
         editor.wire_context_menu();
         super::tools::watch_desktop_clipboard(&editor.window.clipboard());
         {
@@ -660,6 +725,11 @@ impl Editor {
         // `spec/08` §1's Annotate row, which is about the editor and not about the
         // document, so a project reopens with the panel too.
         editor.restore_background_panel();
+        // The document as it opens can differ from the capture it came from: a window's
+        // shadow trimmed, a background's padding laid round it. Sized again to that, in
+        // the same turn of the loop as `present`, so the first size the compositor is
+        // given is this one (D197).
+        editor.fit_window();
 
         info!(
             file = %capture.path.display(),
@@ -1137,17 +1207,11 @@ fn base_of(capture: &CaptureResult) -> Base {
     )
 }
 
-/// How big the window opens: the remembered size, or `spec/05` §1's share of the screen.
-///
-/// §1 measured CleanShot at 1322 x 934 on a 1710 x 1107 screen -- 77 % wide and 84 %
-/// tall. The screen is the monitor the capture came from, by overlap, which is the rule
-/// D50 settled for the pin: on one display any monitor is that one, and on two the
-/// largest is the wrong one exactly when the capture was on the smaller.
-fn window_size_for(capture: &CaptureResult) -> (i32, i32, bool) {
-    if let Some(remembered) = crate::settings::editor_window() {
-        return remembered;
-    }
-    let Some(display) = gtk::gdk::Display::default() else { return (1100, 760, false) };
+/// The monitor the capture came from, by overlap, which is the rule D50 settled for the
+/// pin: on one display any monitor is that one, and on two the largest is the wrong one
+/// exactly when the capture was on the smaller.
+fn capture_monitor(capture: &CaptureResult) -> Option<gtk::gdk::Rectangle> {
+    let display = gtk::gdk::Display::default()?;
     let monitors = display.monitors();
     let mut best: Option<(gtk::gdk::Rectangle, i64)> = None;
     for index in 0..monitors.n_items() {
@@ -1165,13 +1229,164 @@ fn window_size_for(capture: &CaptureResult) -> (i32, i32, bool) {
             best = Some((g, held));
         }
     }
-    let Some((screen, _)) = best else { return (1100, 760, false) };
+    best.map(|(screen, _)| screen)
+}
+
+/// A document's size as it was on the screen it came from, in logical pixels.
+fn on_screen(scene: &Scene) -> (f64, f64) {
+    let scale = scene.base.scale.max(1.0);
+    (scene.canvas.width / scale, scene.canvas.height / scale)
+}
+
+/// The tallest the editor opens at, as a share of its screen, and the widest: room for
+/// the shell's top bar and a dock, which a client on Wayland cannot ask about.
+const SCREEN_SHARE: f64 = 0.9;
+
+/// One line each, the title bar's tools and the bottom bar: the wider of their natural
+/// widths (D198). The options row is left out of the title bar's, hidden for the measure:
+/// it is the part that goes to a second line under the tools, and its width is the
+/// tool's.
+fn one_line_width(
+    title_bar: &impl IsA<gtk::Widget>,
+    bottom: &impl IsA<gtk::Widget>,
+    options: Option<&gtk::Box>,
+) -> i32 {
+    let shown = options.map(|row| {
+        // The row's own flag, not `is_visible`, which is false for anything in a window
+        // not yet shown: read that way, the row was put back hidden, and every tool's
+        // options were missing from the editor (D199).
+        let shown = row.get_visible();
+        row.set_visible(false);
+        shown
+    });
+    let (_, top, _, _) = title_bar.measure(gtk::Orientation::Horizontal, -1);
+    if let (Some(row), Some(shown)) = (options, shown) {
+        row.set_visible(shown);
+    }
+    let (_, below, _, _) = bottom.measure(gtk::Orientation::Horizontal, -1);
+    top.max(below)
+}
+
+/// The lowest the editor's window may be, beside its narrowest.
+const MIN_HEIGHT: i32 = 440;
+
+/// How big the window opens (D197): as small as it can be, and as large as the picture
+/// needs at the size it had on screen, with [`super::canvas::FIT_MARGIN`] of empty desk
+/// on every side. A picture larger than the screen allows is scaled down, both ways by
+/// the same factor, so the border stays even; one smaller than the toolbar's own width
+/// sits in the middle of a window that is as narrow as the toolbar lets it be.
+///
+/// `spec/05` §1 measured CleanShot at 77 % x 84 % of the screen whatever was in it, and
+/// the window remembered whatever it was last resized to. The owner asked for the
+/// window to fit the screenshot instead -- "as small as possible, as big as necessary,
+/// clean and uniform" -- and a remembered size fits the last screenshot, not this one.
+///
+/// `panels` is the width of the panels showing, the background's beside the whole window
+/// and the layers' beside the canvas under the bars. The panels take their room from the
+/// window's, so a picture that fills the screen is shown smaller beside one, and a window
+/// with one is wider than `adw::Breakpoint` lays a panel over the canvas at. A panel the
+/// screen is too narrow to hold beside a canvas is laid over it whatever the window
+/// does, and is left out.
+fn opening_size(
+    screen: Option<gtk::gdk::Rectangle>,
+    document: (f64, f64),
+    chrome: &dyn Fn(i32) -> i32,
+    panels: (i32, i32),
+    min_width: i32,
+) -> (i32, i32) {
+    let margin = super::canvas::FIT_MARGIN;
+    let (screen_w, screen_h) = screen.map_or((1366, 768), |s| (s.width(), s.height()));
+    let (max_w, max_h) = (f64::from(screen_w) * SCREEN_SHARE, f64::from(screen_h) * SCREEN_SHARE);
+    let (doc_w, doc_h) = (document.0.max(1.0), document.1.max(1.0));
+    // A pixel past a panel's breakpoint, which is `max-width` and so holds at its own
+    // number.
+    let fits = |panel: i32| panel > 0 && min_width + panel < screen_w;
+    let background = if fits(panels.0) { panels.0 } else { 0 };
+    let layers = if fits(panels.1) { panels.1 } else { 0 };
+    let side = background + layers;
+    // The bars wrap onto a second line in a narrow window, and a third in a narrower
+    // one: measured at the widest the window may be first, then again at the width that
+    // gave, and the picture fitted to what they really take. The background's panel is
+    // beside the bars, the layers' below them.
     #[allow(clippy::cast_possible_truncation)]
-    let size = (
-        (f64::from(screen.width()) * 0.77).round() as i32,
-        (f64::from(screen.height()) * 0.84).round() as i32,
-    );
-    (size.0.max(660), size.1.max(440), false)
+    let mut bars = chrome(max_w.round() as i32 - background);
+    let mut size = (min_width, MIN_HEIGHT);
+    for _ in 0..3 {
+        let room_w = max_w - f64::from(side) - 2.0 * margin;
+        let room_h = max_h - f64::from(bars) - 2.0 * margin;
+        let shrink = (room_w / doc_w).min(room_h / doc_h).clamp(0.0, 1.0);
+        let (canvas_w, canvas_h) = (doc_w * shrink + 2.0 * margin, doc_h * shrink + 2.0 * margin);
+        #[allow(clippy::cast_possible_truncation)]
+        let mut width = (canvas_w.ceil() as i32).max(min_width) + side;
+        if side > 0 {
+            width = width.max(min_width + background.max(layers) + 1);
+        }
+        let width = width.min(screen_w);
+        let wrapped = chrome(width - background);
+        #[allow(clippy::cast_possible_truncation)]
+        let height = (canvas_h.ceil() as i32 + wrapped).max(MIN_HEIGHT);
+        size = (width, height);
+        if wrapped <= bars {
+            break;
+        }
+        bars = wrapped;
+    }
+    size
+}
+
+impl Editor {
+    /// The window sized again to its picture and to the panels showing beside it (D197).
+    ///
+    /// A window sized to its picture is narrower than a panel and the canvas together,
+    /// and a panel opened in it was laid over the picture -- the background's over the
+    /// very picture it was choosing a background for. So a panel widens the window by
+    /// itself, and closing it gives the width back. A window the user has maximised is
+    /// left alone, and so is one they resized, unless it is too narrow for the panel to
+    /// sit beside the canvas: opening the panel asked for that.
+    pub(super) fn fit_window(&self) {
+        if self.window.is_maximized() || self.window.is_fullscreen() {
+            return;
+        }
+        let Some(scene) = self.canvas.scene() else { return };
+        let chrome = self.sizing.chrome.borrow();
+        let Some(chrome) = chrome.as_ref() else { return };
+        let shown = |split: &RefCell<Option<adw::OverlaySplitView>>, width: i32| {
+            if split.borrow().as_ref().is_some_and(adw::OverlaySplitView::shows_sidebar) {
+                width
+            } else {
+                0
+            }
+        };
+        let panels = (
+            shown(&self.background.split, super::background::WIDTH),
+            shown(&self.layers.split, super::layers::WIDTH),
+        );
+        let fitted = opening_size(
+            self.sizing.screen.get(),
+            on_screen(&scene),
+            chrome.as_ref(),
+            panels,
+            self.sizing.min_width.get(),
+        );
+        let now = self.window.default_size();
+        let wanted = if now == self.sizing.given.get() {
+            fitted
+        } else if now.0 < fitted.0 {
+            (fitted.0, now.1)
+        } else {
+            return;
+        };
+        if wanted != now {
+            self.window.set_default_size(wanted.0, wanted.1);
+        }
+        self.sizing.given.set(wanted);
+        info!(
+            width = wanted.0,
+            height = wanted.1,
+            panels = panels.0 + panels.1,
+            "editor sized to its picture"
+        );
+    }
 }
 
 /// The editor's stylesheet, installed once per display.

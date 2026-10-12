@@ -263,6 +263,8 @@ mod tests {
                 align: crate::object::TextAlign::Start,
                 width: None,
                 tail: None,
+                ink: None,
+                background: None,
             },
         );
         assert_eq!(label(scene.get(words).unwrap()), "Click the big blue button to sa…");

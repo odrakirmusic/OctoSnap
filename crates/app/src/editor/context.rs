@@ -58,6 +58,11 @@ impl Editor {
     /// becomes the selection first, unless it is already part of it: a right-click on one
     /// of three selected objects acts on all three, as it does in a file manager.
     fn open_context_menu(self: &Rc<Self>, x: f64, y: f64, pick: bool) {
+        // A right-click away from a label being typed ends it, as a left one does (D198).
+        if pick && self.text_editing() {
+            self.finish_text_edit(false);
+            return;
+        }
         if self.cropping() || self.typing() {
             return;
         }
@@ -77,7 +82,15 @@ impl Editor {
                     self.canvas.set_selection(vec![id])
                 }
                 Some(_) => {}
-                None => self.canvas.set_selection(Vec::new()),
+                // A right-click off the selection leaves it, as a left one does, and
+                // that is all it does: the menu it would have opened is the canvas's,
+                // which the user was not asking for (D197). With nothing selected it
+                // opens as it always has.
+                None if !self.canvas.selection().is_empty() => {
+                    self.canvas.set_selection(Vec::new());
+                    return;
+                }
+                None => {}
             }
         }
         let selection = self.canvas.selection();

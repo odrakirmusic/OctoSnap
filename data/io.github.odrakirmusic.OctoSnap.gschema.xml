@@ -276,14 +276,6 @@
       <summary>Snap the crop rect to the image's edges and to other objects</summary>
     </key>
 
-    <!-- spec/05 §1: "Window is resizable and remembers its size." Width, height and a
-         0/1 maximised flag; empty until an editor has been closed once, when the size is
-         77 % x 84 % of the capture's monitor instead. -->
-    <key name="editor-window" type="ai">
-      <default>[]</default>
-      <summary>The annotate editor's last window size</summary>
-    </key>
-
     <!-- spec/08 §9 -->
     <key name="api-enabled" type="b">
       <default>true</default>

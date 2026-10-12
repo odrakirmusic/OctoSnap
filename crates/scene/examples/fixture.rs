@@ -174,6 +174,8 @@ fn objects(width: f64, height: f64) -> Vec<Object> {
                     align: TextAlign::Start,
                     width: None,
                     tail: None,
+                    ink: None,
+                    background: None,
                 },
                 _ => Geometry::Path {
                     points: stroke(at, 24, false),

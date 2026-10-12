@@ -423,6 +423,63 @@ impl ArrowStyle {
     }
 }
 
+/// What a label is drawn in (D197): the plate behind it, the glyphs' fill, and the edge
+/// stroked round the glyphs. `None` is not drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LabelColours {
+    pub plate: Option<Rgba>,
+    pub fill: Option<Rgba>,
+    pub edge: Option<Rgba>,
+}
+
+/// A label's colours, from its style, its object's colour and its own `ink` (D197).
+///
+/// With an `ink` -- every label made since -- the ink is the glyphs' colour in every
+/// style, which is what a colour control on a text tool is expected to change: a box
+/// style lays the glyphs on a plate of white or near-black, whichever stands off them,
+/// and the outlined style fills them and strokes their edge in the same. The owner's
+/// words were "the text tool needs a font colour adjustment": until then a box style
+/// gave the chosen colour to the plate, and the glyphs were black or white whatever was
+/// chosen.
+///
+/// Without one -- a label saved before -- it draws as it did: `spec/05` §4.5's plate in
+/// the object's colour with the glyphs contrasted on it, and "Outlined" as the glyphs'
+/// edge alone.
+#[must_use]
+pub fn label_colours(
+    style: TextStyle,
+    colour: Rgba,
+    ink: Option<Rgba>,
+    background: Option<Rgba>,
+) -> LabelColours {
+    let Some(ink) = ink else {
+        return if style.has_plate() {
+            LabelColours { plate: Some(colour), fill: Some(colour.contrasting()), edge: None }
+        } else if style.is_outlined() {
+            LabelColours { plate: None, fill: None, edge: Some(colour) }
+        } else {
+            LabelColours { plate: None, fill: Some(colour), edge: None }
+        };
+    };
+    // The background the user chose (D198), or the one that stands off the ink: white
+    // off a dark ink as it is, and black softened to the GNOME palette's darkest, so a
+    // plate behind yellow is a dark chip rather than a hole.
+    let off = background.unwrap_or_else(|| {
+        if ink.contrasting().r > 0.5 {
+            Rgba::new(1.0, 1.0, 1.0, 1.0)
+        } else {
+            Rgba::new(0.106, 0.106, 0.122, 1.0)
+        }
+    });
+    if style.has_plate() {
+        LabelColours { plate: Some(off), fill: Some(ink), edge: None }
+    } else if style.is_outlined() {
+        LabelColours { plate: None, fill: Some(ink), edge: Some(off) }
+    } else {
+        LabelColours { plate: None, fill: Some(ink), edge: None }
+    }
+}
+
 /// `spec/05` §4.5's seven text styles [V] `annotateTextStyle*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -485,6 +542,19 @@ impl TextStyle {
     #[must_use]
     pub const fn is_outlined(self) -> bool {
         matches!(self, Self::Outline)
+    }
+
+    /// The style with a plate that this one is the plain form of: what a background
+    /// chosen for a plain label turns it into (D198). A style with a plate, and
+    /// "Outlined", whose background is its edge, are their own.
+    #[must_use]
+    pub const fn boxed(self) -> Self {
+        match self {
+            Self::Standard => Self::Box,
+            Self::Rounded => Self::RoundedBox,
+            Self::Monospaced => Self::MonospacedBox,
+            other => other,
+        }
     }
 
     /// `spec/05` §4.5: "the box has **padding 0.4em**".
@@ -1041,5 +1111,59 @@ mod text_style_tests {
         let outlined: Vec<&str> =
             TextStyle::ALL.into_iter().filter(|s| s.is_outlined()).map(TextStyle::label).collect();
         assert_eq!(outlined, ["Outlined"]);
+    }
+}
+
+#[cfg(test)]
+mod label_colour_tests {
+    use super::*;
+
+    const RED: Rgba = Rgba::new(0.878, 0.106, 0.141, 1.0);
+    const YELLOW: Rgba = Rgba::new(0.965, 0.827, 0.176, 1.0);
+
+    #[test]
+    fn a_chosen_ink_colours_the_glyphs_in_every_style() {
+        for style in TextStyle::ALL {
+            let colours = label_colours(style, RED, Some(RED), None);
+            assert_eq!(colours.fill, Some(RED), "{style:?} did not fill its glyphs in the ink");
+        }
+    }
+
+    #[test]
+    fn a_plate_and_an_edge_stand_off_the_ink() {
+        let boxed = label_colours(TextStyle::Box, RED, Some(RED), None);
+        assert_eq!(boxed.plate.map(Rgba::to_hex).as_deref(), Some("FFFFFF"));
+        let outlined = label_colours(TextStyle::Outline, YELLOW, Some(YELLOW), None);
+        assert!(outlined.edge.is_some_and(|edge| edge.r < 0.2), "{outlined:?}");
+        assert_eq!(label_colours(TextStyle::Standard, RED, Some(RED), None).edge, None);
+    }
+
+    #[test]
+    fn a_chosen_background_is_the_plate_and_the_edge() {
+        let boxed = label_colours(TextStyle::RoundedBox, RED, Some(YELLOW), Some(RED));
+        assert_eq!((boxed.plate, boxed.fill), (Some(RED), Some(YELLOW)));
+        let outlined = label_colours(TextStyle::Outline, RED, Some(YELLOW), Some(RED));
+        assert_eq!((outlined.fill, outlined.edge), (Some(YELLOW), Some(RED)));
+        // A plain style has nowhere to put one.
+        let plain = label_colours(TextStyle::Standard, RED, Some(YELLOW), Some(RED));
+        assert_eq!((plain.plate, plain.edge), (None, None));
+    }
+
+    #[test]
+    fn a_plain_style_boxes_into_its_own_box() {
+        assert_eq!(TextStyle::Standard.boxed(), TextStyle::Box);
+        assert_eq!(TextStyle::Rounded.boxed(), TextStyle::RoundedBox);
+        assert_eq!(TextStyle::Monospaced.boxed(), TextStyle::MonospacedBox);
+        assert_eq!(TextStyle::Outline.boxed(), TextStyle::Outline);
+        assert_eq!(TextStyle::Box.boxed(), TextStyle::Box);
+    }
+
+    #[test]
+    fn a_label_from_before_the_ink_draws_as_it_did() {
+        let boxed = label_colours(TextStyle::Box, RED, None, None);
+        assert_eq!(boxed.plate, Some(RED));
+        assert_eq!(boxed.fill.map(Rgba::to_hex).as_deref(), Some("FFFFFF"));
+        let outlined = label_colours(TextStyle::Outline, RED, None, None);
+        assert_eq!((outlined.fill, outlined.edge), (None, Some(RED)));
     }
 }

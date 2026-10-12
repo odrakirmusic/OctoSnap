@@ -89,16 +89,18 @@ export function closeOverlays(): void {
  */
 const HINT = 'Drag to select · Space to move · Shift to lock · Alt from centre · Esc to cancel';
 
-/** `spec/03` §5.1's All-In-One hint, which is a different vocabulary. */
+/** `spec/03` §5.1's All-In-One hint, which is a different vocabulary. Esc closes at once
+ * (D197); a right-click is what clears the selection. */
 const HINT_ADJUSTING =
     'Drag or resize · Arrows nudge, Shift ×10 · Ctrl+arrows resize · Tab changes mode · ' +
-    'Enter to capture · Esc to clear';
+    'Enter to capture · Right-click to clear · Esc to close';
 
 /** `spec/06` §3's record hint: like Adjusting, but Enter *starts* and an empty Enter takes
- * the whole screen (`REC-01`: area and fullscreen). Esc clears first, as in Adjusting: the
- * selection it opens with is the last area, restored. */
+ * the whole screen (`REC-01`: area and fullscreen). A right-click clears the selection it
+ * opens with, which is the last area, restored; Esc closes, as in Adjusting (D197). */
 const HINT_RECORD =
-    'Drag or resize · Enter to record · Enter with nothing selected records the screen · Esc to clear';
+    'Drag or resize · Enter to record · Enter with nothing selected records the screen · ' +
+    'Right-click to clear · Esc to close';
 
 export interface OverlayOptions {
     /** `CAP-09`: snapshot the stage and select over the snapshot. */
@@ -535,8 +537,8 @@ export class AreaOverlay {
             return Clutter.EVENT_PROPAGATE;
 
         // `spec/03` §5.1: right-click cancels in the classic modes, and in All-In-One it
-        // clears the selection rather than closing -- the same as the first Esc, because
-        // the same "undo my selection" intent is behind both.
+        // clears the selection rather than closing. It was the same as the first Esc,
+        // and is the only way to clear now that one Esc closes (D197).
         if (event.get_button() !== Clutter.BUTTON_PRIMARY) {
             if (this.#allInOne && this.#rect !== null) {
                 this.#clearSelection();
@@ -953,20 +955,10 @@ export class AreaOverlay {
             return Clutter.EVENT_PROPAGATE;
 
         if (symbol === Clutter.KEY_Escape) {
-            // A ratio list is the innermost thing open, so Esc closes that first --
-            // `spec/03` §5.1's two-step Esc only starts once nothing is layered over it.
-            if (this.#toolbar?.dismissPopups() === true) return Clutter.EVENT_STOP;
-
-            // `spec/03` §5.1: "first Esc clears a selection in All-In-One, second
-            // closes". The two-step is what makes a mis-drag cheap to undo.
-            if (this.#toolbar?.editing === true) {
-                this.#toolbar.unfocusFields();
-                return Clutter.EVENT_STOP;
-            }
-            if (this.#allInOne && this.#rect !== null) {
-                this.#clearSelection();
-                return Clutter.EVENT_STOP;
-            }
+            // One Esc closes, whatever is open: a ratio list, a focused field, a
+            // selection. `spec/03` §5.1's two-step -- the first Esc cleared the selection
+            // -- left the owner pressing it twice to leave an overlay they had already
+            // decided against (D197). A mis-drag is undone by dragging again.
             this.#settle(null);
             return Clutter.EVENT_STOP;
         }

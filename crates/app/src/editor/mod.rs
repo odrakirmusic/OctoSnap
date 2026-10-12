@@ -24,6 +24,7 @@ pub mod saved;
 pub mod sensitive;
 pub mod slice;
 pub mod text;
+pub mod tool_row;
 pub mod tools;
 pub mod transform;
 pub mod vector;

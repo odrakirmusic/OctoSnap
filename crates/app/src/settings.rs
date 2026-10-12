@@ -906,38 +906,6 @@ pub fn set_crop_snapping(on: bool) {
     }
 }
 
-/// `spec/05` §1: "Window is resizable and remembers its size." Width, height, maximised.
-///
-/// `None` until an editor has been closed once, or on a machine whose installed schema
-/// predates the key -- checked, because reading a key a schema does not have aborts the
-/// process, and a development machine between a `cargo build` and the next
-/// `install-dev.sh` is exactly that machine.
-#[must_use]
-pub fn editor_window() -> Option<(i32, i32, bool)> {
-    let settings = open_settings()?;
-    if !settings.settings_schema()?.has_key("editor-window") {
-        return None;
-    }
-    let stored: Vec<i32> = settings.value("editor-window").get()?;
-    match stored[..] {
-        [width, height, maximized] if width > 0 && height > 0 => {
-            Some((width, height, maximized != 0))
-        }
-        _ => None,
-    }
-}
-
-pub fn set_editor_window(width: i32, height: i32, maximized: bool) {
-    let Some(settings) = open_settings() else { return };
-    if !settings.settings_schema().is_some_and(|schema| schema.has_key("editor-window")) {
-        return;
-    }
-    let value = [width, height, i32::from(maximized)].to_variant();
-    if let Err(e) = settings.set_value("editor-window", &value) {
-        warn!("could not save editor-window: {e}");
-    }
-}
-
 pub fn set_my_colors(colors: &[String]) {
     let Some(settings) = open_settings() else { return };
     let refs: Vec<&str> = colors.iter().map(String::as_str).collect();

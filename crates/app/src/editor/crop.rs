@@ -78,7 +78,15 @@ impl Editor {
         // second line instead of losing them off the end (D57). The strip is one child
         // and wraps as a unit: thirteen buttons split across two lines would be two
         // toolbars.
-        let edit = wrapping_row();
+        //
+        // Not a wrap box any more (D199), but its own layout: the tools on the first
+        // line, level with the window's buttons, and the options beside them only when
+        // the line has room for the widest options row there is -- under them otherwise,
+        // whichever tool is lit, so the bar keeps its height as the tool changes.
+        let edit = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let layout = super::tool_row::ToolRowLayout::default();
+        edit.set_layout_manager(Some(layout.clone()));
+        edit.set_valign(gtk::Align::Start);
         // `spec/05` §1, reading the reference toolbar left to right: "the window controls,
         // then **canvas actions** (crop, add image, background) in their own group, then
         // the **tools**". Crop is a mode and lives at the end of the strip already, so
@@ -95,7 +103,10 @@ impl Editor {
         canvas_actions.append(&self.live_text_button());
         edit.append(&canvas_actions);
         edit.append(&self.build_tool_strip());
-        edit.append(&self.build_options_row());
+        let options = self.build_options_row();
+        layout.set_trailing(&options);
+        edit.append(&options);
+        *self.options.layout.borrow_mut() = Some(layout);
 
         let crop = self.build_crop_bar();
 
@@ -119,6 +130,9 @@ impl Editor {
         // wider of the two rows, and its last two children are the only way out of crop
         // mode that does not need a key.
         let bar = wrapping_row();
+        // At the top, its first line level with the window's buttons: the stack is as tall
+        // as its taller page, and a one-line crop bar centred in two lines was not (D199).
+        bar.set_valign(gtk::Align::Start);
         *self.crop.bar.borrow_mut() = Some(bar.clone());
         self.rebuild_crop_bar();
         bar.upcast()

@@ -52,6 +52,10 @@ const SELECTION_MS: u32 = 100;
 /// worse than a document shown smaller than 1:1.
 const MAX_NATURAL: i32 = 1600;
 
+/// The empty border the fit leaves round the picture, in widget pixels, and the one the
+/// window opens with: the same on every side (D197).
+pub const FIT_MARGIN: f64 = 40.0;
+
 /// `spec/05` §4.11's crop chrome, in widget pixels: the arm length and weight of an
 /// L-shaped corner bracket, and the size of a bar handle at an edge midpoint.
 ///
@@ -61,8 +65,35 @@ const BRACKET: f64 = 15.0;
 const BRACKET_WEIGHT: f64 = 3.0;
 const EDGE_BAR: (f64, f64) = (20.0, 5.0);
 
-/// `spec/09`: "handles 8 px white with accent border". Widget pixels, at every zoom.
-const HANDLE: f64 = 8.0;
+/// A corner's dot, across, in widget pixels at every zoom: the selection's colour inside a
+/// white ring. `spec/09` gave "handles 8 px white with accent border", which on a busy
+/// screenshot was a speck the owner could not find by eye (D197).
+const HANDLE: f64 = 14.0;
+
+/// The white ring round a dot, and round the other handles' fills.
+const HANDLE_RING: f64 = 2.5;
+
+/// A side's bar, along the side and across it.
+const SIDE_BAR: (f64, f64) = (16.0, 6.0);
+
+/// A label's corner square, and a bend's hollow dot, across.
+const HANDLE_SQUARE: f64 = 10.0;
+const HANDLE_BEND: f64 = 12.0;
+
+/// A label's box inside its plate's padding: as wide as the width its side handles set,
+/// when they have set one, and as wide as its longest line when not (D198). Measured by
+/// its lines alone, a label given a width drew its box round its letters, so a side
+/// handle dragged out moved the letters inside a box nobody could see grow.
+fn label_size(layout: &pango::Layout, width: Option<f64>) -> (f64, f64) {
+    let (w, h) = layout.pixel_size();
+    let lines = f64::from(w);
+    (width.map_or(lines, |set| set.max(lines)), f64::from(h))
+}
+
+/// How far a label's dashed box and its handles stand off its glyphs, in widget pixels:
+/// on the glyphs themselves the handles covered a short label's letters (D197). Half a
+/// dot and two pixels of air, so a side's dot is clear of the first and last letters.
+const LABEL_GAP: f64 = HANDLE / 2.0 + 2.0;
 
 /// Whether an object's node may be kept between frames.
 ///
@@ -132,6 +163,181 @@ fn to_gdk(color: Rgba) -> gtk::gdk::RGBA {
 /// and `AdwStyleManager` is already tracking the setting `spec/09` names.
 fn accent_colour() -> gtk::gdk::RGBA {
     adw::StyleManager::default().accent_color_rgba()
+}
+
+/// The selection's colour: its outline, its handles and the rubber band (D197).
+///
+/// OctoSnap's orange, whatever the desktop's accent. The owner chose it after seeing the
+/// selection in their own session, where the accent *is* orange; a selection that turned
+/// blue or green on someone else's desktop would no longer be the one they chose.
+/// libadwaita's own orange, so it sits with the rest of a GNOME window.
+fn selection_colour() -> gtk::gdk::RGBA {
+    gtk::gdk::RGBA::new(237.0 / 255.0, 91.0 / 255.0, 0.0, 1.0)
+}
+
+/// The outline round a selected or hovered object, in widget pixels at every zoom (D197):
+/// a white keyline against the object, then a band of the selection's colour beyond it.
+/// The keyline is what keeps the band apart from what it outlines -- an orange band laid
+/// straight against a red stroke read as one thicker, muddier line.
+const HALO_KEYLINE: f64 = 1.5;
+const HALO: f64 = 2.5;
+
+/// The outline's strength round the selection, and round the object the pointer is over.
+const HALO_SELECTED: f64 = 1.0;
+const HALO_HOVERED: f64 = 0.45;
+
+/// Where the outline's copies of the object are laid, as fractions of [`HALO`]: sixteen
+/// round the rim and eight half-way in, which leaves no gap a 1 px stroke could show
+/// through at three pixels -- the rim's neighbours are 1.2 px apart.
+fn halo_offsets() -> impl Iterator<Item = (f64, f64)> {
+    let rim =
+        (0..16).map(|i| f64::from(i) * std::f64::consts::TAU / 16.0).map(|a| (a.cos(), a.sin()));
+    let inner = (0..8)
+        .map(|i| (f64::from(i) + 0.5) * std::f64::consts::TAU / 8.0)
+        .map(|a| (a.cos() / 2.0, a.sin() / 2.0));
+    std::iter::once((0.0, 0.0)).chain(rim).chain(inner)
+}
+
+/// `node` grown by `reach` on every side and drawn all in `colour`: copies laid round a
+/// circle, through a colour matrix that makes every colour `colour` and keeps every alpha
+/// -- one on the alpha diagonal, the colour in the offset. GSK applies it to
+/// unpremultiplied colours, so a half-covered edge pixel stays `colour` at half strength.
+fn grown(
+    snapshot: &gtk::Snapshot,
+    node: &gtk::gsk::RenderNode,
+    reach: f64,
+    colour: &gtk::gdk::RGBA,
+) {
+    let matrix = graphene::Matrix::from_float([
+        0.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0,
+    ]);
+    let offset = graphene::Vec4::new(colour.red(), colour.green(), colour.blue(), 0.0);
+    snapshot.push_color_matrix(&matrix, &offset);
+    for (dx, dy) in halo_offsets() {
+        snapshot.save();
+        #[allow(clippy::cast_possible_truncation)]
+        snapshot.translate(&graphene::Point::new((dx * reach) as f32, (dy * reach) as f32));
+        snapshot.append_node(node);
+        snapshot.restore();
+    }
+    snapshot.pop();
+}
+
+/// The kinds the outline follows the shape of. Text is shown by a dashed box instead,
+/// as it is while it is typed into; the background and the crop are the canvas; a
+/// spotlight draws its scrim over the whole canvas and a lens draws the picture again,
+/// so an outline grown from either would be the canvas's.
+const fn haloed(geometry: &Geometry) -> bool {
+    matches!(
+        geometry,
+        Geometry::Line { .. }
+            | Geometry::Arrow { .. }
+            | Geometry::Rect { .. }
+            | Geometry::Ellipse { .. }
+            | Geometry::Path { .. }
+            | Geometry::Counter { .. }
+            | Geometry::Redact { .. }
+            | Geometry::Image { .. }
+    )
+}
+
+/// How a handle looks, which says what it does (D197). In the order
+/// [`Canvas::grips_of`] answers, so what is drawn is what is clickable: a `Hidden` grip
+/// is neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GripLook {
+    /// A corner, or a line's end: a dot in the selection's colour on a white ring.
+    Dot,
+    /// The middle of a side: a short white bar along it, which moves that side alone.
+    /// `along_x` when the side is a top or a bottom.
+    Bar { along_x: bool },
+    /// A label's corner, which scales its glyphs: a small square.
+    Square,
+    /// A curve's bend, a tail's tip or a lens's spot: a hollow dot, for a point that is
+    /// not an edge of anything.
+    Bend,
+    /// A side too short on screen for a bar, or a label's top and bottom, which would
+    /// only do what its corners do.
+    Hidden,
+}
+
+/// Below this on screen a side carries no bar: four corners are enough to resize a
+/// small box, and eight handles on it would cover it.
+const SIDE_MIN: f64 = 48.0;
+
+/// A rounded rect of `w` by `h` centred on `at`, in widget pixels.
+#[allow(clippy::cast_possible_truncation)]
+fn handle_rect(at: (f64, f64), w: f64, h: f64, radius: f64) -> gtk::gsk::RoundedRect {
+    let rect =
+        graphene::Rect::new((at.0 - w / 2.0) as f32, (at.1 - h / 2.0) as f32, w as f32, h as f32);
+    gtk::gsk::RoundedRect::from_rect(rect, radius as f32)
+}
+
+/// A handle's body: `fill` inside a ring of `ring`, lifted off the picture by a soft
+/// shadow so it reads over a white page and a black terminal alike.
+fn draw_handle_body(
+    snapshot: &gtk::Snapshot,
+    outer: &gtk::gsk::RoundedRect,
+    inset: f64,
+    ring: &gtk::gdk::RGBA,
+    fill: &gtk::gdk::RGBA,
+) {
+    let shade = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.35);
+    snapshot.append_outset_shadow(outer, &shade, 0.0, 1.0, 0.0, 3.0);
+    snapshot.push_rounded_clip(outer);
+    snapshot.append_color(ring, outer.bounds());
+    snapshot.pop();
+    let inner_rect = outer.bounds().inset_r(inset as f32, inset as f32);
+    let corner = outer.corner()[0];
+    let inner_radius = (corner.width() - inset as f32).max(0.0);
+    let inner = gtk::gsk::RoundedRect::from_rect(inner_rect, inner_radius);
+    snapshot.push_rounded_clip(&inner);
+    snapshot.append_color(fill, &inner_rect);
+    snapshot.pop();
+}
+
+/// [`GripLook::Dot`].
+fn draw_dot(snapshot: &gtk::Snapshot, at: (f64, f64), colour: &gtk::gdk::RGBA) {
+    let white = gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 1.0);
+    draw_handle_body(
+        snapshot,
+        &handle_rect(at, HANDLE, HANDLE, HANDLE / 2.0),
+        HANDLE_RING,
+        &white,
+        colour,
+    );
+}
+
+/// [`GripLook::Bar`]: white, with a hairline of the selection's colour, so it is plainly
+/// a lesser handle than the corners' dots.
+fn draw_bar(snapshot: &gtk::Snapshot, at: (f64, f64), along_x: bool, colour: &gtk::gdk::RGBA) {
+    let (long, short) = SIDE_BAR;
+    let (w, h) = if along_x { (long, short) } else { (short, long) };
+    let white = gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 1.0);
+    draw_handle_body(snapshot, &handle_rect(at, w, h, short / 2.0), 1.25, colour, &white);
+}
+
+/// [`GripLook::Square`].
+fn draw_square(snapshot: &gtk::Snapshot, at: (f64, f64), colour: &gtk::gdk::RGBA) {
+    let white = gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 1.0);
+    let side = HANDLE_SQUARE;
+    draw_handle_body(snapshot, &handle_rect(at, side, side, 2.5), 1.75, &white, colour);
+}
+
+/// [`GripLook::Bend`].
+fn draw_bend(snapshot: &gtk::Snapshot, at: (f64, f64), colour: &gtk::gdk::RGBA) {
+    let white = gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 1.0);
+    let side = HANDLE_BEND;
+    draw_handle_body(
+        snapshot,
+        &handle_rect(at, side, side, side / 2.0),
+        HANDLE_RING,
+        colour,
+        &white,
+    );
 }
 
 /// How `ANN-27`'s live text marks a word over the picture (D180).
@@ -221,6 +427,15 @@ mod imp {
         /// frame is a `Vec` of objects and only happens while a button is down.
         pub draft: RefCell<Option<Object>>,
         pub selection: RefCell<Vec<ObjectId>>,
+        /// The object a press would take, while the pointer is over it and it is not
+        /// selected: it shows a faint outline of the selection's kind, so the user sees
+        /// what they are about to grab before they grab it (D197).
+        pub hovered: Cell<Option<ObjectId>>,
+        /// Whether the document being drawn is the one on screen. The outlines round the
+        /// selected and the hovered objects are chrome, drawn *under* each object -- and
+        /// the export draws the same document through the same `draw_object`, which must
+        /// then draw nothing but the object.
+        pub on_screen: Cell<bool>,
         /// `spec/05` §4.1's rubber band, in document coordinates.
         pub marquee: Cell<Option<Bounds>>,
         /// `ANN-31`'s band while a Cut Out drag is under way, in document coordinates.
@@ -475,7 +690,9 @@ mod imp {
                 None => scene,
             };
 
+            self.on_screen.set(true);
             self.append_document(snapshot, &previewed);
+            self.on_screen.set(false);
             snapshot.restore();
             snapshot.pop();
 
@@ -615,6 +832,7 @@ mod imp {
         /// the uncached path used to make, keeps the node, and appends it. There is one
         /// sequence of drawing calls, so a cache hit cannot differ from a miss.
         fn draw_object(&self, snapshot: &gtk::Snapshot, object: &Object, scene: &Scene) {
+            self.draw_halo(snapshot, object, scene);
             if !cacheable(&object.geometry) {
                 // Counted as a miss, because that is what it costs: the three kinds
                 // `cacheable` excludes are rebuilt on every frame by design.
@@ -639,6 +857,48 @@ mod imp {
                 snapshot.append_node(node);
             }
             self.cache.borrow_mut().insert(object.id, (object.clone(), node));
+        }
+
+        /// The outline round a selected object, and the fainter one round the object the
+        /// pointer is over (D197): the object's own drawing in the selection's colour,
+        /// grown by [`HALO`] screen pixels on every side and laid *under* the object, so
+        /// what shows is a band along its edge -- either side of an ellipse's stroke,
+        /// round an arrow's head, along a pencil line. A box round any of those is mostly
+        /// empty space, and says less about which object is meant.
+        ///
+        /// Grown by laying copies of the drawing round a circle rather than by a blur and
+        /// a threshold: copies keep the drawing's own edges, so the band is as sharp as
+        /// the stroke it follows. The drawing is the object's without its shadow, which
+        /// grown would be a coloured cloud.
+        fn draw_halo(&self, snapshot: &gtk::Snapshot, object: &Object, scene: &Scene) {
+            if !self.on_screen.get() || !haloed(&object.geometry) {
+                return;
+            }
+            let selected = self.selection.borrow().contains(&object.id);
+            let strength = if selected {
+                HALO_SELECTED * self.selection_fading.get().unwrap_or(1.0)
+            } else if self.hovered.get() == Some(object.id) {
+                HALO_HOVERED
+            } else {
+                return;
+            };
+            let mut bare = object.clone();
+            bare.style.shadow = false;
+            let built = gtk::Snapshot::new();
+            self.build_object(&built, &bare, scene);
+            let Some(node) = built.to_node() else { return };
+            // Screen pixels into the units this runs in, which are the picture's: inside
+            // the zoom and the background's placement both.
+            let per_unit = self.zoom.get() * scene.placement().scale;
+            if per_unit <= 0.0 {
+                return;
+            }
+            let white = gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 1.0);
+            // One group, so the band and the keyline over it fade as one.
+            snapshot.push_opacity(strength.clamp(0.0, 1.0));
+            grown(snapshot, &node, (HALO_KEYLINE + HALO) / per_unit, &selection_colour());
+            grown(snapshot, &node, HALO_KEYLINE / per_unit, &white);
+            snapshot.pop();
         }
 
         /// The drawing itself: the shape, then its glyphs.
@@ -869,62 +1129,72 @@ mod imp {
             scene: &Scene,
             selection: &[ObjectId],
         ) {
-            let accent = accent_colour();
-            let white = gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 1.0);
-            for id in selection.iter() {
+            let colour = selection_colour();
+            // Handles on one object only: `grab_handle` takes them from a selection of
+            // one, and handles that cannot be dragged are clutter that says otherwise.
+            let single = selection.len() == 1;
+            for id in selection {
                 let Some(object) = scene.get(*id) else { continue };
-                // `spec/05` §4.1 draws the outline around *resizable* objects and gives a
-                // line or an arrow "2 end handles" instead. A box around a diagonal arrow
-                // is mostly empty space and hides where the arrow actually is, which the
-                // first screenshot with one selected made plain.
-                let ends = matches!(object.grips(), octosnap_scene::Grips::Ends(_));
-                if !ends {
-                    let outline = self.picture_rect(self.obj().measured_bounds(object));
+                let outline = self.picture_rect(self.obj().measured_bounds(object));
+                if matches!(object.geometry, Geometry::Text { .. }) {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let outline = outline.inset_r(-LABEL_GAP as f32, -LABEL_GAP as f32);
+                    // A label's box, dashed: the text in it is what is selected, and the
+                    // box is where it wraps -- the same box it is typed into (D197).
+                    let builder = gtk::gsk::PathBuilder::new();
+                    builder.add_rect(&outline);
+                    let dashes = gtk::gsk::Stroke::new(1.5);
+                    dashes.set_dash(&[5.0, 4.0]);
+                    snapshot.append_stroke(&builder.to_path(), &dashes, &colour);
+                } else if !haloed(&object.geometry)
+                    && !matches!(object.grips(), octosnap_scene::Grips::Ends(_))
+                {
+                    // What has no outline of its own shape -- a spotlight, a lens -- keeps
+                    // `spec/05` §4.1's box round it.
                     snapshot.append_border(
                         &gtk::gsk::RoundedRect::from_rect(outline, 0.0),
                         &[1.0; 4],
-                        &[accent; 4],
+                        &[colour; 4],
                     );
                 }
-                for (index, point) in self.handles_for(object).into_iter().enumerate() {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let rect = graphene::Rect::new(
-                        (point.0 - HANDLE / 2.0) as f32,
-                        (point.1 - HANDLE / 2.0) as f32,
-                        HANDLE as f32,
-                        HANDLE as f32,
-                    );
-                    let rounded = gtk::gsk::RoundedRect::from_rect(rect, (HANDLE / 2.0) as f32);
-                    // The third handle of a curved arrow is its curve, not an end: filled
-                    // in the accent so it reads as a different kind of grip (§4.1's "+1
-                    // curve handle"), with a hairline back to the chord so it is visibly
-                    // attached to the arrow it bends.
-                    let curve = ends && index == 2;
-                    // `ANN-29`'s ninth handle is the tail's tip, filled for the same reason:
-                    // it moves a point, not the box.
-                    let tip = matches!(object.grips(), octosnap_scene::Grips::BoxAndTip)
-                        && index == Handle::ALL.len();
-                    if curve {
-                        let points = object.points();
-                        if let (Some(a), Some(b)) = (points.first(), points.get(1)) {
-                            let (ax, ay) = self.picture_point(*a);
-                            let (bx, by) = self.picture_point(*b);
-                            let builder = gtk::gsk::PathBuilder::new();
-                            #[allow(clippy::cast_possible_truncation)]
+                if !single {
+                    continue;
+                }
+                let looks = self.obj().grip_looks(object);
+                let points = self.handles_for(object);
+                for (index, (point, look)) in points.into_iter().zip(looks).enumerate() {
+                    match look {
+                        GripLook::Hidden => {}
+                        GripLook::Dot => draw_dot(snapshot, point, &colour),
+                        GripLook::Bar { along_x } => draw_bar(snapshot, point, along_x, &colour),
+                        GripLook::Square => draw_square(snapshot, point, &colour),
+                        GripLook::Bend => {
+                            // A curved arrow's bend, with a hairline back to the middle of
+                            // its chord, so it is visibly attached to the arrow it bends.
+                            let ends = object.points();
+                            let curve = matches!(object.geometry, Geometry::Arrow { .. });
+                            if curve
+                                && index == 2
+                                && let (Some(a), Some(b)) = (ends.first(), ends.get(1))
                             {
-                                builder.move_to(((ax + bx) / 2.0) as f32, ((ay + by) / 2.0) as f32);
-                                builder.line_to(point.0 as f32, point.1 as f32);
+                                let (ax, ay) = self.picture_point(*a);
+                                let (bx, by) = self.picture_point(*b);
+                                let builder = gtk::gsk::PathBuilder::new();
+                                #[allow(clippy::cast_possible_truncation)]
+                                {
+                                    builder.move_to(
+                                        ((ax + bx) / 2.0) as f32,
+                                        ((ay + by) / 2.0) as f32,
+                                    );
+                                    builder.line_to(point.0 as f32, point.1 as f32);
+                                }
+                                let hair = gtk::gsk::Stroke::new(1.0);
+                                hair.set_dash(&[3.0, 3.0]);
+                                snapshot.append_stroke(&builder.to_path(), &hair, &colour);
                             }
-                            let hair = gtk::gsk::Stroke::new(1.0);
-                            hair.set_dash(&[3.0, 3.0]);
-                            snapshot.append_stroke(&builder.to_path(), &hair, &accent);
+                            draw_bend(snapshot, point, &colour);
                         }
                     }
-                    let (fill, edge) = if curve || tip { (accent, white) } else { (white, accent) };
-                    snapshot.push_rounded_clip(&rounded);
-                    snapshot.append_color(&fill, &rect);
-                    snapshot.pop();
-                    snapshot.append_border(&rounded, &[1.0; 4], &[edge; 4]);
                 }
             }
         }
@@ -939,7 +1209,7 @@ mod imp {
         fn draw_marquee(&self, snapshot: &gtk::Snapshot) {
             let Some(bounds) = self.marquee.get() else { return };
             let rect = self.picture_rect(bounds);
-            let accent = accent_colour();
+            let accent = selection_colour();
             let mut fill = accent;
             fill.set_alpha(0.14);
             snapshot.append_color(&fill, &rect);
@@ -1311,7 +1581,7 @@ mod imp {
         /// padding and radius in **ems**, so they scale with the glyphs and a 10 pt label
         /// and a 288 pt one are recognisably the same style.
         fn draw_text(&self, snapshot: &gtk::Snapshot, object: &Object) {
-            let Geometry::Text { pos, text, style, font_size, align, width, tail } =
+            let Geometry::Text { pos, text, style, font_size, align, width, tail, ink, background } =
                 &object.geometry
             else {
                 return;
@@ -1320,29 +1590,23 @@ mod imp {
                 return;
             }
             let layout = self.text_layout(text, *style, *font_size, *align, *width);
-            let (w, h) = layout.pixel_size();
+            let (w, h) = label_size(&layout, *width);
 
-            // §4.5: box styles "pick the box colour from the text colour and auto-contrast
-            // the text (white on dark, black on light)". So the user's one colour choice
-            // becomes a plate, and the glyphs become whichever of black or white reads on
-            // it. The plain styles put the colour on the glyphs instead.
-            let (plate, ink) = if style.has_plate() {
-                (Some(object.style.color), object.style.color.contrasting())
-            } else {
-                (None, object.style.color)
-            };
+            // The glyphs in the label's own colour, on a plate or inside an edge in its
+            // background, or one that stands off the glyphs (D197, D198); a label from
+            // before draws as it did.
+            let colours =
+                octosnap_scene::style::label_colours(*style, object.style.color, *ink, *background);
+            let plate = colours.plate;
+            // What the tail's line is drawn in when there is no plate to grow a wedge from.
+            let pointer = colours.fill.or(colours.edge).unwrap_or(object.style.color);
 
             // `ANN-29`'s tail, under everything else the label draws: the plate hides a
             // wedge's base, and a plain label's line starts just off its glyphs.
             if let Some(tip) = tail {
                 let pad = font_size * style.plate_padding_em();
-                let body = Bounds::new(
-                    pos.x - pad,
-                    pos.y - pad,
-                    f64::from(w) + 2.0 * pad,
-                    f64::from(h) + 2.0 * pad,
-                );
-                draw_label_tail(snapshot, body, *tip, *style, *font_size, plate, ink);
+                let body = Bounds::new(pos.x - pad, pos.y - pad, w + 2.0 * pad, h + 2.0 * pad);
+                draw_label_tail(snapshot, body, *tip, *style, *font_size, plate, pointer);
             }
 
             snapshot.save();
@@ -1354,7 +1618,7 @@ mod imp {
                 let pad = (font_size * style.plate_padding_em()) as f32;
                 #[allow(clippy::cast_possible_truncation)]
                 let radius = (font_size * style.plate_radius_em()) as f32;
-                #[allow(clippy::cast_precision_loss)]
+                #[allow(clippy::cast_possible_truncation)]
                 let rect =
                     graphene::Rect::new(-pad, -pad, w as f32 + 2.0 * pad, h as f32 + 2.0 * pad);
                 let rounded = gtk::gsk::RoundedRect::from_rect(rect, radius);
@@ -1363,20 +1627,26 @@ mod imp {
                 snapshot.pop();
             }
 
-            if style.is_outlined() {
+            if let Some(edge) = colours.edge {
                 // §4.5's "Outlined", as a real stroke of the glyph path. `add_layout`
                 // turns a Pango layout into a `gsk::Path`, so the outline is the letters'
                 // own outline -- not the usual trick of drawing the text eight times at
                 // one-pixel offsets, which thickens badly at 288 pt and thins to nothing
                 // at 10.
+                //
+                // Under filled glyphs the stroke is a border, and only its outer half
+                // shows, so it is twice as wide as the edge drawn alone (D197).
                 let builder = gtk::gsk::PathBuilder::new();
                 builder.add_layout(&layout);
+                let weight =
+                    if colours.fill.is_some() { font_size / 6.0 } else { font_size / 12.0 };
                 #[allow(clippy::cast_possible_truncation)]
-                let spec = gtk::gsk::Stroke::new((font_size / 12.0).max(1.0) as f32);
+                let spec = gtk::gsk::Stroke::new(weight.max(1.0) as f32);
                 spec.set_line_join(gtk::gsk::LineJoin::Round);
-                snapshot.append_stroke(&builder.to_path(), &spec, &to_gdk(ink));
-            } else {
-                snapshot.append_layout(&layout, &to_gdk(ink));
+                snapshot.append_stroke(&builder.to_path(), &spec, &to_gdk(edge));
+            }
+            if let Some(fill) = colours.fill {
+                snapshot.append_layout(&layout, &to_gdk(fill));
             }
             snapshot.restore();
         }
@@ -1620,10 +1890,19 @@ impl Canvas {
         if w <= 0.0 || h <= 0.0 || scene.canvas.width <= 0.0 || scene.canvas.height <= 0.0 {
             return None;
         }
+        // An even border round the picture, so the fit is a picture laid on the desk and
+        // not one pressed against two of its edges (D197). Never more than an eighth of
+        // the view, so a window tiled small still has a picture in it.
+        let margin = FIT_MARGIN.min(w / 8.0).min(h / 8.0);
+        let (room_w, room_h) = (w - 2.0 * margin, h - 2.0 * margin);
         // Never *up* to fit: `spec/05` §9 pairs `Ctrl+0` with `Ctrl+1` for 1:1, so "fit"
         // means "make it visible", and blowing a 200x100 capture up to fill a 4K window
-        // is not that.
-        let scale = (w / scene.canvas.width).min(h / scene.canvas.height).min(1.0);
+        // is not that. And never past the size the picture had on the screen it came
+        // from: at 2x a document pixel is half a widget pixel there, and a fit capped at
+        // 1 showed a small capture at twice that -- larger than the window opened for
+        // it, and the same capture a different size at each scale (D197).
+        let on_screen = 1.0 / scene.base.scale.max(1.0);
+        let scale = (room_w / scene.canvas.width).min(room_h / scene.canvas.height).min(on_screen);
         Some(scale.clamp(ZOOM_MIN, ZOOM_MAX))
     }
 
@@ -1803,6 +2082,9 @@ impl Canvas {
                 let before = self.imp().selection.borrow();
                 !selection.is_empty() && !selection.iter().any(|id| before.contains(id))
             };
+            // For a harness: a click away from the selection leaves it (D197), and there is
+            // nothing to see from outside the process that says it did.
+            tracing::debug!(count = selection.len(), "selection changed");
             *self.imp().selection.borrow_mut() = selection;
             if appearing {
                 self.fade_in_selection();
@@ -1863,8 +2145,11 @@ impl Canvas {
         let [id] = selection[..] else { return };
         let Some(scene) = self.imp().scene.borrow().clone() else { return };
         let Some(object) = scene.get(id) else { return };
-        let count = self.grips_of(object).len();
-        let box_of = self.measured_bounds(object);
+        // The handles that can be grabbed: a hidden one is neither drawn nor taken.
+        let count =
+            self.grip_looks(object).iter().filter(|look| **look != GripLook::Hidden).count();
+        // The box the handles are on, which for a label stands off its glyphs.
+        let box_of = self.grip_box(object);
         let (x, y) = self.to_widget(Point::new(box_of.x, box_of.y));
         let zoom = self.imp().zoom.get();
         #[allow(clippy::cast_possible_truncation)]
@@ -2201,9 +2486,9 @@ impl Canvas {
             return object.bounds();
         };
         let layout = self.imp().text_layout(text, *style, *font_size, *align, *width);
-        let (w, h) = layout.pixel_size();
+        let (w, h) = label_size(&layout, *width);
         let pad = if style.is_outlined() { 0.0 } else { style.plate_padding_em() * font_size };
-        Bounds::new(pos.x - pad, pos.y - pad, f64::from(w) + pad * 2.0, f64::from(h) + pad * 2.0)
+        Bounds::new(pos.x - pad, pos.y - pad, w + pad * 2.0, h + pad * 2.0)
     }
 
     /// Where `spec/05` §4.1's handles are, in document coordinates.
@@ -2216,7 +2501,7 @@ impl Canvas {
         match object.grips() {
             octosnap_scene::Grips::Ends(_) => object.points(),
             octosnap_scene::Grips::Box | octosnap_scene::Grips::BoxAndTip => {
-                let b = self.measured_bounds(object);
+                let b = self.grip_box(object);
                 let mut grips: Vec<Point> = octosnap_scene::Handle::ALL
                     .into_iter()
                     .map(|handle| handle.position(b))
@@ -2226,6 +2511,64 @@ impl Canvas {
                 grips
             }
             octosnap_scene::Grips::None => Vec::new(),
+        }
+    }
+
+    /// The box a boxed object's eight handles are on, in document coordinates: its
+    /// bounds, and for a label its dashed box, which stands off its glyphs (D197).
+    #[must_use]
+    pub fn grip_box(&self, object: &Object) -> Bounds {
+        let b = self.measured_bounds(object);
+        let per_unit = self.imp().zoom.get() * self.picture_scale();
+        if matches!(object.geometry, Geometry::Text { .. }) && per_unit > 0.0 {
+            b.inflated(LABEL_GAP / per_unit)
+        } else {
+            b
+        }
+    }
+
+    /// How each of [`Self::grips_of`]'s handles looks, in the same order (D197). A
+    /// `Hidden` one is not drawn, and `grab_handle` passes it over, so a handle that
+    /// cannot be seen cannot be grabbed either.
+    #[must_use]
+    pub fn grip_looks(&self, object: &Object) -> Vec<GripLook> {
+        match object.grips() {
+            octosnap_scene::Grips::Ends(count) => (0..count)
+                .map(|index| if index < 2 { GripLook::Dot } else { GripLook::Bend })
+                .collect(),
+            octosnap_scene::Grips::Box | octosnap_scene::Grips::BoxAndTip => {
+                let label = matches!(object.geometry, Geometry::Text { .. });
+                let b = self.measured_bounds(object);
+                let zoom = self.imp().zoom.get();
+                let mut looks: Vec<GripLook> = Handle::ALL
+                    .into_iter()
+                    .map(|handle| {
+                        let (dx, dy) = handle.direction();
+                        let side = if dx == 0 { b.width } else { b.height } * zoom;
+                        match (dx != 0, dy != 0) {
+                            (true, true) if label => GripLook::Square,
+                            (true, true) => GripLook::Dot,
+                            // A label's sides set where it wraps (`Object::resize`), and
+                            // are its handles in their own right.
+                            (true, false) if label => GripLook::Dot,
+                            (false, true) if label => GripLook::Hidden,
+                            _ if side < SIDE_MIN => GripLook::Hidden,
+                            (false, _) => GripLook::Bar { along_x: true },
+                            (true, false) => GripLook::Bar { along_x: false },
+                        }
+                    })
+                    .collect();
+                looks.extend(object.points().iter().map(|_| GripLook::Bend));
+                looks
+            }
+            octosnap_scene::Grips::None => Vec::new(),
+        }
+    }
+
+    /// The object a press would take, for its faint outline (D197), or `None`.
+    pub fn set_hovered(&self, hovered: Option<ObjectId>) {
+        if self.imp().hovered.replace(hovered) != hovered {
+            self.queue_draw();
         }
     }
 

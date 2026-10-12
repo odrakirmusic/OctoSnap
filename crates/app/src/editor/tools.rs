@@ -23,7 +23,10 @@
 //! report from hardware was "they are not editable after clicking" -- a user who has just
 //! drawn a box and clicks it expects it to answer, whichever button is lit. The pencil and
 //! the highlighter are the exception because a freehand stroke crosses other objects all
-//! the time and must start wherever the pen comes down.
+//! the time and must start wherever the pen comes down -- except on their own strokes: a
+//! pencil takes a pencil line and a highlighter a highlight, as every other tool takes its
+//! own marks (D198). Without that, a stroke under the pointer showed the pencil's cursor,
+//! inviting a new line where there already was one.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -36,6 +39,7 @@ use octosnap_scene::{
 };
 use tracing::debug;
 
+use super::canvas::GripLook;
 use super::cursor::Hover;
 use super::window::Editor;
 
@@ -201,6 +205,9 @@ pub struct ToolState {
     pub gesture: RefCell<Option<Gesture>>,
     /// Space is held (`spec/05` §9's "Space pan"). Set by the window's key controller.
     pub space_down: Cell<bool>,
+    /// The press on empty space began with something selected, and has not yet moved
+    /// past a click's travel: if it comes up a click, it only deselects (D197).
+    click_deselects: Cell<bool>,
     /// `ANN-28`: the wait for the pencil to be held still, and where it started.
     hold: RefCell<Option<glib::SourceId>>,
     hold_from: Cell<Option<Point>>,
@@ -271,6 +278,11 @@ impl Editor {
     pub(super) fn set_tool(self: &Rc<Self>, tool: Tool) {
         // A tool chosen is the end of live text, which is a tool of its own (D180).
         self.leave_live_text();
+        // And the end of a label being typed: the label is drawn by the canvas as the
+        // draft (D197), which the next lines clear.
+        if self.text_editing() {
+            self.commit_text_edit();
+        }
         let was_cropping = self.cropping();
         self.stop_holding();
         self.tools.active.set(tool);
@@ -400,10 +412,22 @@ impl Editor {
                 }
             });
         }
+        {
+            // The pointer gone, the outline of what it was over goes with it (D197).
+            let editor = Rc::downgrade(self);
+            motion.connect_leave(move |_| {
+                if let Some(editor) = editor.upgrade() {
+                    editor.canvas.set_hovered(None);
+                }
+            });
+        }
         self.canvas.add_controller(motion);
     }
 
     fn begin_gesture(self: &Rc<Self>, x: f64, y: f64, modifiers: Modifiers, pressure: Option<f64>) {
+        // A press takes the object it was over, or does something else: either way the
+        // hover's outline has said what it had to.
+        self.canvas.set_hovered(None);
         let at = self.canvas.to_document(x, y);
         // `spec/05` §2's pipette, if it is armed, takes the click before any tool sees it.
         if self.take_sample(at) {
@@ -411,9 +435,10 @@ impl Editor {
         }
         // A click anywhere while a text box is open ends the edit, and does nothing else.
         // Standard behaviour, and the alternative -- committing *and* starting a shape --
-        // makes it impossible to simply finish typing.
+        // makes it impossible to simply finish typing. Nothing is left selected, so the
+        // next click places the next label (D197).
         if self.text_editing() {
-            self.commit_text_edit();
+            self.finish_text_edit(false);
             return;
         }
         // Space held: the drag pans, whatever tool is lit and whether or not a crop frame
@@ -455,9 +480,9 @@ impl Editor {
             return;
         }
 
-        // What is under the pointer, unless the tool is freehand -- see the note at the
-        // top of this file.
-        let under = if tool.is_freehand() { None } else { self.object_at(&scene, at) };
+        // What is under the pointer, or for a freehand tool its own stroke -- see the
+        // note at the top of this file.
+        let under = self.object_for(tool, &scene, at);
 
         // The text tool on a label: a drag moves it and a click edits it. Which of the two
         // a press is going to be is only known when the button comes up, so the press
@@ -466,13 +491,29 @@ impl Editor {
         // the edit on the press -- "one click, not two" -- and a label could then never be
         // moved with the tool that made it, because every press on it was an edit (D63).
         // `spec/05` §4.1's double-click under the Select tool works as it did.
+        //
+        // And only a label already selected: the first click on one selects it, with its
+        // handles, and the second edits it, as a file's name is renamed in a file manager.
+        // D56's "edits in one click" left no way to take a label with the tool that made
+        // it and resize or restyle it without typing into it (D197).
+        let selected = self.canvas.selection();
         let click_edits = (tool == Tool::Text && !modifiers.alt && !modifiers.shift)
             .then(|| under.and_then(|id| scene.get(id)))
             .flatten()
             .filter(|object| matches!(object.geometry, octosnap_scene::Geometry::Text { .. }))
+            .filter(|object| selected == [object.id])
             .map(|object| object.id);
 
         if under.is_none() && tool.creates() {
+            // A click off the selection leaves it, whatever tool is lit, and does nothing
+            // else; a drag off it still draws. The owner's report was that a click away
+            // from a box kept the box selected: the click began a draft too small to keep,
+            // and nothing deselected. A badge and a lens are placed *by* a click, so a
+            // row of numbered steps stays one click each (D197).
+            self.tools.click_deselects.set(
+                !self.canvas.selection().is_empty()
+                    && !matches!(tool, Tool::Counter | Tool::Magnifier),
+            );
             self.stop_holding();
             let draft = Draft::begin(tool, self.settings(), at, modifiers).map(|mut draft| {
                 draft.feel(pressure);
@@ -518,6 +559,7 @@ impl Editor {
                 let before = objects_of(&scene, &selection);
                 *self.tools.gesture.borrow_mut() =
                     Some(Gesture::Moving { before, from: at, click_edits });
+                self.set_hover(Hover::Moving);
             }
             None => {
                 if !modifiers.shift {
@@ -552,6 +594,9 @@ impl Editor {
         let mut gesture = self.tools.gesture.borrow_mut();
         match gesture.as_mut() {
             Some(Gesture::Creating(draft)) => {
+                if ox.hypot(oy) > CLICK_SLOP {
+                    self.tools.click_deselects.set(false);
+                }
                 let from = draft_origin(draft);
                 let at = from.offset(dx, dy);
                 draft.extend(at, modifiers);
@@ -669,6 +714,10 @@ impl Editor {
         match gesture {
             Gesture::Creating(draft) => {
                 self.canvas.set_draft(None);
+                if self.tools.click_deselects.replace(false) {
+                    self.canvas.set_selection(Vec::new());
+                    return;
+                }
                 // `spec/05` §4.5: text is not committed by the gesture at all. The click
                 // "places a text box … and starts inline editing", and what gets stored is
                 // whatever the user then types -- so an empty click leaves nothing behind
@@ -704,6 +753,8 @@ impl Editor {
                 }
             }
             Gesture::Moving { before, click_edits, .. } => {
+                // Put down, and still under the pointer: the open hand again.
+                self.set_hover(Hover::Selected);
                 let Some(mut scene) = self.canvas.scene() else { return };
                 // A press on a label with the text tool that came up within a click's
                 // travel was a click, and a click edits (D63). The objects go back where
@@ -943,6 +994,22 @@ impl Editor {
     /// The topmost object under `at`, with a click target that is the same size on
     /// screen at every zoom -- and, for text, the box the glyphs actually occupy rather
     /// than the scene's 0.6-em estimate of it (D57: the hit box is what is drawn).
+    /// What a press with `tool` takes at `at`: the object there, or for the pencil and
+    /// the highlighter only a stroke of their own, so that they draw over everything else
+    /// (D198).
+    fn object_for(&self, tool: Tool, scene: &Scene, at: Point) -> Option<ObjectId> {
+        let id = self.object_at(scene, at)?;
+        if !tool.is_freehand() {
+            return Some(id);
+        }
+        let own = matches!(
+            scene.get(id)?.geometry,
+            octosnap_scene::Geometry::Path { highlighter, .. }
+                if highlighter == (tool == Tool::Highlighter)
+        );
+        own.then_some(id)
+    }
+
     pub(super) fn object_at(&self, scene: &Scene, at: Point) -> Option<ObjectId> {
         let tolerance = (STROKE_GRAB / self.canvas.zoom()).max(hit::TOLERANCE);
         let canvas = self.canvas.clone();
@@ -988,9 +1055,12 @@ impl Editor {
         }
         let tolerance = HANDLE_GRAB / self.canvas.zoom();
         let grips = self.canvas.grips_of(object);
+        let looks = self.canvas.grip_looks(object);
         let index = grips
             .iter()
             .enumerate()
+            // What is not drawn is not there to grab (D197).
+            .filter(|(index, _)| looks.get(*index) != Some(&GripLook::Hidden))
             .filter(|(_, point)| point.distance_to(at) <= tolerance)
             .min_by(|(_, a), (_, b)| a.distance_to(at).total_cmp(&b.distance_to(at)))
             .map(|(index, _)| index)?;
@@ -1529,25 +1599,31 @@ impl Editor {
         let Some(scene) = self.canvas.scene() else { return };
         let at = self.canvas.to_document(x, y);
         if let Some(hover) = self.live_hover(at) {
+            self.canvas.set_hovered(None);
             self.set_hover(hover);
             return;
         }
         let tool = self.tools.active.get();
         // Cut Out cuts whatever is under it, so nothing here is grabbed or selected.
         if tool == Tool::CutOut {
+            self.canvas.set_hovered(None);
             self.set_hover(Hover::Draw(tool));
             return;
         }
+        let mut hovered = None;
         let hover = match self.grab_handle(&scene, at) {
             Some(Gesture::Resizing { handle, .. }) => Hover::Resize(handle),
             // A line's end or an arrow's curve handle: it goes anywhere, so no direction
             // to point at.
             Some(_) => Hover::Grip,
             None => {
-                let under = if tool.is_freehand() { None } else { self.object_at(&scene, at) };
+                let under = self.object_for(tool, &scene, at);
                 match under {
                     Some(id) if self.canvas.selection().contains(&id) => Hover::Selected,
-                    Some(_) => Hover::Selectable,
+                    Some(id) => {
+                        hovered = Some(id);
+                        Hover::Selectable
+                    }
                     None => match tool {
                         Tool::Select | Tool::Crop => Hover::Idle,
                         Tool::Text => Hover::Text,
@@ -1556,6 +1632,7 @@ impl Editor {
                 }
             }
         };
+        self.canvas.set_hovered(hovered);
         self.set_hover(hover);
     }
 

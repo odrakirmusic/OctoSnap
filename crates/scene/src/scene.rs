@@ -969,6 +969,8 @@ mod tests {
             align: TextAlign::default(),
             width: None,
             tail: None,
+            ink: None,
+            background: None,
         };
         assert!(hides(label(TextStyle::Box)));
         assert!(hides(label(TextStyle::RoundedBox)));

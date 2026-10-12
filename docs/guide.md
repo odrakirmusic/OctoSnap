@@ -127,7 +127,7 @@ right, or to take the same one again with a change.
 | Tab, Shift+Tab | The next or the previous mode on the toolbar |
 | An arrow or Tab with nothing selected | Selects the middle of the screen the pointer is on, half its width and half its height, to start from |
 | Enter | Confirms, in the mode the toolbar shows |
-| Esc | Goes back one step: it closes an open list, leaves a size field, clears the selection, and then closes the overlay |
+| Esc | Closes the overlay, whatever is open: a list, a size field, a selection |
 
 The toolbar:
 
@@ -251,6 +251,12 @@ Files opens pictures in it too: OctoSnap is one of Open With's choices for PNG, 
 and GIF files. Choose several and each opens in an editor of its own, a GIF in the GIF
 editor.
 
+The window opens at the size of the picture, with an even border of empty space round it,
+and smaller when the screen cannot hold it. It is never so narrow that the tools or the
+buttons at the bottom take a second line. In a window too narrow for the tools and their
+options side by side, the options sit under the tools, for every tool. The Background and Layers panels widen it to
+make room for themselves, and give the room back when they close.
+
 ### Tools
 
 | Key | Tool |
@@ -323,9 +329,16 @@ down the picture. Marks on the band go with it. Ctrl+Z puts it all back.
 
 Click for a box that grows with its text, or drag for one that wraps at the width you drag.
 Enter finishes, Shift+Enter starts a new line, and Esc finishes too, keeping the text.
-Double-click a piece of text to change it, and a counter to change its number. The
-options row's alignment menu lines a label's lines up on the left, in the centre or on the
-right.
+A click or a right-click anywhere else finishes it as well. Click a label to select it, and
+click it again, or double-click it, to change it; double-click a counter to change its
+number. The colour, background, size, style and alignment on the options row change the
+label you are typing as you choose them. The colour is the colour of the letters in every
+style. The background is the colour of the box behind them, or of the border round
+Outlined letters; choosing one for a label without a box gives it one. The alignment menu
+lines a label's lines up on the left, in the centre or on the right.
+
+A selected label has a dot on each side: drag one to make the box wider or narrower. The
+text wraps when the box is narrower than a line.
 
 ### Redact Sensitive Info
 
@@ -364,7 +377,8 @@ button, which opens Settings on the packs.
 
 | Key or gesture | What it does |
 |---|---|
-| Press on an object | Selects it and moves it, with any tool but Pencil and Highlighter |
+| Press on an object | Selects it and moves it, with any tool. The pencil takes only its own lines and the highlighter its own highlights, and draws over the rest. What is selected is outlined in orange, with its handles on it |
+| Click or right-click away from the selection | Lets go of it, with any tool. A drag there draws as usual |
 | Drag a handle | Resizes it. Shift keeps the proportions |
 | Shift+click | Adds it to the selection, or takes it out |
 | Drag on the picture, with Select | Selects what the band touches. With Shift, adds it |
@@ -441,6 +455,8 @@ off that one.
 | F11 | Fullscreen |
 
 ### Finishing
+
+The buttons at the bottom are icons. Hold the pointer over one for its name and key.
 
 | Key or button | What it does |
 |---|---|

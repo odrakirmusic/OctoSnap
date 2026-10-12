@@ -493,6 +493,8 @@ mod tests {
                 align: crate::object::TextAlign::Start,
                 width: None,
                 tail: Some(Point::new(320.0, 300.0)),
+                ink: None,
+                background: None,
             },
         );
         assert!(hits(&label, Point::new(318.0, 260.0)), "on the label's tail");
@@ -712,6 +714,8 @@ mod tests {
                 align: crate::object::TextAlign::Start,
                 width: None,
                 tail: None,
+                ink: None,
+                background: None,
             },
         );
         let id = label.id;

@@ -38,6 +38,8 @@ pub enum Hover {
     Selected,
     /// An object a press would select.
     Selectable,
+    /// Objects being dragged.
+    Moving,
     /// Empty picture under a tool that would draw with a press.
     Draw(Tool),
     /// Empty picture under the text tool, or a word live text can select (`ANN-27`).
@@ -70,8 +72,11 @@ impl Cursors {
         match hover {
             Hover::Resize(handle) => named(handle.cursor()),
             Hover::Grip => named("crosshair"),
-            Hover::Selected => named("move"),
-            Hover::Selectable => named("pointer"),
+            // An open hand over anything a press would take, and a closed one while it is
+            // carried: the hand is what says "this can be picked up", where a four-way
+            // arrow says "this can be resized" to anyone who has used a window (D197).
+            Hover::Selected | Hover::Selectable => named("grab"),
+            Hover::Moving => named("grabbing"),
             Hover::Text => named("text"),
             Hover::Link => named("pointer"),
             Hover::Idle => named("default"),

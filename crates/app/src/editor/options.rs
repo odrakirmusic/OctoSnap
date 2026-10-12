@@ -89,6 +89,8 @@ pub struct OptionsRow {
     pub over_selection: Cell<Option<octosnap_scene::ObjectId>>,
     /// One per control on the row.
     pub refreshers: RefCell<Vec<Refresher>>,
+    /// The title bar's tool page's layout, which keeps room for the widest row (D199).
+    pub layout: RefCell<Option<super::tool_row::ToolRowLayout>>,
 }
 
 impl std::fmt::Debug for OptionsRow {
@@ -144,8 +146,39 @@ impl Editor {
         let (tool, settings, subject) = self.row_context();
         self.options.tool.set(tool);
         self.options.over_selection.set(subject);
-        let controls = tool.controls();
         log_row(tool, &settings, subject.is_some());
+        self.fill_row(&row, tool, settings);
+    }
+
+    /// The widest the row gets, over every tool's controls at their remembered values
+    /// (D199): the room the title bar keeps beside the tools for whichever is lit.
+    /// Measured on the row itself, in the title bar, so the controls have the bar's
+    /// styling; the row is left empty, for `refresh_options` to fill. A hint is left out:
+    /// it shrinks rather than needing room.
+    pub(super) fn widest_options(self: &Rc<Self>) -> i32 {
+        let Some(row) = self.options.row.borrow().clone() else { return 0 };
+        let mut widest = 0;
+        for tool in Tool::ALL {
+            while let Some(child) = row.first_child() {
+                row.remove(&child);
+            }
+            if tool.controls().is_empty() {
+                continue;
+            }
+            self.fill_row(&row, tool, self.memory_of(tool));
+            widest = widest.max(row.measure(gtk::Orientation::Horizontal, -1).1);
+        }
+        while let Some(child) = row.first_child() {
+            row.remove(&child);
+        }
+        self.pickers.borrow_mut().clear();
+        self.options.refreshers.borrow_mut().clear();
+        widest
+    }
+
+    /// `tool`'s controls on `row`, showing `settings`.
+    fn fill_row(self: &Rc<Self>, row: &gtk::Box, tool: Tool, settings: ToolSettings) {
+        let controls = tool.controls();
         // `spec/05` §4.11 swaps the whole toolbar for crop mode: the crop tool's three
         // controls are built by `crop.rs` on the page that replaces this one, and this row
         // is not on screen while that tool is lit. So there is nothing to build -- and
@@ -167,6 +200,12 @@ impl Editor {
             }));
             hint.add_css_class("dim-label");
             hint.set_margin_start(4);
+            // Shortened rather than moved to a line of its own when the bar is too
+            // narrow for all of it (D199), and whole in its tooltip.
+            hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            hint.set_width_chars(12);
+            hint.set_xalign(0.0);
+            hint.set_tooltip_text(Some(hint.text().as_str()));
             row.append(&hint);
             return;
         }
@@ -174,6 +213,7 @@ impl Editor {
             let widget = match control {
                 Control::Color => self.color_button(&settings, false),
                 Control::ColorWithAlpha => self.color_button(&settings, true),
+                Control::TextBackground => self.background_button(&settings),
                 Control::Size => self.size_button(&settings),
                 Control::Shadow => self.flag_toggle(
                     Control::Shadow,
@@ -408,8 +448,12 @@ impl Editor {
         log_row(tool, &settings, subject.is_some());
     }
 
-    /// Pushes one control's value onto every selected object.
+    /// Pushes one control's value onto every selected object, or onto the label being
+    /// typed, which is selected by being typed into (D197).
     fn apply_to_selection(&self, control: Control, settings: &ToolSettings, close: bool) {
+        if self.restyle_text_edit(control, settings) {
+            return;
+        }
         let Some(scene) = self.canvas.scene() else { return };
         let changes: Vec<Command> = self
             .canvas
@@ -574,6 +618,62 @@ impl Editor {
             self.register(Box::new(move |s| swatch.set_kind(Kind::Color(s.style.color))));
         }
         // Held by the editor for as long as the row lives; `refresh_options` clears them.
+        self.pickers.borrow_mut().push(picker);
+        button.upcast()
+    }
+
+    /// A label's background (D198), beside its colour. D197 gave the colour control to
+    /// the glyphs and made the plate white or near-black, which took away the coloured
+    /// box the owner made labels with; this gives it back as its own control. The face
+    /// is the label in small, an A in its colour on its plate, so the two buttons side
+    /// by side say which is which. With opacity, since a plate at half strength over a
+    /// busy picture is a thing people make. One chosen for a style without a plate
+    /// gives it its plate: Standard becomes Box, and so on.
+    fn background_button(self: &Rc<Self>, settings: &ToolSettings) -> gtk::Widget {
+        let face = Preview::new(plate_kind(settings));
+        let button =
+            gtk::MenuButton::builder().tooltip_text("Background colour").child(&face).build();
+        button.update_property(&[gtk::accessible::Property::Label("Background colour")]);
+
+        let picker = Picker::new(plate_colour(settings), true, crate::settings::my_colors());
+        {
+            let editor = Rc::downgrade(self);
+            let face = face.clone();
+            picker.connect_changed(move |color| {
+                let Some(editor) = editor.upgrade() else { return };
+                editor.change_live(Control::TextBackground, |s| {
+                    s.text_background = Some(color);
+                    if !s.text.has_plate() && !s.text.is_outlined() {
+                        s.text = s.text.boxed();
+                    }
+                });
+                let (_, settings, _) = editor.row_context();
+                face.set_kind(plate_kind(&settings));
+            });
+        }
+        {
+            let editor = Rc::downgrade(self);
+            let weak = Rc::downgrade(&picker);
+            picker.connect_pick(move || {
+                let (Some(editor), Some(picker)) = (editor.upgrade(), weak.upgrade()) else {
+                    return;
+                };
+                editor.begin_picking(&picker);
+            });
+        }
+        {
+            let editor = Rc::downgrade(self);
+            picker.popover().connect_closed(move |_| {
+                if let Some(editor) = editor.upgrade() {
+                    editor.end_live_change();
+                }
+            });
+        }
+        button.set_popover(Some(picker.popover()));
+        {
+            let face = face.clone();
+            self.register(Box::new(move |s| face.set_kind(plate_kind(s))));
+        }
         self.pickers.borrow_mut().push(picker);
         button.upcast()
     }
@@ -998,4 +1098,31 @@ fn named(text: &str, icon: Option<&str>) -> (gtk::Box, Option<gtk::Image>, gtk::
     label.set_xalign(0.0);
     content.append(&label);
     (content, image, label)
+}
+
+/// What a label drawn with these settings has behind its glyphs: its plate, or its edge
+/// when it is outlined, and `None` for a style with neither (D198).
+fn label_behind(settings: &ToolSettings) -> (Rgba, Option<Rgba>) {
+    let ink = settings.style.color;
+    let colours = octosnap_scene::style::label_colours(
+        settings.text,
+        ink,
+        Some(ink),
+        settings.text_background,
+    );
+    (colours.fill.unwrap_or(ink), colours.plate.or(colours.edge))
+}
+
+fn plate_kind(settings: &ToolSettings) -> Kind {
+    let (ink, plate) = label_behind(settings);
+    Kind::Plate { ink, plate }
+}
+
+/// The colour the background picker opens on: the label's, or the one a box style
+/// would give it.
+fn plate_colour(settings: &ToolSettings) -> Rgba {
+    settings.text_background.unwrap_or_else(|| {
+        let boxed = ToolSettings { text: settings.text.boxed(), ..*settings };
+        label_behind(&boxed).1.unwrap_or(Rgba::new(1.0, 1.0, 1.0, 1.0))
+    })
 }

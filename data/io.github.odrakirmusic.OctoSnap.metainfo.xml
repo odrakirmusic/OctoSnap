@@ -114,6 +114,19 @@
   </categories>
 
   <releases>
+    <release version="0.1.13" date="2026-10-11">
+      <description>
+        <p>The editor is easier to work in.</p>
+        <ul>
+          <li>The editor opens at the size of the screenshot, with an even border round it, and the Background and Layers panels make room for themselves</li>
+          <li>What is selected is outlined in orange along its own shape, with handles that show what they do, and a click or a right-click away lets go of it</li>
+          <li>Text is typed as it will look, its colour is the letters' own, and it can have a background colour; the dots on a label's sides set the width of its box</li>
+          <li>The pencil and the highlighter pick up their own strokes to move them</li>
+          <li>The tools always sit on one line, level with the window's buttons, and the buttons at the bottom are icons</li>
+          <li>One Esc closes All-In-One</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.12" date="2026-10-11">
       <description>
         <p>Desktop pets of your own.</p>

@@ -152,6 +152,7 @@ impl Editor {
                 self.canvas.grab_focus();
             }
         }
+        self.fit_window();
         if let Some(toggle) = self.layers.toggle.borrow().as_ref()
             && toggle.is_active() != show
         {
