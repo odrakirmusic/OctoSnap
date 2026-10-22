@@ -39,6 +39,11 @@ use super::window::Editor;
 /// has to be too.
 const GRAB: f64 = 12.0;
 
+/// How far along an edge from a corner a press still takes the corner, in **widget**
+/// pixels: the length of a bracket's arm (`canvas.rs`'s `BRACKET`), so that all of the
+/// bracket drawn there is the corner's (D205).
+const REACH: f64 = 15.0;
+
 /// `spec/05` §4.11's crop mode, as the editor holds it.
 #[derive(Debug, Default)]
 pub struct CropState {
@@ -726,11 +731,19 @@ impl Editor {
 
     // --- gestures --------------------------------------------------------------------
 
-    /// A press in crop mode. Answers whether it was consumed.
-    pub(super) fn crop_press(self: &Rc<Self>, at: Point) -> bool {
+    /// A press in crop mode, at a **widget** point. Answers whether it was consumed.
+    ///
+    /// Widget coordinates, taken into the canvas's here as `crop_hover` takes them, because
+    /// the crop rect is the canvas's and the picture's are somewhere else on a background.
+    /// The press was given the picture's point, which every other tool takes: at a margin of
+    /// 100 a press on the frame's top bar landed 100 units above the frame and began a new
+    /// one in the margin, and one on its right bar landed inside and moved it, while the
+    /// cursor, measured on the canvas, showed a resize (D205).
+    pub(super) fn crop_press(self: &Rc<Self>, x: f64, y: f64) -> bool {
         let Some(crop) = self.crop.active.get() else { return false };
-        let tolerance = GRAB / self.canvas.zoom();
-        let drag = match handle::grip_at(crop.rect, at, tolerance) {
+        let at = self.canvas.to_canvas(x, y);
+        let zoom = self.canvas.zoom();
+        let drag = match handle::grip_at(crop.rect, at, GRAB / zoom, REACH / zoom) {
             Grip::Handle(handle) => Drag::Resize { handle, start: crop.rect },
             Grip::Inside => Drag::Move { start: crop.rect, from: at },
             // A press outside the rect starts a new one, which is how a crop that has
@@ -747,7 +760,8 @@ impl Editor {
         let Some(mut crop) = self.crop.active.get() else { return };
         let Some(scene) = self.canvas.scene() else { return };
         let zoom = self.canvas.zoom();
-        let to = press.offset(dx / zoom, dy / zoom);
+        // A handle by the travel, from where it was; a move or a new rect from the press.
+        let to = drag.target(press, dx / zoom, dy / zoom);
         let targets = if crop.snap { Targets::of(&scene) } else { Targets::default() };
         crop.rect = crop.drag_to(&drag, to, &targets, scene.base.bounds());
         self.crop.active.set(Some(crop));
@@ -781,8 +795,8 @@ impl Editor {
     pub(super) fn crop_hover(self: &Rc<Self>, x: f64, y: f64) {
         let Some(crop) = self.crop.active.get() else { return };
         let at = self.canvas.to_canvas(x, y);
-        let tolerance = GRAB / self.canvas.zoom();
-        let name = match handle::grip_at(crop.rect, at, tolerance) {
+        let zoom = self.canvas.zoom();
+        let name = match handle::grip_at(crop.rect, at, GRAB / zoom, REACH / zoom) {
             Grip::Handle(handle) => handle.cursor(),
             Grip::Inside => "move",
             Grip::Outside => "crosshair",

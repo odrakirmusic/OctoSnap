@@ -341,6 +341,11 @@ impl Editor {
                     return;
                 }
                 let Some(editor) = editor.upgrade() else { return };
+                // Crop mode owns the canvas's presses, a double-click's too: one inside the
+                // frame opened the label under it for typing, with the frame still up (D205).
+                if editor.cropping() {
+                    return;
+                }
                 let at = editor.canvas.to_document(x, y);
                 if editor.edit_text_under(at) {
                     debug!("double-click opened a text object");
@@ -458,8 +463,9 @@ impl Editor {
             return;
         }
         // `spec/05` §4.11's crop mode owns every pointer gesture on the canvas: there is
-        // nothing else to click on while a crop frame is up.
-        if self.crop_press(at) {
+        // nothing else to click on while a crop frame is up. It takes the widget's point,
+        // since its rect is the canvas's and `at` is the picture's (D205).
+        if self.crop_press(x, y) {
             return;
         }
         let tool = self.tools.active.get();

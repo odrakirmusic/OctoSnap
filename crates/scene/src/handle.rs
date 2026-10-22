@@ -166,12 +166,55 @@ pub fn handle_at(bounds: Bounds, at: Point, tolerance: f64) -> Option<Handle> {
         .find(|handle| handle.position(bounds).distance_to(at) <= tolerance)
 }
 
-/// [`handle_at`], falling back to whether the point is inside the rect.
+/// What a press on `spec/05` §4.11's crop frame takes: a handle, the inside, or neither.
+///
+/// A handle within `tolerance` of its position first, as [`handle_at`] finds it. Then an
+/// edge anywhere along its length, within `tolerance` across it and past its ends, and on
+/// an edge within `reach` of a corner, the corner, since a bracket's arms run that far
+/// along both edges from it. Then the inside. The eight positions alone left most of the
+/// frame to the move: a press on a bracket's arm, or on an edge away from its bar, moved
+/// the whole frame where the cursor said it would resize (D205).
 #[must_use]
-pub fn grip_at(bounds: Bounds, at: Point, tolerance: f64) -> Grip {
-    match handle_at(bounds, at, tolerance) {
+pub fn grip_at(bounds: Bounds, at: Point, tolerance: f64, reach: f64) -> Grip {
+    if let Some(handle) = handle_at(bounds, at, tolerance) {
+        return Grip::Handle(handle);
+    }
+    let r = bounds.normalised();
+    let (left, right) = (r.x, r.x + r.width);
+    let (top, bottom) = (r.y, r.y + r.height);
+    // Which of an axis's two edges the point is within `tolerance` of, the nearer on a rect
+    // too thin to tell, as a handle's direction has it.
+    let across = |p: f64, low: f64, high: f64| -> i8 {
+        let (to_low, to_high) = ((p - low).abs(), (p - high).abs());
+        if to_low.min(to_high) > tolerance {
+            0
+        } else if to_low <= to_high {
+            -1
+        } else {
+            1
+        }
+    };
+    let along = |p: f64, low: f64, high: f64| p >= low - tolerance && p <= high + tolerance;
+    let toward = |p: f64, low: f64, high: f64| -> i8 {
+        let (from_low, from_high) = (p - low, high - p);
+        if from_low.min(from_high) > reach {
+            0
+        } else if from_low <= from_high {
+            -1
+        } else {
+            1
+        }
+    };
+    let mut dx = if along(at.y, top, bottom) { across(at.x, left, right) } else { 0 };
+    let mut dy = if along(at.x, left, right) { across(at.y, top, bottom) } else { 0 };
+    if dx == 0 && dy != 0 {
+        dx = toward(at.x, left, right);
+    } else if dy == 0 && dx != 0 {
+        dy = toward(at.y, top, bottom);
+    }
+    match Handle::ALL.into_iter().find(|handle| handle.direction() == (dx, dy)) {
         Some(handle) => Grip::Handle(handle),
-        None if bounds.contains(at) => Grip::Inside,
+        None if r.contains(at) => Grip::Inside,
         None => Grip::Outside,
     }
 }
@@ -424,9 +467,43 @@ mod tests {
     #[test]
     fn a_grip_is_a_handle_then_the_inside_then_nothing() {
         let r = rect();
-        assert_eq!(grip_at(r, Point::new(500.0, 300.0), 6.0), Grip::Handle(Handle::BottomRight));
-        assert_eq!(grip_at(r, Point::new(300.0, 200.0), 6.0), Grip::Inside);
-        assert_eq!(grip_at(r, Point::new(50.0, 50.0), 6.0), Grip::Outside);
+        assert_eq!(
+            grip_at(r, Point::new(500.0, 300.0), 6.0, 15.0),
+            Grip::Handle(Handle::BottomRight)
+        );
+        assert_eq!(grip_at(r, Point::new(300.0, 200.0), 6.0, 15.0), Grip::Inside);
+        assert_eq!(grip_at(r, Point::new(50.0, 50.0), 6.0, 15.0), Grip::Outside);
+    }
+
+    #[test]
+    fn an_edge_is_taken_along_its_length_and_a_bracket_arm_takes_its_corner() {
+        let r = rect();
+        // A third of the way along each edge, 2 units in: the edge. It was the inside, and
+        // the press moved the whole frame (D205).
+        let edge = |x, y| grip_at(r, Point::new(x, y), 6.0, 15.0);
+        assert_eq!(edge(233.0, 102.0), Grip::Handle(Handle::Top));
+        assert_eq!(edge(102.0, 167.0), Grip::Handle(Handle::Left));
+        assert_eq!(edge(498.0, 167.0), Grip::Handle(Handle::Right));
+        assert_eq!(edge(233.0, 298.0), Grip::Handle(Handle::Bottom));
+        // Just outside an edge, within the tolerance: the edge, which the chrome straddles.
+        assert_eq!(edge(233.0, 96.0), Grip::Handle(Handle::Top));
+        // On a bracket's arm, 12 units from the corner along an edge: the corner.
+        assert_eq!(edge(112.0, 101.0), Grip::Handle(Handle::TopLeft));
+        assert_eq!(edge(499.0, 288.0), Grip::Handle(Handle::BottomRight));
+        // In from the edge by more than the tolerance: the inside, which moves the frame.
+        assert_eq!(edge(233.0, 110.0), Grip::Inside);
+        // Past an edge's end by more than the tolerance: nothing of the frame's.
+        assert_eq!(edge(90.0, 96.0), Grip::Outside);
+    }
+
+    #[test]
+    fn a_frame_too_thin_to_tell_takes_the_nearer_edge() {
+        let thin = Bounds::new(100.0, 100.0, 400.0, 8.0);
+        assert_eq!(grip_at(thin, Point::new(250.0, 101.0), 6.0, 15.0), Grip::Handle(Handle::Top));
+        assert_eq!(
+            grip_at(thin, Point::new(250.0, 107.0), 6.0, 15.0),
+            Grip::Handle(Handle::Bottom)
+        );
     }
 
     /// The eight handles are eight distinct points, and each one's anchor is the point

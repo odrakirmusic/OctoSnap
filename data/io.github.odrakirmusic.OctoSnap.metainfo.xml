@@ -114,6 +114,17 @@
   </categories>
 
   <releases>
+    <release version="0.1.15" date="2026-10-22">
+      <description>
+        <p>The crop frame goes where it is pulled.</p>
+        <ul>
+          <li>An edge of the crop frame can be taken anywhere along it, and a corner anywhere on its bracket, where most of the frame used to move all of it</li>
+          <li>On a background, pulling the frame's top or left edge no longer starts a new frame in the margin, and pulling its right or bottom edge no longer moves the whole frame</li>
+          <li>An edge taken a little inside it moves with the pointer, without first jumping to it</li>
+          <li>A double-click while cropping no longer opens a label for typing</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.14" date="2026-10-22">
       <description>
         <p>Cards come up sooner and move more smoothly.</p>

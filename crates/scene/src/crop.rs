@@ -376,6 +376,23 @@ pub enum Drag {
     New { from: Point },
 }
 
+impl Drag {
+    /// Where a drag that has travelled `(dx, dy)` from `press` takes its point: what
+    /// [`Crop::drag_to`] is handed.
+    ///
+    /// A handle moves by the travel from where it was, as an object's handle does, and not
+    /// to the pointer: taken a few units in from an edge, which an edge is along its whole
+    /// length, the edge jumped those units to the pointer at the first motion (D205). A
+    /// move and a new rect are the pointer's, measured from the press.
+    #[must_use]
+    pub fn target(&self, press: Point, dx: f64, dy: f64) -> Point {
+        match *self {
+            Self::Resize { handle, start } => handle.position(start).offset(dx, dy),
+            Self::Move { .. } | Self::New { .. } => press.offset(dx, dy),
+        }
+    }
+}
+
 /// The edges a crop rect snaps to (`spec/05` §4.11).
 ///
 /// > Snapping to image edges, other objects' bounds, and detected content edges when
@@ -670,6 +687,26 @@ mod tests {
             base(),
         );
         assert_eq!(resized, Bounds::new(150.0, 120.0, 350.0, 180.0));
+    }
+
+    /// D205: an edge taken a third of the way along and 10 units in moves by the drag, from
+    /// where it was, and does not jump the 10 units to the pointer first.
+    #[test]
+    fn a_handle_moves_by_the_drag_from_where_it_was_taken() {
+        let mut c = crop();
+        c.snap = false;
+        let start = Bounds::new(100.0, 100.0, 400.0, 200.0);
+        let drag = Drag::Resize { handle: Handle::Top, start };
+        let press = Point::new(233.0, 110.0);
+        let still = c.drag_to(&drag, drag.target(press, 0.0, 0.0), &Targets::default(), base());
+        assert_eq!(still, start, "nothing moves before the pointer does");
+        let dragged = c.drag_to(&drag, drag.target(press, 0.0, 50.0), &Targets::default(), base());
+        assert_eq!(dragged, Bounds::new(100.0, 150.0, 400.0, 150.0));
+
+        // A move and a new rect are the pointer's, from the press.
+        let moving = Drag::Move { start, from: press };
+        assert_eq!(moving.target(press, 5.0, 7.0), Point::new(238.0, 117.0));
+        assert_eq!(Drag::New { from: press }.target(press, 5.0, 7.0), Point::new(238.0, 117.0));
     }
 
     /// The order matters: the pointer snaps, then the ratio corrects the other axis. A
