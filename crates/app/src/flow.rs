@@ -573,18 +573,70 @@ impl<B: ShellBridge> CaptureFlow<B> {
             && self.card_shower.borrow().is_some();
         let outputs = Held { copy: should_copy_now(&plan), save: plan.writes_to_export_location() };
 
-        if outputs.copy && !holds {
-            // Not held, so a GIF still in frames is written now, before the clipboard is
-            // handed a file that is not there yet.
-            match self.to_clipboard(capture).await {
-                Ok(()) => {
-                    outcome.copied = true;
-                    info!(path = %capture.path.display(), "copied to the clipboard");
-                }
-                Err(e) => warn!("could not copy to the clipboard: {e}"),
+        // The copy goes beside the save and the card, not before them (D200). Nothing after
+        // it reads what it did, and its round trip through the shell, which reads the whole
+        // PNG to give the clipboard its bytes, was time the card spent waiting.
+        //
+        // Except for a recording whose GIF is still frames: not held, so the copy writes the
+        // GIF now, before the clipboard is handed a file that is not there yet (D113), and a
+        // save beside it would start a second write of the same file.
+        let copy_now = outputs.copy && !holds;
+        let copy_first = copy_now && render::pending(&capture.path);
+        if copy_first {
+            outcome.copied = self.copy_for_plan(capture).await;
+        }
+        let copy_beside = async { copy_now && !copy_first && self.copy_for_plan(capture).await };
+        let (copied_beside, ()) = futures_util::future::join(
+            copy_beside,
+            self.save_and_show(capture, &plan, holds, outputs, &mut outcome),
+        )
+        .await;
+        outcome.copied |= copied_beside;
+
+        for action in &plan.actions {
+            if matches!(
+                action,
+                AfterAction::Upload | AfterAction::AskName | AfterAction::OpenEditor
+            ) {
+                outcome.deferred.push(*action);
             }
         }
+        if !outcome.deferred.is_empty() {
+            info!(deferred = ?outcome.deferred, "actions not implemented in this build");
+        }
 
+        // Recorded after the plan has run, so `save-last` on a capture that was already
+        // saved writes a second file rather than reporting the first.
+        *self.last.borrow_mut() = Some(capture.clone());
+        *self.last_saved.borrow_mut() = outcome.saved_to.clone();
+
+        outcome
+    }
+
+    /// The plan's copy, said in the log either way: true when the clipboard took it.
+    async fn copy_for_plan(&self, capture: &CaptureResult) -> bool {
+        match self.to_clipboard(capture).await {
+            Ok(()) => {
+                info!(path = %capture.path.display(), "copied to the clipboard");
+                true
+            }
+            Err(e) => {
+                warn!("could not copy to the clipboard: {e}");
+                false
+            }
+        }
+    }
+
+    /// Everything in a plan after its copy, in order: the save, the pin or the card, what a
+    /// recording's card holds back, and the editor. [`Self::handle`] runs it beside the copy.
+    async fn save_and_show(
+        &self,
+        capture: &CaptureResult,
+        plan: &Plan,
+        holds: bool,
+        outputs: Held,
+        outcome: &mut Outcome,
+    ) {
         if outputs.save && !holds {
             match self.save(capture).await {
                 Ok(path) => {
@@ -654,25 +706,6 @@ impl<B: ShellBridge> CaptureFlow<B> {
                 None => outcome.deferred.push(AfterAction::Annotate),
             }
         }
-
-        for action in &plan.actions {
-            if matches!(
-                action,
-                AfterAction::Upload | AfterAction::AskName | AfterAction::OpenEditor
-            ) {
-                outcome.deferred.push(*action);
-            }
-        }
-        if !outcome.deferred.is_empty() {
-            info!(deferred = ?outcome.deferred, "actions not implemented in this build");
-        }
-
-        // Recorded after the plan has run, so `save-last` on a capture that was already
-        // saved writes a second file rather than reporting the first.
-        *self.last.borrow_mut() = Some(capture.clone());
-        *self.last_saved.borrow_mut() = outcome.saved_to.clone();
-
-        outcome
     }
 
     /// Takes back what a recording's plan held for its card, if it held anything (D113).
@@ -1519,6 +1552,30 @@ mod tests {
             !outcome.deferred.contains(&AfterAction::ShowOverlay),
             "a card that appeared is not a deferred action"
         );
+    }
+
+    /// D200: the card goes up while the copy is still on its way. The shell's half of a copy
+    /// reads the whole PNG, and nothing the card shows depends on it.
+    #[test]
+    fn the_card_does_not_wait_for_the_clipboard() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bridge = NullBridge::default().with_slow_clipboard(3);
+        let flow = CaptureFlow::new(bridge.clone(), Policy::default(), save_config_in(dir.path()));
+        let copies_when_shown = Rc::new(RefCell::new(Vec::new()));
+        {
+            let (seen, bridge) = (Rc::clone(&copies_when_shown), bridge.clone());
+            flow.set_card_shower(Box::new(move |_, _| {
+                seen.borrow_mut().push(bridge.clipboard_calls().len());
+                true
+            }));
+        }
+        let capture = capture_in(dir.path(), 0);
+
+        let outcome = run(flow.handle(&capture));
+
+        assert_eq!(*copies_when_shown.borrow(), vec![0], "the card waited for the copy");
+        assert!(outcome.card_shown && outcome.copied, "{outcome:?}");
+        assert_eq!(bridge.clipboard_calls(), vec![capture.path.clone()]);
     }
 
     /// The failure that D27 was written for: an overlay that cannot put a card up must

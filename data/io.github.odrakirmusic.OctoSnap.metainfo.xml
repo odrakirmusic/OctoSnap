@@ -114,6 +114,18 @@
   </categories>
 
   <releases>
+    <release version="0.1.14" date="2026-10-22">
+      <description>
+        <p>Cards come up sooner and move more smoothly.</p>
+        <ul>
+          <li>A card goes up without waiting for the screenshot to reach the clipboard, and its picture is read in the background</li>
+          <li>A dragged card shows the card's picture under the pointer, not the whole screenshot</li>
+          <li>A card that comes back, after it was closed or from a pin or the editor, springs in from the edge of the screen</li>
+          <li>A card's buttons fade in and out more gently, and a closed card goes more quickly</li>
+          <li>Cards that move to make room, or to close a gap, settle just past their place and back</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.13" date="2026-10-11">
       <description>
         <p>The editor is easier to work in.</p>

@@ -135,10 +135,9 @@ pub fn register(app: &adw::Application) {
                 Ok(result) => {
                     info!(capture = %capture_window::describe(&result), "handle-capture");
 
-                    // Run the ACT-01 plan, then show the capture. The plan is awaited
-                    // because copy-to-clipboard is a D-Bus round trip; showing the window
-                    // afterwards means the user never sees a card for a capture whose
-                    // copy silently failed.
+                    // Run the ACT-01 plan. It puts the card up itself without waiting for
+                    // the copy, a D-Bus round trip (D200), and the whole plan is awaited
+                    // here because the notification below says what it did.
                     let app = app.clone();
                     glib::spawn_future_local(async move {
                         match capture_flow() {

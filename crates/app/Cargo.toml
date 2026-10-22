@@ -21,6 +21,9 @@ adw = { version = "0.9", package = "libadwaita", features = ["v1_9"] }
 # it is built with turned on. No crate the lockfile did not already have.
 cairo-rs = { version = "0.22.9", features = ["svg", "pdf"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+# The after-capture plan's copy runs beside its save and card rather than before them
+# (D200): `future::join`. The media crate and the CLI already take it, so nothing new.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 gio = "0.22"
 glib = "0.22"
 # `spec/11` M7's crash log: SIGTERM and SIGHUP end a run cleanly rather than leaving its

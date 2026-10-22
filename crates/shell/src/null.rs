@@ -36,6 +36,9 @@ pub struct NullBridge {
     /// after-capture plan actually reached the clipboard rather than merely being
     /// computed. Shared so a clone of the bridge records into the same log.
     clipboard: Rc<RefCell<Vec<PathBuf>>>,
+    /// How many turns of the executor `set_clipboard_image` takes before the clipboard has
+    /// the image, as the shell's read of the file takes time. None by default.
+    clipboard_turns: u32,
     /// Every string handed to `set_clipboard_text`, for the same reason.
     text: Rc<RefCell<Vec<String>>>,
     /// What `read_clipboard_image` answers (D169), and how often it was asked.
@@ -85,6 +88,21 @@ pub struct NullBridge {
     scroll_ends: Rc<RefCell<Vec<String>>>,
 }
 
+/// One turn of whatever executor is polling: pending once, and woken straight away.
+async fn yield_now() {
+    let mut yielded = false;
+    std::future::poll_fn(|cx| {
+        if yielded {
+            std::task::Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    })
+    .await;
+}
+
 impl Default for NullBridge {
     fn default() -> Self {
         Self {
@@ -102,6 +120,7 @@ impl Default for NullBridge {
             }],
             failure: None,
             clipboard: Rc::new(RefCell::new(Vec::new())),
+            clipboard_turns: 0,
             text: Rc::new(RefCell::new(Vec::new())),
             clipboard_image: Rc::new(RefCell::new(None)),
             clipboard_reads: Rc::new(RefCell::new(0)),
@@ -165,6 +184,14 @@ impl NullBridge {
     #[must_use]
     pub const fn without_clipboard_read(mut self) -> Self {
         self.clipboard_read_missing = true;
+        self
+    }
+
+    /// A clipboard that takes `turns` turns of the executor to take an image, as the
+    /// extension's does while it reads the file: so a test can see what did not wait for it.
+    #[must_use]
+    pub const fn with_slow_clipboard(mut self, turns: u32) -> Self {
+        self.clipboard_turns = turns;
         self
     }
 
@@ -332,6 +359,9 @@ impl ShellBridge for NullBridge {
 
     async fn set_clipboard_image(&self, path: &Path) -> Result<(), BridgeError> {
         self.guard()?;
+        for _ in 0..self.clipboard_turns {
+            yield_now().await;
+        }
         self.clipboard.borrow_mut().push(path.to_path_buf());
         Ok(())
     }

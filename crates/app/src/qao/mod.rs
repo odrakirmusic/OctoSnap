@@ -361,6 +361,7 @@ impl<B: ShellBridge + 'static> Qao<B> {
                 already_saved: saved_to.is_some(),
                 shortcuts: config.shortcuts,
                 arrive_after_ms: remaining_flight(capture),
+                edge: config.edge,
             },
             &host,
         );

@@ -749,6 +749,36 @@ impl<T> Default for PendingTrash<T> {
     }
 }
 
+/// An underdamped spring of unit mass, released at rest from 0 towards 1 (D201): the shape
+/// of a card that slides a little past its place and settles back, as the reference app's
+/// cards were measured to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spring {
+    /// Below one the spring overshoots; 0.45 goes about a fifth of its travel past.
+    pub damping_ratio: f64,
+    /// Stiffness over mass, in 1/s²: how fast it moves.
+    pub stiffness: f64,
+}
+
+impl Spring {
+    /// How far from 0 to 1 the spring has come `t` seconds after its release. Above 1
+    /// while it overshoots, and 1 at rest.
+    #[must_use]
+    pub fn progress(self, t: f64) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        let omega = self.stiffness.max(0.0).sqrt();
+        let zeta = self.damping_ratio.clamp(0.0, 0.999);
+        let decay = zeta * omega;
+        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+        if omega_d <= 0.0 {
+            return 1.0;
+        }
+        1.0 - (-decay * t).exp() * ((omega_d * t).cos() + decay / omega_d * (omega_d * t).sin())
+    }
+}
+
 #[cfg(test)]
 // A failing assertion should panic, so expect() is the right tool here. The
 // workspace-wide ban exists to keep panics out of D-Bus handlers, not out of tests.
@@ -1286,5 +1316,35 @@ mod tests {
         assert_eq!(image.edit(), EditAction::Annotate);
         assert!(image.has_pin());
         assert!(!image.shows_badge());
+    }
+
+    /// D201's arrival spring: about a fifth past its place at about 100 ms, within a
+    /// fiftieth of rest by 280 ms and after, as the reference app's arrival was measured.
+    #[test]
+    fn the_arrival_spring_overshoots_a_fifth_and_settles_in_280_ms() {
+        let spring = Spring { damping_ratio: 0.45, stiffness: 1240.0 };
+        assert!(spring.progress(0.0).abs() < 1e-12);
+        assert!(spring.progress(-1.0).abs() < 1e-12);
+
+        let samples: Vec<(f64, f64)> = (0..=1000)
+            .map(|ms| (f64::from(ms) / 1000.0, spring.progress(f64::from(ms) / 1000.0)))
+            .collect();
+        let (peak_t, peak) = samples
+            .iter()
+            .copied()
+            .fold((0.0, f64::MIN), |best, s| if s.1 > best.1 { s } else { best });
+        assert!((1.15..=1.25).contains(&peak), "peak {peak}");
+        assert!((0.085..=0.115).contains(&peak_t), "peak at {peak_t} s");
+        for &(t, p) in samples.iter().filter(|s| s.0 >= 0.28) {
+            assert!((p - 1.0).abs() < 0.02, "{p} at {t} s");
+        }
+    }
+
+    /// A spring with no spring in it, or one damped past overshooting, still arrives.
+    #[test]
+    fn a_degenerate_spring_still_arrives() {
+        assert!((Spring { damping_ratio: 0.45, stiffness: 0.0 }.progress(0.5) - 1.0).abs() < 1e-12);
+        let stiff = Spring { damping_ratio: 5.0, stiffness: 1240.0 };
+        assert!((stiff.progress(5.0) - 1.0).abs() < 1e-3);
     }
 }

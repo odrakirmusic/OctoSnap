@@ -24,6 +24,7 @@ import { metaToDict } from './app.js';
 import { Handoff } from './handoff.js';
 import { FIRST_FRAME_WAIT_MS, type FirstFrameEnds, waitForFirstFrame } from './firstFrame.js';
 import { placeAtEdge } from './place.js';
+import { settleFor } from './settle.js';
 import { type ScrollCaptureOptions, runScrollingCapture } from './scroll.js';
 import type { Settings } from './settings.js';
 import { ulidFrom } from './ulid.js';
@@ -293,6 +294,10 @@ const SLOW_FIRST_FRAME_MS = 250;
  * is true *of the app*: a GTK widget cannot draw outside its window. The compositor has
  * no such limit -- the actor is on the stage, not in the window -- so a card falling a
  * whole card-height is free here and impossible there. D44.
+ *
+ * A move long enough settles into its place, a few pixels past it and back (D201,
+ * `settle.ts`), as the reference app's cards were measured to. The way back is chained on
+ * completion, so a move that interrupts this one takes over without a settle left running.
  */
 function slideActor(window: Meta.Window, from: Mtk.Rectangle, durationMs: number): void {
     if (durationMs <= 0) return;
@@ -306,11 +311,33 @@ function slideActor(window: Meta.Window, from: Mtk.Rectangle, durationMs: number
     if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
 
     actor.set_position(actor.x + dx, actor.y + dy);
+    const placeX = actor.x - dx;
+    const placeY = actor.y - dy;
+    const settle = settleFor(-dx, -dy, durationMs);
+    if (settle === null) {
+        actor.ease({
+            x: placeX,
+            y: placeY,
+            duration: durationMs,
+            mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+        });
+        return;
+    }
     actor.ease({
-        x: actor.x - dx,
-        y: actor.y - dy,
-        duration: durationMs,
+        x: placeX + settle.pastX,
+        y: placeY + settle.pastY,
+        duration: settle.outMs,
         mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+        onComplete: () => {
+            // A card closed on the way there has no actor to bring back.
+            if (window.get_compositor_private() !== actor) return;
+            actor.ease({
+                x: placeX,
+                y: placeY,
+                duration: settle.backMs,
+                mode: Clutter.AnimationMode.EASE_IN_OUT_QUAD,
+            });
+        },
     });
 }
 

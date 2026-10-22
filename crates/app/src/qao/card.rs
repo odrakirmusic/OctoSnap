@@ -30,20 +30,39 @@ use tracing::{debug, info, warn};
 /// Marks the card the extension has lent the keyboard to (`spec/04` §3).
 const FOCUS_CLASS: &str = "octosnap-focused";
 
-/// `spec/04` §8: hover controls fade in over 100 ms.
-const HOVER_MS: u32 = 100;
+/// Hover controls fade over 180 ms, ease-out-quad (D201): the reference app's measured
+/// 170 to 180 ms each way. `spec/04` §8's 100 ms read as a blink against it.
+const HOVER_MS: u32 = 180;
 
-/// `spec/04` §8: arrival is 180 ms, ease-out-cubic.
+/// `spec/04` §8: arrival is 180 ms, ease-out-cubic. The fade after a fly; an arrival with
+/// no fly before it slides in on [`ARRIVE_SPRING`] instead (D201).
 const ARRIVE_MS: u32 = 180;
 
-/// `spec/04` §8: close is 180 ms, ease-in-quad.
-const CLOSE_MS: u32 = 180;
+/// The spring an arrival with no fly slides in on (D201): about a fifth of its travel past
+/// the slot and back, at its furthest about 100 ms in and settled by about 250 ms, which is
+/// the measured shape of the reference app's arrival. Damping ratio and stiffness (unit
+/// mass), and how long it runs: by then it is within a fiftieth of its rest.
+const ARRIVE_SPRING: qao::Spring = qao::Spring { damping_ratio: 0.45, stiffness: 1240.0 };
+const ARRIVE_SPRING_MS: u32 = 280;
+
+/// A card arriving this soon after its capture flew is the fly's picture becoming the
+/// card, and fades rather than sliding (D201): the fly has already brought it in.
+const FLY_HANDOFF_MS: u64 = 3000;
+
+/// A card leaves in 110 ms, ease-in-quad (D201): the reference app's measured exit is
+/// about 100 ms. `spec/04` §8 said 180 ms, which held a closed card on screen half again as
+/// long as it takes to notice it has gone.
+const CLOSE_MS: u32 = 110;
 
 /// `spec/04` §8's "250 ms then close" for the copy tick.
 const COPY_TICK_MS: u32 = 250;
 
 /// `spec/00` §9's budget: capture to card.
 const BUDGET_MS: u64 = 300;
+
+/// The card's picture is read at this many pixels a point (D200): 200 % monitors draw it
+/// sharp, and a denser one scales it up a little.
+const PICTURE_DENSITY: i32 = 2;
 
 /// How often the auto-close timer is sampled. Ten times a second: fine enough for the
 /// hairline to look continuous, coarse enough that a screenful of cards is not a
@@ -171,6 +190,12 @@ pub struct Card {
     pub capture: CaptureResult,
     window: gtk::ApplicationWindow,
     body: gtk::Widget,
+    /// The capture, at the card's size: read on a worker after the window is built (D200).
+    picture: gtk::Picture,
+    /// Set once the worker has answered, with a texture or without one.
+    picture_in: Cell<bool>,
+    /// The arrival came due before the picture was in, and waits for it.
+    arrival_waiting: Cell<bool>,
     scrim: gtk::Widget,
     hairline: gtk::Widget,
     /// `spec/04` §8's copy tick. Named `copied` and not `tick`, because `tick` on this
@@ -179,6 +204,8 @@ pub struct Card {
     copied: gtk::Widget,
     /// The card without its shadow band -- what the user sees and what the stack measures.
     card_size: Size,
+    /// The edge the stack stands against: an arrival with no fly slides in from it.
+    edge: Edge,
     /// Which six controls this card offers. Kept because the centre pill is Save on one
     /// card and Trash on another, and the button that was built has to dispatch to the
     /// action it was labelled with.
@@ -232,6 +259,8 @@ pub struct CardConfig {
     /// The card is mapped immediately -- placement needs a surface -- but stays invisible
     /// until the capture has finished flying into the slot.
     pub arrive_after_ms: u32,
+    /// The edge the stack stands against, which an arrival with no fly slides in from.
+    pub edge: Edge,
 }
 
 impl Default for CardConfig {
@@ -243,6 +272,7 @@ impl Default for CardConfig {
             already_saved: false,
             shortcuts: true,
             arrive_after_ms: 0,
+            edge: Edge::default(),
         }
     }
 }
@@ -259,6 +289,11 @@ impl Card {
     ) -> Rc<Self> {
         let card_size = qao::card_size(config.size_step);
         let band = qao::SHADOW_MARGIN;
+        // Asked for first, so a worker reads it while the window below is built (D200).
+        let picture_read = crate::history::thumbnail::card_texture(
+            capture.path.clone(),
+            picture_target(card_size),
+        );
 
         let window = gtk::ApplicationWindow::builder()
             .application(app)
@@ -277,7 +312,8 @@ impl Card {
         window.add_css_class("octosnap-card");
 
         let controls = Controls { kind: config.kind, already_saved: config.already_saved };
-        let (body, scrim, hairline, copied, badge) = build_body(&capture, card_size, controls);
+        let (body, picture, scrim, hairline, copied, badge) =
+            build_body(&capture, card_size, controls);
 
         // Invisible from the first frame, not from the first `map`. Two reasons, and the
         // second one cost a debugging session:
@@ -315,10 +351,14 @@ impl Card {
             capture,
             window: window.clone(),
             body: body.clone().upcast(),
+            picture,
+            picture_in: Cell::new(false),
+            arrival_waiting: Cell::new(false),
             scrim,
             hairline,
             copied,
             card_size,
+            edge: config.edge,
             controls,
             timer: RefCell::new(CloseTimer::new(config.auto_close)),
             tick: RefCell::new(None),
@@ -339,6 +379,7 @@ impl Card {
             card.wire_shortcuts();
         }
         card.wire_buttons();
+        card.load_picture(picture_read);
 
         {
             // `Weak`, like every other handler on this window. A strong `Rc` here closed
@@ -485,7 +526,7 @@ impl Card {
         self.waited_ms.set(delay_ms);
 
         if delay_ms == 0 {
-            self.arrive();
+            self.arrive_when_pictured();
             return;
         }
         let card = Rc::downgrade(self);
@@ -495,10 +536,40 @@ impl Card {
                 if let Some(card) = card.upgrade()
                     && !card.closing.get()
                 {
-                    card.arrive();
+                    card.arrive_when_pictured();
                 }
             },
         );
+    }
+
+    /// Takes the card's picture from the worker reading it (D200), and lets an arrival that
+    /// came due first go once it is in.
+    fn load_picture(
+        self: &Rc<Self>,
+        read: impl std::future::Future<Output = Option<gdk::Texture>> + 'static,
+    ) {
+        let card = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let texture = read.await;
+            let Some(card) = card.upgrade() else { return };
+            if let Some(texture) = texture {
+                card.picture.set_paintable(Some(&texture));
+            }
+            card.picture_in.set(true);
+            if card.arrival_waiting.replace(false) && !card.closing.get() {
+                card.arrive();
+            }
+        });
+    }
+
+    /// The arrival, once there is a picture to arrive with (D200). A card that faded in
+    /// empty and filled a moment later would be showing its own loading.
+    fn arrive_when_pictured(self: &Rc<Self>) {
+        if self.picture_in.get() {
+            self.arrive();
+        } else {
+            self.arrival_waiting.set(true);
+        }
     }
 
     /// Waits for the compositor to configure the surface, then sets the input region and
@@ -670,23 +741,55 @@ impl Card {
         body.set_opacity(0.0);
         body.set_can_target(true);
 
-        let target = adw::CallbackAnimationTarget::new({
-            let body = body.clone();
-            let size = self.card_size;
-            move |t| {
-                body.set_opacity(t);
-                let scale = 0.96 + 0.04 * t;
-                let lift = 8.0 * (1.0 - t);
-                set_card_transform(&body, size, scale, (0.0, lift));
-            }
-        });
+        let after_fly = self.follows_fly();
+        // Which of the two arrivals, for a harness: the motion itself cannot be read back.
+        debug!(id = self.id, after_fly, "card arriving");
+        let (target, duration, easing) = if after_fly {
+            // The fly's picture becoming the card: a fade, as `spec/04` §8 has it. The fly
+            // has already brought it in, and a slide on top would be the same arrival twice.
+            let target = adw::CallbackAnimationTarget::new({
+                let body = body.clone();
+                let size = self.card_size;
+                move |t| {
+                    body.set_opacity(t);
+                    let scale = 0.96 + 0.04 * t;
+                    let lift = 8.0 * (1.0 - t);
+                    set_card_transform(&body, size, scale, (0.0, lift));
+                }
+            });
+            (target, ARRIVE_MS, adw::Easing::EaseOutCubic)
+        } else {
+            // Nothing flew here: the card slides in from the stack's edge on D201's spring,
+            // a little past its place and back, through the shadow band `slide_out` leaves
+            // by. The animation runs linearly and the spring gives its shape; the fade takes
+            // `ARRIVE_MS` of it, ease-out, as the reference app's took about 190 ms.
+            let side = match self.edge {
+                Edge::Left => -1.0,
+                Edge::Right => 1.0,
+            };
+            let band = f64::from(qao::SHADOW_MARGIN);
+            let spring_s = f64::from(ARRIVE_SPRING_MS) / 1000.0;
+            let fade = f64::from(ARRIVE_MS) / f64::from(ARRIVE_SPRING_MS);
+            let target = adw::CallbackAnimationTarget::new({
+                let body = body.clone();
+                let size = self.card_size;
+                move |u| {
+                    let travelled =
+                        if u >= 1.0 { 1.0 } else { ARRIVE_SPRING.progress(u * spring_s) };
+                    let shown = (u / fade).min(1.0);
+                    body.set_opacity(1.0 - (1.0 - shown) * (1.0 - shown));
+                    set_card_transform(&body, size, 1.0, (side * band * (1.0 - travelled), 0.0));
+                }
+            });
+            (target, ARRIVE_SPRING_MS, adw::Easing::Linear)
+        };
 
         let animation = adw::TimedAnimation::builder()
             .widget(&body)
             .value_from(0.0)
             .value_to(1.0)
-            .duration(ARRIVE_MS)
-            .easing(adw::Easing::EaseOutCubic)
+            .duration(duration)
+            .easing(easing)
             .target(&target)
             .build();
         // Measured when the arrival has settled, which is the only frame worth measuring:
@@ -724,6 +827,18 @@ impl Card {
         }
         animation.play();
         *self.transition.borrow_mut() = Some(animation);
+    }
+
+    /// Whether this arrival follows the shell's fly into its slot (D201): a capture that
+    /// flew, arriving within [`FLY_HANDOFF_MS`] of the fly setting off. A card restored,
+    /// handed back by a pin or the editor, or made by the CLI arrives with nothing before it.
+    fn follows_fly(&self) -> bool {
+        if self.capture.animation_ms == 0 {
+            return false;
+        }
+        let now_us = u64::try_from(glib::real_time()).unwrap_or(0);
+        let since_ms = now_us.saturating_sub(self.capture.timestamp) / 1000;
+        since_ms <= u64::from(self.capture.animation_ms) + FLY_HANDOFF_MS
     }
 
     /// `spec/00` §9's budget: 300 ms from the capture to the card, measured end to end.
@@ -874,6 +989,10 @@ impl Card {
     /// from it and the rest of the screen away from every other. It used to lift instead,
     /// up and away from the bottom it is anchored to, which read as the card being put
     /// back rather than sent off (D129).
+    ///
+    /// Quick, and mostly the slide (D201): the reference app's closing card was measured
+    /// leaving toward the edge in about 100 ms with no shrink to see. [`CLOSE_MS`] is 110,
+    /// and the scale gives up 4 % where it gave up 10, enough to read as going away.
     pub fn slide_out(self: &Rc<Self>, toward: Edge, done: impl Fn() + 'static) {
         if self.closing.replace(true) {
             return;
@@ -893,7 +1012,7 @@ impl Card {
             move |t| {
                 body.set_opacity(1.0 - t);
                 let slide = side * f64::from(qao::SHADOW_MARGIN) * t;
-                set_card_transform(&body, size, 1.0 - 0.10 * t, (slide, 0.0));
+                set_card_transform(&body, size, 1.0 - 0.04 * t, (slide, 0.0));
             }
         });
 
@@ -1065,13 +1184,24 @@ impl Card {
         }
         {
             let card = Rc::downgrade(self);
-            source.connect_drag_begin(move |source, drag| {
+            source.connect_drag_begin(move |_, drag| {
                 let Some(card) = card.upgrade() else { return };
-                if let Some(texture) = card.texture() {
+                // The card's own picture, at the card's size: "drag icon = the thumbnail".
+                // A texture handed to `set_icon` is drawn at its own size, which for the
+                // capture's texture was the capture's, and reading it was a second decode
+                // of the whole file as the drag began (D200).
+                if let Some(paintable) = card.picture.paintable() {
+                    let size = card.card_size;
+                    let icon = gtk::Picture::for_paintable(&paintable);
+                    icon.set_content_fit(gtk::ContentFit::Cover);
+                    icon.set_size_request(size.width, size.height);
+                    if let Ok(drag_icon) = gtk::DragIcon::for_drag(drag).downcast::<gtk::DragIcon>()
+                    {
+                        drag_icon.set_child(Some(&icon));
+                    }
                     // Hot spot at the pointer rather than a corner: the thumbnail under
                     // the cursor should feel picked up where it was grabbed.
-                    let size = card.card_size;
-                    source.set_icon(Some(&texture), size.width / 2, size.height / 2);
+                    drag.set_hotspot(size.width / 2, size.height / 2);
                 }
 
                 // `dnd-finished`, not `drag-end`. `spec/04` §3 closes the card "on
@@ -1162,14 +1292,35 @@ impl Card {
     /// hand over yet, and a drag cannot wait a minute for one (D113).
     fn drag_content(&self) -> Option<gdk::ContentProvider> {
         let mut providers = Vec::with_capacity(2);
-        if !crate::recording::render::pending(&self.capture.path) {
+        let pending = crate::recording::render::pending(&self.capture.path);
+        if !pending {
             let file = gio::File::for_path(&self.capture.path);
             providers.push(gdk::ContentProvider::for_value(&file.to_value()));
         }
-        if let Some(texture) = self.texture() {
-            providers.push(gdk::ContentProvider::for_value(&texture.to_value()));
+        if let Some(pixels) = self.drag_pixels(pending) {
+            providers.push(pixels);
         }
         Some(gdk::ContentProvider::new_union(&providers))
+    }
+
+    /// The pixels half of a drag. A PNG offers its file's own bytes as `image/png`: a
+    /// texture made that offer by decoding the whole file as the drag began and encoding
+    /// it again when it landed, both on the main loop, to arrive at the bytes already on
+    /// disk (D200). A GIF, or a recording still in frames, offers its picture as before.
+    fn drag_pixels(&self, pending: bool) -> Option<gdk::ContentProvider> {
+        use octosnap_core::savepath::ImageFormat;
+        if !pending && crate::encode::peek(&self.capture.path).0 == Some(ImageFormat::Png) {
+            match std::fs::read(&self.capture.path) {
+                Ok(bytes) => {
+                    let bytes = glib::Bytes::from_owned(bytes);
+                    return Some(gdk::ContentProvider::for_bytes("image/png", &bytes));
+                }
+                Err(e) => {
+                    warn!(path = %self.capture.path.display(), "could not read the capture to drag it: {e}")
+                }
+            }
+        }
+        self.texture().map(|texture| gdk::ContentProvider::for_value(&texture.to_value()))
     }
 
     fn texture(&self) -> Option<gdk::Texture> {
@@ -1453,16 +1604,27 @@ fn badge_text(capture: &CaptureResult) -> Option<String> {
     }
 }
 
+/// The pixels the card's picture is read to cover: the card at [`PICTURE_DENSITY`], twice
+/// over as the history's tiles are, so a 200 % monitor draws it sharp and it is still a
+/// small part of a whole capture's texture.
+fn picture_target(card_size: Size) -> (usize, usize) {
+    let side = |n: i32| usize::try_from(n.max(1).saturating_mul(PICTURE_DENSITY)).unwrap_or(1);
+    (side(card_size.width), side(card_size.height))
+}
+
 /// `spec/04` §1's anatomy: a bare thumbnail at rest, six controls under a scrim on hover.
 ///
-/// Returns the body, the scrim (whose opacity is the hover animation), the hairline, the
-/// copy tick and the badge, if the card has one.
+/// Returns the body, its picture, the scrim (whose opacity is the hover animation), the
+/// hairline, the copy tick and the badge, if the card has one.
+///
+/// The picture is empty: its texture is read on a worker while the window is made and
+/// placed, and the card does not arrive before it is in (D200).
 fn build_body(
     capture: &CaptureResult,
     size: Size,
     controls: Controls,
-) -> (gtk::Widget, gtk::Widget, gtk::Widget, gtk::Widget, Option<gtk::Label>) {
-    let picture = crate::history::thumbnail::picture_of(&capture.path);
+) -> (gtk::Widget, gtk::Picture, gtk::Widget, gtk::Widget, gtk::Widget, Option<gtk::Label>) {
+    let picture = gtk::Picture::new();
     picture.set_content_fit(gtk::ContentFit::Cover);
     picture.set_can_shrink(true);
 
@@ -1518,7 +1680,7 @@ fn build_body(
     tick.set_opacity(0.0);
     overlay.add_overlay(&tick);
 
-    (overlay.clone().upcast(), scrim.upcast(), hairline.upcast(), tick.upcast(), badge)
+    (overlay.clone().upcast(), picture, scrim.upcast(), hairline.upcast(), tick.upcast(), badge)
 }
 
 /// `spec/04` §8's copy tick: "check icon scales 0.6->1", 250 ms, "then close".

@@ -36,12 +36,7 @@ pub fn texture_of(path: &Path) -> Option<gdk::Texture> {
                 return None;
             }
         };
-        let (Ok(w), Ok(h)) = (i32::try_from(width), i32::try_from(height)) else {
-            return None;
-        };
-        let bytes = glib::Bytes::from_owned(rgba);
-        let format = gdk::MemoryFormat::R8g8b8a8;
-        return Some(gdk::MemoryTexture::new(w, h, format, &bytes, width * 4).upcast());
+        return memory_texture(rgba, width, height);
     }
     match gdk::Texture::from_filename(path) {
         Ok(texture) => Some(texture),
@@ -50,6 +45,78 @@ pub fn texture_of(path: &Path) -> Option<gdk::Texture> {
             None
         }
     }
+}
+
+/// The card's picture of a capture (D200): read on a worker, and brought down to what
+/// covers `target` pixels, the card at the highest scale it is drawn at.
+///
+/// [`texture_of`] read the whole capture on the main loop while the card was built: about
+/// 69 ms for a 3420x2214 PNG (`encode.rs`), against `spec/10` §7's 4 ms for anything on the
+/// UI thread, and then a full-size texture held for a picture the size of a thumbnail. Here
+/// the card's window is made and placed while this runs. `None` when the file cannot be
+/// read, and the card keeps an empty picture, as [`picture_of`] would have given it.
+///
+/// The worker starts when this is called, not when the answer is first awaited: the card
+/// asks before it builds its window, and the window takes about as long as the read.
+pub fn card_texture(
+    path: PathBuf,
+    target: (usize, usize),
+) -> impl std::future::Future<Output = Option<gdk::Texture>> + 'static {
+    let read = gio::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let gif = octosnap_core::history::is_gif(&path);
+        let decoded = if gif { first_gif_frame(&path) } else { decode_png(&path) };
+        let (rgba, width, height) = match decoded {
+            Ok(frame) => frame,
+            Err(e) if gif => {
+                warn!("could not read the GIF's first frame: {e}");
+                return None;
+            }
+            // Not a PNG after all, an imported JPEG say: GTK's own loaders, at full size.
+            Err(_) => {
+                return gdk::Texture::from_filename(&path)
+                    .inspect_err(
+                        |e| warn!(path = %path.display(), "could not load the capture: {e}"),
+                    )
+                    .ok();
+            }
+        };
+        let (to_w, to_h) = cover_size((width, height), target);
+        let small = downscale(&rgba, width, height, to_w, to_h);
+        debug!(ms = started.elapsed().as_millis(), width, height, to_w, to_h, "card picture made");
+        memory_texture(small, to_w, to_h)
+    });
+    async move { read.await.ok().flatten() }
+}
+
+/// Straight 8-bit RGBA as a texture GTK can draw.
+fn memory_texture(rgba: Vec<u8>, width: usize, height: usize) -> Option<gdk::Texture> {
+    let (Ok(w), Ok(h)) = (i32::try_from(width), i32::try_from(height)) else {
+        return None;
+    };
+    let bytes = glib::Bytes::from_owned(rgba);
+    let format = gdk::MemoryFormat::R8g8b8a8;
+    Some(gdk::MemoryTexture::new(w, h, format, &bytes, width * 4).upcast())
+}
+
+/// The size a picture of `size` comes down to and still covers `target`, its shape kept:
+/// what a `ContentFit::Cover` picture of `target` needs, and no more. Never larger than it
+/// was, since GTK scales a picture up as well as a worker could.
+fn cover_size(size: (usize, usize), target: (usize, usize)) -> (usize, usize) {
+    let ((width, height), (target_w, target_h)) = (size, target);
+    if width == 0 || height == 0 || target_w == 0 || target_h == 0 {
+        return size;
+    }
+    // Whichever side has further to come down to its target is the one that decides:
+    // the larger ratio leaves both sides at least as long as the target's.
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = (target_w as f64 / width as f64).max(target_h as f64 / height as f64);
+    if ratio >= 1.0 {
+        return size;
+    }
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let scaled = |n: usize| ((n as f64 * ratio).ceil() as usize).clamp(1, n);
+    (scaled(width), scaled(height))
 }
 
 /// A picture of a capture, by [`texture_of`]: empty rather than absent when it cannot be
@@ -200,6 +267,12 @@ pub(crate) fn decode_png(source: &Path) -> Result<(Vec<u8>, usize, usize), Strin
             return Err(format!("{}: still indexed after expansion", source.display()));
         }
     };
+    if channels == 4 {
+        // Straight RGBA already, as every screen capture is: the decoder's buffer as it is,
+        // not a copy of it, which was 2 to 4 ms of a whole screen's read (D200).
+        buffer.truncate(frame.buffer_size());
+        return Ok((buffer, width, height));
+    }
     Ok((to_rgba(&buffer[..frame.buffer_size()], width, height, channels), width, height))
 }
 
@@ -323,5 +396,36 @@ mod tests {
         assert_eq!(to_rgba(&[9, 8, 7], 1, 1, 3), vec![9, 8, 7, 255]);
         assert_eq!(to_rgba(&[9, 6], 1, 1, 2), vec![9, 9, 9, 6]);
         assert_eq!(to_rgba(&[9], 1, 1, 1), vec![9, 9, 9, 255]);
+    }
+
+    #[test]
+    fn a_card_picture_comes_down_to_cover_its_box_and_never_goes_up() {
+        // A whole 1920x1200 screen for a 560x360 box: height decides, width overhangs.
+        assert_eq!(cover_size((1920, 1200), (560, 360)), (576, 360));
+        // A 5K capture: the same, at a smaller ratio.
+        assert_eq!(cover_size((5120, 2880), (560, 360)), (640, 360));
+        // A wide strip: width decides, and the picture stays as wide as the box.
+        assert_eq!(cover_size((4000, 400), (560, 360)), (3600, 360));
+        // Already small, or too narrow to cover: kept as it is, for GTK to scale up.
+        assert_eq!(cover_size((320, 200), (560, 360)), (320, 200));
+        assert_eq!(cover_size((400, 3000), (560, 360)), (400, 3000));
+        // Exactly the box, and nothing to cover.
+        assert_eq!(cover_size((560, 360), (560, 360)), (560, 360));
+        assert_eq!(cover_size((0, 0), (560, 360)), (0, 0));
+        assert_eq!(cover_size((1920, 1200), (0, 0)), (1920, 1200));
+    }
+
+    #[test]
+    fn a_covering_picture_is_at_least_its_box_on_both_sides() {
+        for (size, target) in [
+            ((1921, 1201), (560, 360)),
+            ((3420, 2214), (562, 362)),
+            ((1366, 768), (480, 300)),
+            ((777, 4321), (300, 480)),
+        ] {
+            let (w, h) = cover_size(size, target);
+            assert!(w >= target.0 && h >= target.1, "{size:?} into {target:?} gave {w}x{h}");
+            assert!(w <= size.0 && h <= size.1, "{size:?} into {target:?} grew to {w}x{h}");
+        }
     }
 }

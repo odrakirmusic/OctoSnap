@@ -222,8 +222,8 @@ pub fn write(
 ) -> Result<(), Error> {
     let file = std::fs::File::create(path)?;
     let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
-    let options: zip::write::FileOptions<'_, ()> =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
 
     let manifest = Manifest::of(scene, created);
     zip.start_file(MANIFEST, options)?;
@@ -355,7 +355,8 @@ fn read_within(path: &Path, into: &Path, limits: Limits) -> Result<Opened, Error
     // referring to one names it, and the canvas loads it from a file.
     for index in 0..zip.len() {
         let Ok(mut entry) = zip.by_index(index) else { continue };
-        let name = entry.name().to_owned();
+        // A name that does not decode is no asset an object can name.
+        let Ok(name) = entry.name().map(std::borrow::Cow::into_owned) else { continue };
         let Some(asset) = name.strip_prefix(ASSETS) else { continue };
         let Some(asset) = safe_name(asset) else { continue };
         if asset.is_empty() {
@@ -629,7 +630,7 @@ mod tests {
         let mut seen = 0;
         for index in 0..zip.len() {
             let entry = zip.by_index(index).unwrap();
-            match entry.name() {
+            match entry.name().unwrap().as_ref() {
                 "objects.json" | "manifest.json" => {
                     assert_eq!(entry.compression(), zip::CompressionMethod::Deflated);
                     seen += 1;
@@ -722,7 +723,7 @@ mod tests {
         {
             let file = std::fs::File::create(&rewritten).unwrap();
             let mut zip = zip::ZipWriter::new(file);
-            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            let options = zip::write::SimpleFileOptions::default();
             zip.start_file("manifest.json", options).unwrap();
             zip.write_all(serde_json::to_string(&future).unwrap().as_bytes()).unwrap();
             zip.finish().unwrap();
@@ -807,12 +808,12 @@ mod tests {
             let mut zip = zip::ZipWriter::new(std::fs::File::create(&bomb).unwrap());
             for index in 0..source.len() {
                 let entry = source.by_index(index).unwrap();
-                if entry.name() == OBJECTS {
+                if entry.name().unwrap() == OBJECTS {
                     continue;
                 }
                 zip.raw_copy_file(entry).unwrap();
             }
-            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let options = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
             zip.start_file(OBJECTS, options).unwrap();
             std::io::copy(&mut std::io::repeat(b' ').take(LIMITS.objects + 1), &mut zip).unwrap();
@@ -853,11 +854,11 @@ mod tests {
                 let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
                 for index in 0..source.len() {
                     let entry = source.by_index(index).unwrap();
-                    if entry.name() != MANIFEST {
+                    if entry.name().unwrap() != MANIFEST {
                         zip.raw_copy_file(entry).unwrap();
                     }
                 }
-                let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+                let options = zip::write::SimpleFileOptions::default();
                 zip.start_file(MANIFEST, options).unwrap();
                 zip.write_all(changed.to_string().as_bytes()).unwrap();
                 zip.finish().unwrap();
