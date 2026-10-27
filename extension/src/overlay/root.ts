@@ -21,6 +21,7 @@ import St from 'gi://St';
 import type { Rect } from './selection.js';
 import { HANDLES, type Handle, dimPieces, handleCentre, intersect } from './selection.js';
 import { HANDLES_APPEAR, HANDLES_FROM_SCALE, easing } from './motion.js';
+import { type Cursor, setCursor } from '../shellCompat.js';
 
 /** `spec/03` §4: uniform translucent black outside the selection. [M] 0.3-0.45. */
 const DIM_COLOR = 'rgba(0,0,0,0.35)';
@@ -84,17 +85,18 @@ const LABEL_GAP = 6;
  *
  * Set once per handle actor rather than recomputed on motion. On GNOME 50 the cursor is
  * a per-actor Clutter property, so Clutter picks the right one from whatever is under the
- * pointer and the engine never has to think about it.
+ * pointer and the engine never has to think about it. Before 50, `shellCompat.ts` does the
+ * same picking as the pointer crosses the handles (D206).
  */
-const HANDLE_CURSORS: Record<Handle, Clutter.CursorType> = {
-    'top-left': Clutter.CursorType.NWSE_RESIZE,
-    'top': Clutter.CursorType.NS_RESIZE,
-    'top-right': Clutter.CursorType.NESW_RESIZE,
-    'right': Clutter.CursorType.EW_RESIZE,
-    'bottom-right': Clutter.CursorType.NWSE_RESIZE,
-    'bottom': Clutter.CursorType.NS_RESIZE,
-    'bottom-left': Clutter.CursorType.NESW_RESIZE,
-    'left': Clutter.CursorType.EW_RESIZE,
+const HANDLE_CURSORS: Record<Handle, Cursor> = {
+    'top-left': 'nwse-resize',
+    'top': 'ns-resize',
+    'top-right': 'nesw-resize',
+    'right': 'ew-resize',
+    'bottom-right': 'nwse-resize',
+    'bottom': 'ns-resize',
+    'bottom-left': 'nesw-resize',
+    'left': 'ew-resize',
 };
 
 export interface MonitorGeometry {
@@ -159,7 +161,7 @@ export class OverlayRoot {
                 visible: false,
                 reactive: true,
             });
-            actor.set_cursor_type(HANDLE_CURSORS[handle]);
+            setCursor(actor, HANDLE_CURSORS[handle]);
             // Scaled about its own centre when it pops in, so it grows where it sits.
             actor.set_pivot_point(0.5, 0.5);
             this.#handles.set(handle, actor);

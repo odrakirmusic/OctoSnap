@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "octosnap-app"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "cairo-rs",
  "chrono",
@@ -1402,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "octosnap-cli"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "octosnap-core"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "chrono",
  "proptest",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "octosnap-media"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "octosnap-ocr"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "ort",
  "png",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "octosnap-scene"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "octosnap-core",
  "serde",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "octosnap-shell"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "gio",
  "glib",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "octosnap-stitch"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "png",
  "thiserror",

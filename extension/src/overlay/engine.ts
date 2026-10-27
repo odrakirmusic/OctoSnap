@@ -54,6 +54,7 @@ import type { GifOverrides } from '../recordChoices.js';
 import type { CrosshairMode } from '../settings.js';
 import { error, info } from '../log.js';
 import { tellPets } from '../pets/events.js';
+import { type Cursor, setCursor } from '../shellCompat.js';
 
 /**
  * `spec/10` §7's first row, "hotkey → overlay visible < 100 ms", said at the end of the
@@ -448,7 +449,7 @@ export class AreaOverlay {
             // the capture will have: they are never in it (`pets/crew.ts`).
             tellPets({ kind: 'overlay', open: true });
             this.#host.grab_key_focus();
-            this.#setCursor(Clutter.CursorType.CROSSHAIR);
+            this.#setCursor('crosshair');
 
             // Built *after* the grab and after the root has key focus, and with its
             // fields unfocusable until both are true. An `St.Entry` created before this
@@ -569,7 +570,7 @@ export class AreaOverlay {
                 this.#rectAtPress = this.#rect;
                 this.#phase = 'dragging-inside';
                 this.#pointer = point;
-                this.#setCursor(Clutter.CursorType.MOVE);
+                this.#setCursor('move');
                 return Clutter.EVENT_STOP;
             }
         }
@@ -773,7 +774,7 @@ export class AreaOverlay {
     /** `spec/03` §6: Dragging -> Adjusting. The selection gains handles and a toolbar. */
     #enterAdjusting(): void {
         this.#phase = 'adjusting';
-        this.#setCursor(Clutter.CursorType.CROSSHAIR);
+        this.#setCursor('crosshair');
         this.#draw();
     }
 
@@ -795,7 +796,7 @@ export class AreaOverlay {
         this.#activeHandle = null;
         this.#phase = 'idle';
         this.#lockedRatio = this.#toolbarRatioLocked ? this.#lockedRatio : null;
-        this.#setCursor(Clutter.CursorType.CROSSHAIR);
+        this.#setCursor('crosshair');
         this.#draw();
     }
 
@@ -810,7 +811,7 @@ export class AreaOverlay {
         if (this.#toolbar?.containsStagePoint(x, y) === true) return;
         const hit = hitTest(this.#rect, [Math.round(x), Math.round(y)]);
         this.#setCursor(
-            hit.kind === 'inside' ? Clutter.CursorType.MOVE : Clutter.CursorType.CROSSHAIR,
+            hit.kind === 'inside' ? 'move' : 'crosshair',
         );
     }
 
@@ -1053,7 +1054,7 @@ export class AreaOverlay {
                 this.#rect.y - this.#pointer[1],
             ];
             this.#phase = 'moving';
-            this.#setCursor(Clutter.CursorType.MOVE);
+            this.#setCursor('move');
             return Clutter.EVENT_STOP;
         }
 
@@ -1072,7 +1073,7 @@ export class AreaOverlay {
 
         if (released === Clutter.KEY_space && this.#phase === 'moving') {
             this.#phase = 'sizing';
-            this.#setCursor(Clutter.CursorType.CROSSHAIR);
+            this.#setCursor('crosshair');
             // Re-anchor to the corner furthest from the pointer, so continuing the drag
             // resizes from where the selection now is rather than snapping back to the
             // original press.
@@ -1207,10 +1208,11 @@ export class AreaOverlay {
      * better fit for this overlay -- the handle actors carry their own resize cursors
      * declaratively (see `root.ts`) instead of the engine recomputing one on every
      * motion event, which the 2 ms budget in `spec/10` §7 would rather it did not.
-     * `[P→V] 2026-09-07`.
+     * `[P→V] 2026-09-07`. GNOME 46 to 49 have the display's cursor and no actor's, and
+     * `shellCompat.ts` sets it as the pointer crosses these actors (D206).
      */
-    #setCursor(cursor: Clutter.CursorType): void {
-        for (const root of this.#roots) root.actor.set_cursor_type(cursor);
+    #setCursor(cursor: Cursor): void {
+        for (const root of this.#roots) setCursor(root.actor, cursor);
     }
 
     #settle(value: AreaSelection | null): void {

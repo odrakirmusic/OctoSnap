@@ -47,6 +47,7 @@ import {
 } from '../recordChoices.js';
 import { icon } from '../icons.js';
 import { info } from '../log.js';
+import { setCursor } from '../shellCompat.js';
 
 /** `spec/03` §4: two dark translucent pills, ~44 pt tall, radius ~14. */
 const PILL_STYLE =
@@ -260,7 +261,7 @@ export class Toolbar {
             visible: false,
         });
         // Over the toolbar the pointer is a pointer, not a crosshair (`spec/03` §2).
-        this.actor.set_cursor_type(Clutter.CursorType.DEFAULT);
+        setCursor(this.actor, 'default');
 
         // Laid out horizontally: the two pills side by side.
         const pills = new St.BoxLayout({ style: `spacing: ${GAP}px;` });

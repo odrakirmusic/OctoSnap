@@ -22,12 +22,11 @@
  */
 
 import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
 import GObject from 'gi://GObject';
-import St from 'gi://St';
 
 import { type ArtRect, gridToRGBA, opaqueRects } from './frames.js';
 import type { Grid } from './art/painter.js';
+import { imageContent } from '../shellCompat.js';
 
 /** A pose, ready for the stage. */
 export interface Frame {
@@ -47,9 +46,7 @@ export interface Frame {
 
 /** A painted grid as a texture. */
 export function frameOf(grid: Grid, mirror = false): Frame {
-    const content = St.ImageContent.new_with_preferred_size(grid.w, grid.h) as St.ImageContent;
-    const context = global.stage.get_context().get_backend().get_cogl_context();
-    content.set_bytes(context, gridToRGBA(grid, mirror), Cogl.PixelFormat.RGBA_8888_PRE, grid.w, grid.h, grid.w * 4);
+    const content = imageContent(gridToRGBA(grid, mirror), grid.w, grid.h);
     return { content, rects: opaqueRects(grid, mirror), width: grid.w, height: grid.h };
 }
 

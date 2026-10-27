@@ -31,6 +31,7 @@ import { cycle, type Rect } from './selection.js';
 import { isFloating } from '../cards.js';
 import { error, info } from '../log.js';
 import { tellPets } from '../pets/events.js';
+import { setCursor } from '../shellCompat.js';
 
 const HINT = 'Point at a window or press Tab · Click or Enter to capture · Esc to cancel';
 
@@ -148,7 +149,7 @@ export class WindowPicker {
                 // dimming everything would hide the very thing being pointed at.
                 root.setDimVisible(false);
                 root.actor.connect('event', (_a, event) => this.#onEvent(event));
-                root.actor.set_cursor_type(Clutter.CursorType.CROSSHAIR);
+                setCursor(root.actor, 'crosshair');
                 this.#host.add_child(root.actor);
                 this.#roots.push(root);
             }

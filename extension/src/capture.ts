@@ -25,6 +25,7 @@ import { bufferScale, imageScale } from './overlay/selection.js';
 import { type PixelRect, type Sides, origin, pastPainted, repaintPlan } from './repaint.js';
 import type { Rect } from './spool.js';
 import { error, info } from './log.js';
+import { coglContextOf, paintToContent } from './shellCompat.js';
 
 // GJS turns the GAsyncResult pair into a promise. Done once, at module load, because
 // promisifying the same prototype method twice throws.
@@ -184,10 +185,10 @@ export function startAreaCapture(rect: Rect, path: string): StartedCapture {
     chrome.opacity = 0;
     let content: Clutter.Content;
     try {
-        content = stage.paint_to_content(
+        content = paintToContent(
+            stage,
             mtkRect(plan.paint),
             scale,
-            null,
             Clutter.PaintFlag.NO_CURSORS | Clutter.PaintFlag.CLEAR,
         );
     } finally {
@@ -301,7 +302,7 @@ function withEdges(texture: Cogl.Texture, crop: PixelRect, sides: Sides | 'clear
 }
 
 function filled(source: Cogl.Texture, crop: PixelRect, sides: Sides | 'clear'): Cogl.Texture {
-    const context = source.get_context();
+    const context = coglContextOf(source);
     const { width, height } = crop;
     const target = Cogl.Texture2D.new_with_size(context, width, height);
     const framebuffer = Cogl.Offscreen.new_with_texture(target);
@@ -594,10 +595,10 @@ function paintLayers(): FrozenLayer[] {
                 width: bounds.width + 2,
                 height: bounds.height + 2,
             };
-            const content = stage.paint_to_content(
+            const content = paintToContent(
+                stage,
                 mtkRect(rect),
                 scale,
-                null,
                 Clutter.PaintFlag.NO_CURSORS | Clutter.PaintFlag.CLEAR,
             );
             const texture = textureOf(content);

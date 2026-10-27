@@ -114,6 +114,15 @@
   </categories>
 
   <releases>
+    <release version="0.1.16" date="2026-10-27">
+      <description>
+        <p>OctoSnap now runs on GNOME 46 and 47, Ubuntu 24.04 LTS among them.</p>
+        <ul>
+          <li>The GNOME Shell extension installs and runs on GNOME 46 and 47, where it was refused before</li>
+          <li>The extension also loads on GNOME 48 and 49, which it already named but could not run on</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.15" date="2026-10-22">
       <description>
         <p>The crop frame goes where it is pulled.</p>

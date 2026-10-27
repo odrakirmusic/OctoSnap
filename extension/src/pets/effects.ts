@@ -13,11 +13,12 @@
  */
 
 import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
+import type Cogl from 'gi://Cogl';
 
 import { type EmoteName, emote as emoteGrid, fly as flyGrid, shadow as shadowGrid } from './art/emotes.js';
 import { snapToPhysical } from './frames.js';
 import { Rng } from './rng.js';
+import { actorColour } from '../shellCompat.js';
 import { FrameCache } from './sprite.js';
 
 /** Where a pet is, for placing what it shows: its sprite's top-left and its pixel grid. */
@@ -82,12 +83,12 @@ interface TongueState extends Timed {
     segments: Clutter.Actor[];
 }
 
-const TONGUE = new Cogl.Color({ red: 0xff, green: 0x7f, blue: 0xa0, alpha: 0xff });
-const TONGUE_TIP = new Cogl.Color({ red: 0xf0, green: 0x58, blue: 0x7e, alpha: 0xff });
+const TONGUE = '#ff7fa0';
+const TONGUE_TIP = '#f0587e';
 
 function colourOf(hex: string): Cogl.Color {
     const n = (i: number) => parseInt(hex.slice(i, i + 2), 16);
-    return new Cogl.Color({ red: n(1), green: n(3), blue: n(5), alpha: hex.length > 7 ? n(7) : 0xff });
+    return actorColour(n(1), n(3), n(5), hex.length > 7 ? n(7) : 0xff);
 }
 
 /** One pet's effects. The crew owns one per pet and destroys it with the pet. */
@@ -218,7 +219,7 @@ export class Effects {
     tongue(ms: number, hit: boolean, back: boolean, now: number, to: { dx: number; dy: number } | null = null): void {
         this.#dropTongue();
         const segments: Clutter.Actor[] = [];
-        for (let i = 0; i < 40; i++) segments.push(this.#square('octosnap-pet-tongue', i === 0 ? TONGUE_TIP : TONGUE));
+        for (let i = 0; i < 40; i++) segments.push(this.#square('octosnap-pet-tongue', colourOf(i === 0 ? TONGUE_TIP : TONGUE)));
         this.#tongue = { start: now, duration: Math.max(1, ms), back, hit, to, segments };
     }
 

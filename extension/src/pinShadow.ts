@@ -36,15 +36,14 @@
  */
 
 import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
-import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { error, info } from './log.js';
+import { imageContent } from './shellCompat.js';
 import {
     type Margins,
     PIN_SHADOW,
@@ -60,17 +59,7 @@ type PieceName = Exclude<ShadowPiece['name'], 'whole'>;
 
 /** Premultiplied RGBA bytes as a texture the stage can draw. */
 function contentOf(piece: ShadowPiece): Clutter.Content {
-    const content = St.ImageContent.new_with_preferred_size(piece.width, piece.height) as St.ImageContent;
-    const context = global.stage.get_context().get_backend().get_cogl_context();
-    content.set_bytes(
-        context,
-        piece.pixels,
-        Cogl.PixelFormat.RGBA_8888_PRE,
-        piece.width,
-        piece.height,
-        piece.width * 4,
-    );
-    return content;
+    return imageContent(piece.pixels, piece.width, piece.height);
 }
 
 /**

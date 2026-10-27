@@ -40,6 +40,7 @@ import { COUNTDOWN_FROM_SCALE, COUNTDOWN_TICK, easing } from './motion.js';
 import { error, info } from '../log.js';
 import { tellPets } from '../pets/events.js';
 import { playTick } from '../sound.js';
+import { accentColour as shellAccent } from '../shellCompat.js';
 import type { ShutterSound } from '../soundCues.js';
 
 /** `spec/09` §2.1: the ring's diameter and stroke. */
@@ -168,7 +169,7 @@ export class Countdown {
             group.add_child(label);
 
             const column = new St.BoxLayout({
-                orientation: Clutter.Orientation.VERTICAL,
+                vertical: true,
                 style: `spacing: ${HINT_GAP}px;`,
                 width: COLUMN,
                 reactive: false,
@@ -447,11 +448,11 @@ export class Countdown {
 /**
  * The desktop's accent, as cairo takes a colour. `-st-accent-color` cannot reach a cairo
  * drawing, so it is asked of the theme context; a shell that cannot answer gets Adwaita
- * blue, which is the accent's own default.
+ * blue, which is the accent's own default. GNOME 46 has no accent to ask (D206).
  */
 function accentColour(): readonly [number, number, number, number] {
     try {
-        const [accent] = St.ThemeContext.get_for_stage(global.stage).get_accent_color();
+        const accent = shellAccent();
         if (accent !== null)
             return [accent.red / 255, accent.green / 255, accent.blue / 255, accent.alpha / 255];
     } catch (e) {
